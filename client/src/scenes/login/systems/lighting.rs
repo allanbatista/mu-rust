@@ -15,6 +15,7 @@ pub fn spawn_dynamic_lights(
         commands.spawn((
             LoginSceneEntity,
             DynamicPointLight,
+            dynamic_light.clone(),
             PointLightBundle {
                 point_light: PointLight {
                     color: dynamic_light.color,
@@ -34,7 +35,10 @@ pub fn spawn_dynamic_lights(
 }
 
 /// System to update dynamic lights (flicker effect)
-pub fn update_dynamic_lights(mut lights: Query<(&DynamicLight, &mut PointLight)>, time: Res<Time>) {
+pub fn update_dynamic_lights(
+    mut lights: Query<(&DynamicLight, &mut PointLight), With<DynamicPointLight>>,
+    time: Res<Time>,
+) {
     for (dynamic_light, mut point_light) in lights.iter_mut() {
         // Apply base color and range
         point_light.color = dynamic_light.color;

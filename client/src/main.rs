@@ -9,6 +9,7 @@ use bevy::window::WindowResolution;
 use scenes::ScenePlugin;
 use scenes::loading::LoadingScene;
 use scenes::login::LoginScene;
+use scenes::scene_loader::SceneLoaderPlugin;
 use world::WorldPlugin;
 
 #[derive(bevy::prelude::States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
@@ -21,6 +22,7 @@ pub enum AppState {
 fn main() {
     App::new()
         .add_plugins(build_bevy_plugins())
+        .add_plugins(SceneLoaderPlugin)
         .add_plugins(WorldPlugin)
         .init_state::<AppState>()
         .add_plugins(ScenePlugin::<LoadingScene>::default())

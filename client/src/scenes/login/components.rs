@@ -1,3 +1,7 @@
+pub use crate::scenes::scene_loader::{
+    CameraTourData, HeightmapData, ObjectProperties, SceneObjectDef, SceneObjectsData,
+    TerrainConfig,
+};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -16,59 +20,6 @@ pub struct Terrain {
     pub height: u32,
 }
 
-/// Terrain configuration loaded from JSON
-#[derive(Asset, TypePath, Serialize, Deserialize, Clone, Debug)]
-pub struct TerrainConfig {
-    pub size: TerrainSize,
-    #[serde(default = "default_height_multiplier")]
-    pub height_multiplier: f32,
-    #[serde(default = "default_legacy_terrain_scale")]
-    pub legacy_terrain_scale: f32,
-    pub texture_layers: Vec<TextureLayer>,
-    pub alpha_map: String,
-    pub lightmap: String,
-}
-
-fn default_height_multiplier() -> f32 {
-    1.5
-}
-
-fn default_legacy_terrain_scale() -> f32 {
-    100.0
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct TerrainSize {
-    pub width: u32,
-    pub depth: u32,
-    pub scale: f32,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct TextureLayer {
-    pub id: String,
-    pub path: String,
-    pub scale: f32,
-}
-
-/// Heightmap data loaded from JSON
-#[derive(Asset, TypePath, Serialize, Deserialize, Clone)]
-pub struct HeightmapData {
-    pub width: u32,
-    pub height: u32,
-    pub heights: Vec<Vec<f32>>,
-}
-
-impl HeightmapData {
-    pub fn get_height(&self, x: usize, z: usize) -> f32 {
-        if z < self.heights.len() && x < self.heights[z].len() {
-            self.heights[z][x]
-        } else {
-            0.0
-        }
-    }
-}
-
 // ============================================================================
 // SCENE OBJECT COMPONENTS
 // ============================================================================
@@ -78,41 +29,6 @@ impl HeightmapData {
 pub struct SceneObject {
     pub id: String,
     pub object_type: u32,
-}
-
-/// Scene objects data loaded from JSON
-#[derive(Asset, TypePath, Serialize, Deserialize, Clone)]
-pub struct SceneObjectsData {
-    pub objects: Vec<SceneObjectDef>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SceneObjectDef {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub object_type: u32,
-    pub model: String,
-    pub position: [f32; 3],
-    pub rotation: [f32; 3],
-    pub scale: [f32; 3],
-    #[serde(default)]
-    pub properties: ObjectProperties,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct ObjectProperties {
-    pub model_renderable: Option<bool>,
-    pub model_validation_reason: Option<String>,
-    pub particle_emitter: Option<String>,
-    pub light_color: Option<[f32; 3]>,
-    pub light_intensity: Option<f32>,
-    pub light_range: Option<f32>,
-    pub boid_model: Option<String>,
-    pub flight_radius: Option<f32>,
-    pub flight_height: Option<f32>,
-    pub cast_shadow: Option<bool>,
-    pub particle_count: Option<u32>,
-    pub particle_scale_multiplier: Option<f32>,
 }
 
 // ============================================================================
@@ -185,7 +101,7 @@ pub struct ParticleEmitterDef {
 // ============================================================================
 
 /// Component for dynamic point lights
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct DynamicLight {
     pub color: Color,
     pub intensity: f32,
@@ -231,25 +147,6 @@ pub struct CameraWaypoint {
 #[derive(Component)]
 pub struct CameraTourState {
     pub delay_timer: Option<Timer>,
-}
-
-/// Camera tour data loaded from JSON
-#[derive(Asset, TypePath, Serialize, Deserialize, Clone)]
-pub struct CameraTourData {
-    pub waypoints: Vec<CameraWaypointDef>,
-    pub r#loop: bool,
-    pub blend_distance: f32,
-    pub interpolation: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct CameraWaypointDef {
-    pub index: u32,
-    pub position: [f32; 3],
-    pub look_at: [f32; 3],
-    pub move_acceleration: f32,
-    pub distance_level: f32,
-    pub delay: f32,
 }
 
 // ============================================================================

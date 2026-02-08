@@ -28,11 +28,15 @@ pub fn spawn_terrain_when_ready(
         return;
     }
 
-    let Some(config) = terrain_configs.get(&assets.terrain_config) else {
+    let Some(world) = assets.world.as_ref() else {
         return;
     };
 
-    let Some(heightmap) = heightmaps.get(&assets.heightmap) else {
+    let Some(config) = terrain_configs.get(&world.terrain_config) else {
+        return;
+    };
+
+    let Some(heightmap) = heightmaps.get(&world.heightmap) else {
         return;
     };
 

@@ -203,7 +203,8 @@ async fn run_quic_protocol_flow(cfg: &SimConfig) -> anyhow::Result<()> {
         "[::]:0".parse().expect("valid ipv6 bind")
     };
 
-    let mut endpoint = Endpoint::client(bind_addr).context("falha ao criar endpoint QUIC client")?;
+    let mut endpoint =
+        Endpoint::client(bind_addr).context("falha ao criar endpoint QUIC client")?;
     endpoint.set_default_client_config(client_config);
 
     println!("[sim-client] conectando QUIC em {}", cfg.quic_addr);
@@ -230,7 +231,9 @@ async fn run_quic_protocol_flow(cfg: &SimConfig) -> anyhow::Result<()> {
     );
 
     let hello_frames = send_control_request(&connection, &codec, &hello_packet).await?;
-    assert_server_message(&hello_frames, |msg| matches!(msg, ServerMessage::HelloAck { .. }))?;
+    assert_server_message(&hello_frames, |msg| {
+        matches!(msg, ServerMessage::HelloAck { .. })
+    })?;
     println!("[sim-client] protocolo OK: HelloAck recebido");
 
     let keepalive_packet = WirePacket::client(
@@ -245,7 +248,9 @@ async fn run_quic_protocol_flow(cfg: &SimConfig) -> anyhow::Result<()> {
     );
 
     let keepalive_frames = send_control_request(&connection, &codec, &keepalive_packet).await?;
-    assert_server_message(&keepalive_frames, |msg| matches!(msg, ServerMessage::Pong { .. }))?;
+    assert_server_message(&keepalive_frames, |msg| {
+        matches!(msg, ServerMessage::Pong { .. })
+    })?;
     println!("[sim-client] protocolo OK: Pong recebido");
 
     if cfg.send_move_datagram {
@@ -418,7 +423,9 @@ fn parse_args() -> anyhow::Result<SimConfig> {
                     .with_context(|| format!("--quic-addr invalido: {}", value))?;
             }
             "--quic-server-name" => cfg.quic_server_name = next_arg_value(&mut args, &arg)?,
-            "--quic-ca-cert" => cfg.quic_ca_cert = Some(PathBuf::from(next_arg_value(&mut args, &arg)?)),
+            "--quic-ca-cert" => {
+                cfg.quic_ca_cert = Some(PathBuf::from(next_arg_value(&mut args, &arg)?))
+            }
             "--username" => cfg.username = Some(next_arg_value(&mut args, &arg)?),
             "--password" => cfg.password = Some(next_arg_value(&mut args, &arg)?),
             "--account-id" => {

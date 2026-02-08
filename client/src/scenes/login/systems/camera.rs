@@ -24,7 +24,11 @@ pub fn setup_camera_tour(
         return;
     }
 
-    let Some(tour_data) = camera_tour_data.get(&assets.camera_tour) else {
+    let Some(world) = assets.world.as_ref() else {
+        return;
+    };
+
+    let Some(tour_data) = camera_tour_data.get(&world.camera_tour) else {
         return;
     };
 

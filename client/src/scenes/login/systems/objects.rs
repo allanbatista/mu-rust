@@ -1,5 +1,5 @@
-use crate::scenes::login::components::*;
 use crate::scenes::login::LoginSceneAssets;
+use crate::scenes::login::components::*;
 use bevy::ecs::system::EntityCommands;
 use bevy::math::primitives::Cuboid;
 use bevy::prelude::*;
@@ -48,7 +48,11 @@ pub fn spawn_scene_objects_when_ready(
         return;
     }
 
-    let Some(scene_data) = scene_objects_data.get(&assets.scene_objects) else {
+    let Some(world) = assets.world.as_ref() else {
+        return;
+    };
+
+    let Some(scene_data) = scene_objects_data.get(&world.scene_objects) else {
         return;
     };
 
