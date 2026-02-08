@@ -6,7 +6,12 @@ This repository is a Cargo workspace with three crates:
 - `protocol/`: shared packet types, serializers, deserializers, tests, and benchmarks (`protocol/src`, `protocol/tests`, `protocol/benches`).
 - `server/`: Actix Web connect server with configuration, handlers, middleware, monitoring, and DB layers (`server/src/*`, `server/config/servers.toml`, `server/tests`).
 
-Large game resources live in `assets/`. Local Docker infra for MongoDB lives in `docker/`.
+Supporting directories:
+- `assets/`: game data and static resources (`assets/data`, `assets/shaders`, `assets/wallpapers`) plus generated reports in `assets/reports`.
+- `docs/`: architecture notes and client-facing documentation (`docs/architecture`, `docs/client`).
+- `scripts/`: workspace utility scripts, including client asset conversion tools (`scripts/client_converter`).
+- `server/scripts/`: server-specific helper scripts for local simulation/debug workflows.
+- `docker/`: local Docker infra for MongoDB and Mongo Express.
 
 ## Build, Test, and Development Commands
 Run from workspace root unless noted.
