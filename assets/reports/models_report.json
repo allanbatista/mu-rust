@@ -1,15 +1,52 @@
 {
-  "total_found": 366,
-  "world_filter": [
-    55,
-    74,
-    77
-  ],
-  "converted": 366,
-  "skipped_no_geometry": 0,
-  "skipped_non_model": 0,
-  "skipped_existing": 0,
-  "skipped_corrupt": 0,
+  "total_found": 16743,
+  "world_filter": null,
+  "converted": 8854,
+  "skipped_no_geometry": 45,
+  "skipped_non_model": 262,
+  "skipped_existing": 7574,
+  "skipped_corrupt": 8,
   "failed": 0,
-  "failures": []
+  "failures": [
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm/data/object3/object25.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm/data/object3/object27.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm/data/object3/object33.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm/data/object3/object90.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm/object3/object25.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm/object3/object27.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm/object3/object33.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm/object3/object90.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    }
+  ]
 }

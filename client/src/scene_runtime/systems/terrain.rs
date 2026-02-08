@@ -2,6 +2,14 @@ use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::texture::{
+    ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
+};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const TERRAIN_TILE_UV_STEP: f32 = 0.25;
+const CLIENT_ASSETS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets");
 
 /// Marker component to track if terrain has been spawned
 #[derive(Component)]
@@ -51,22 +59,26 @@ pub fn spawn_terrain_when_ready(
 
     info!("Terrain mesh generated successfully");
 
-    // Prefer the pre-baked terrain lightmap to avoid stretched single-tile rendering.
-    let diffuse_path = if config.lightmap.trim().is_empty() {
-        config
-            .texture_layers
-            .first()
-            .map(|layer| layer.path.clone())
-            .unwrap_or_else(|| "data/World74/TileGrass01.png".to_string())
-    } else {
-        config.lightmap.clone()
-    };
-    info!("Using terrain diffuse texture '{}'", diffuse_path);
-    let diffuse = asset_server.load(diffuse_path);
+    let diffuse_path = resolve_terrain_diffuse_path(config, &world.world_name);
+    info!(
+        "Using terrain base texture '{}' (lightmap='{}')",
+        diffuse_path, config.lightmap
+    );
+    let diffuse = asset_server.load_with_settings(diffuse_path, |settings: &mut _| {
+        *settings = ImageLoaderSettings {
+            sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                ..default()
+            }),
+            ..default()
+        };
+    });
     let material_handle = materials.add(StandardMaterial {
         base_color_texture: Some(diffuse),
         perceptual_roughness: 1.0,
         metallic: 0.0,
+        reflectance: 0.0,
         ..default()
     });
 
@@ -105,6 +117,12 @@ fn generate_terrain_mesh(heightmap: &HeightmapData, config: &TerrainConfig) -> M
     let mut indices = Vec::new();
     let mut min_height = f32::MAX;
     let mut max_height = f32::MIN;
+    let layer_uv_scale = config
+        .texture_layers
+        .first()
+        .map(|layer| layer.scale.max(0.01))
+        .unwrap_or(1.0);
+    let uv_step = TERRAIN_TILE_UV_STEP / layer_uv_scale;
 
     // Generate vertices
     for z in 0..height {
@@ -113,21 +131,17 @@ fn generate_terrain_mesh(heightmap: &HeightmapData, config: &TerrainConfig) -> M
             min_height = min_height.min(h);
             max_height = max_height.max(h);
             positions.push([x as f32 * scale, h, z as f32 * scale]);
-            let u = if width > 1 {
-                x as f32 / (width - 1) as f32
-            } else {
-                0.0
-            };
-            let v = if height > 1 {
-                z as f32 / (height - 1) as f32
-            } else {
-                0.0
-            };
+            let u = x as f32 * uv_step;
+            let v = z as f32 * uv_step;
             uvs.push([u, v]);
         }
     }
 
     info!("Generated {} vertices", positions.len());
+    info!(
+        "Terrain UV tiling step set to {:.4} (layer scale {:.3})",
+        uv_step, layer_uv_scale
+    );
     info!(
         "Terrain height range: min={:.3}, max={:.3}",
         min_height, max_height
@@ -209,4 +223,94 @@ fn calculate_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     }
 
     normals
+}
+
+fn resolve_terrain_diffuse_path(config: &TerrainConfig, world_name: &str) -> String {
+    let mut candidates: Vec<String> = config
+        .texture_layers
+        .iter()
+        .map(|layer| layer.path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .collect();
+
+    candidates.push(format!("data/{world_name}/TileGrass01.png"));
+    candidates.push(format!("data/{world_name}/tilegrass01.png"));
+
+    for candidate in &candidates {
+        if let Some(resolved) = resolve_existing_asset_path(candidate) {
+            return resolved;
+        }
+    }
+
+    if let Some(lightmap) = resolve_existing_asset_path(&config.lightmap) {
+        warn!(
+            "Terrain layer textures not found for world '{}'; falling back to lightmap '{}'",
+            world_name, lightmap
+        );
+        return lightmap;
+    }
+
+    candidates
+        .first()
+        .cloned()
+        .unwrap_or_else(|| format!("data/{world_name}/TileGrass01.png"))
+}
+
+fn resolve_existing_asset_path(raw_path: &str) -> Option<String> {
+    let normalized = normalize_asset_path(raw_path);
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let root = Path::new(CLIENT_ASSETS_ROOT);
+    let full = root.join(&normalized);
+    if full.is_file() {
+        return Some(normalized);
+    }
+
+    resolve_case_insensitive_path(root, &normalized)
+}
+
+fn normalize_asset_path(raw_path: &str) -> String {
+    raw_path
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_string()
+}
+
+fn resolve_case_insensitive_path(root: &Path, rel_path: &str) -> Option<String> {
+    let mut current_dir = PathBuf::from(root);
+    let mut resolved_parts: Vec<String> = Vec::new();
+
+    for part in rel_path.split('/').filter(|segment| !segment.is_empty()) {
+        let direct = current_dir.join(part);
+        if direct.exists() {
+            current_dir = direct;
+            resolved_parts.push(part.to_string());
+            continue;
+        }
+
+        let needle = part.to_lowercase();
+        let mut matched_name: Option<String> = None;
+
+        for entry in fs::read_dir(&current_dir).ok()? {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.to_lowercase() == needle {
+                matched_name = Some(name);
+                current_dir = entry.path();
+                break;
+            }
+        }
+
+        let matched = matched_name?;
+        resolved_parts.push(matched);
+    }
+
+    if current_dir.is_file() {
+        Some(resolved_parts.join("/"))
+    } else {
+        None
+    }
 }

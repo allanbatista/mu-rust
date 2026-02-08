@@ -51,7 +51,11 @@ fn get_login_world() -> WorldMap {
                 if let Some(map) = WorldMap::from_id(id) {
                     // Validate that it's a login scene
                     if map.is_login_scene() {
-                        info!("Using login world from MU_LOGIN_WORLD: {} (ID: {})", map.name(), id);
+                        info!(
+                            "Using login world from MU_LOGIN_WORLD: {} (ID: {})",
+                            map.name(),
+                            id
+                        );
                         return map;
                     } else {
                         warn!(
@@ -144,7 +148,7 @@ fn setup_login_scene(
     mut world_requests: EventWriter<WorldRequest>,
 ) {
     let login_world = get_login_world();
-    let world_name = format!("World{}", login_world as u8);
+    let world_name = format!("world{}", login_world as u8);
 
     info!(
         "Setting up login scene: {} (ID: {})",

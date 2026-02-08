@@ -33,12 +33,15 @@ import io
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import struct
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, field, fields as dataclass_fields
+from functools import partial
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
@@ -115,9 +118,9 @@ MAP_XOR_KEY: Tuple[int, ...] = (
 BUX_KEY: Tuple[int, ...] = (0xFC, 0xCF, 0xAB)
 MAP_KEY_SEED = 0x5E
 TERRAIN_TILE_COUNT = TERRAIN_SIZE * TERRAIN_SIZE
-ENC_TERRAIN_PATTERN = re.compile(r"^encterrain(\d+)$")
-# Matches ANY terrain stem: encrypted (encterrain*) and unencrypted (terrain*)
-TERRAIN_STEM_PATTERN = re.compile(r"^(enc)?terrain", re.IGNORECASE)
+ENC_TERRAIN_PATTERN = re.compile(r"^enc_?terrain_?(\d+)$")
+# Matches ANY terrain stem: encrypted (enc_terrain*) and unencrypted (terrain*)
+TERRAIN_STEM_PATTERN = re.compile(r"^(enc_?)?terrain", re.IGNORECASE)
 WORLD_DIR_PATTERN = re.compile(r"^world(\d+)$")
 OBJECT_MODEL_PATTERN = re.compile(r"^object(\d+)$")
 OBJECT_DIR_PATTERN = re.compile(r"^object(\d+)$", re.IGNORECASE)
@@ -166,6 +169,16 @@ class ConversionStats:
     encrypted_candidates: List[str] = field(default_factory=list)
 
 
+def merge_stats(target: ConversionStats, source: ConversionStats) -> None:
+    """Merge *source* into *target* by summing int fields and extending list fields."""
+    for f in dataclass_fields(ConversionStats):
+        src_val = getattr(source, f.name)
+        if isinstance(src_val, int):
+            setattr(target, f.name, getattr(target, f.name) + src_val)
+        elif isinstance(src_val, list):
+            getattr(target, f.name).extend(src_val)
+
+
 @dataclass(frozen=True)
 class ModelJob:
     source: Path
@@ -189,7 +202,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=[],
         help=(
             "Optional fallback Data roots used for missing sidecar sources "
-            "(for example EncTerrain*.obj or CWScript*.cws). "
+            "(for example enc_terrain*.obj or cw_script*.cws). "
             "Can be supplied multiple times."
         ),
     )
@@ -277,6 +290,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--hash",
         action="store_true",
         help="Include SHA256 hashes of emitted files in the JSON report.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 4,
+        help="Number of parallel worker processes (default: number of CPUs).",
     )
     return parser.parse_args(argv)
 
@@ -424,6 +443,36 @@ def execute_bmd_job(
             )
             stats.models_skipped += 1
             return False
+
+
+def _bmd_worker(
+    job: ModelJob,
+    converter: Optional[Path],
+    converter_args: Sequence[str],
+    copy_raw: bool,
+    dry_run: bool,
+    target_extension: str,
+    force: bool,
+) -> Tuple[ConversionStats, Optional[Path]]:
+    """Worker function for parallel BMD processing. Returns (stats, resolved_path_or_None)."""
+    stats = ConversionStats()
+    try:
+        success = execute_bmd_job(
+            job=job,
+            converter=converter,
+            converter_args=converter_args,
+            copy_raw=copy_raw,
+            dry_run=dry_run,
+            stats=stats,
+            target_extension=target_extension,
+            force=force,
+        )
+        return stats, job.source.resolve() if success else None
+    except Exception as exc:  # noqa: BLE001
+        stats.models_failed += 1
+        stats.failures.append(f"{job.source}: unhandled worker error: {exc}")
+        logging.error("BMD worker error for %s: %s", job.source, exc)
+        return stats, None
 
 
 def discover_textures(
@@ -851,8 +900,9 @@ def is_terrain_stem(stem: str) -> bool:
 
 
 def is_encrypted_terrain_stem(stem: str) -> bool:
-    """Return True if the stem indicates an encrypted terrain file (encterrain*)."""
-    return stem.lower().startswith("encterrain")
+    """Return True if the stem indicates an encrypted terrain file (enc_terrain* or encterrain*)."""
+    s = stem.lower()
+    return s.startswith("enc_terrain") or s.startswith("encterrain")
 
 
 def world_number_from_path(source: Path) -> Optional[int]:
@@ -908,22 +958,22 @@ def emit_default_terrain_config(
         "texture_layers": [
             {
                 "id": "grass01",
-                "path": f"data/World{world_number}/TileGrass01.png",
+                "path": f"data/world{world_number}/tile_grass01.png",
                 "scale": 1.0,
             },
             {
                 "id": "ground01",
-                "path": f"data/World{world_number}/TileGround01.png",
+                "path": f"data/world{world_number}/tile_ground01.png",
                 "scale": 1.0,
             },
             {
                 "id": "rock01",
-                "path": f"data/World{world_number}/TileRock01.png",
+                "path": f"data/world{world_number}/tile_rock01.png",
                 "scale": 1.0,
             },
         ],
-        "alpha_map": f"data/World{world_number}/AlphaTile01.png",
-        "lightmap": f"data/World{world_number}/TerrainLight.png",
+        "alpha_map": f"data/world{world_number}/alpha_tile01.png",
+        "lightmap": f"data/world{world_number}/terrain_light.png",
         "metadata": {
             "generated_placeholder": True,
             "reason": "terrain_config.json missing in legacy data",
@@ -1002,7 +1052,7 @@ def emit_default_camera_tour(
         "interpolation": "smooth",
         "metadata": {
             "generated_placeholder": True,
-            "reason": "CWScript*.cws not found",
+            "reason": "cw_script*.cws not found",
             "world": world_number,
         },
     }
@@ -1022,7 +1072,7 @@ def emit_default_camera_tour(
 
     stats.camera_tour_json_emitted += 1
     logging.warning(
-        "No CWScript found for %s; emitted default camera_tour.json.",
+        "No cw_script found for %s; emitted default camera_tour.json.",
         world_dir,
     )
 
@@ -1036,7 +1086,8 @@ def is_terrain_attribute_asset(source: Path) -> bool:
 
 
 def is_camera_script_asset(source: Path) -> bool:
-    return source.suffix.lower() == ".cws" and source.stem.lower().startswith("cwscript")
+    s = source.stem.lower()
+    return source.suffix.lower() == ".cws" and (s.startswith("cw_script") or s.startswith("cwscript"))
 
 
 def is_scene_objects_asset(source: Path) -> bool:
@@ -1603,7 +1654,7 @@ def emit_scene_objects_json(
                     "type": int(obj_type),
                     "model": model_path,
                     "position": [float(px), float(pz), float(py)],
-                    "rotation": [float(ax), float(az), float(ay)],
+                    "rotation": [float(ax), float(ay), float(az)],
                     "scale": [float(scale), float(scale), float(scale)],
                     "properties": properties,
                 }
@@ -1632,6 +1683,8 @@ def emit_scene_objects_json(
             "decode_name": decode_name,
             "layout_name": layout_name,
             "decode_score": round(decode_score, 4),
+            "rotation_encoding": "mu_angles_degrees",
+            "rotation_convention": "mu_anglematrix_zyx_degrees",
         },
     }
 
@@ -1715,8 +1768,8 @@ def resolve_model_asset_path(
     world_number: int,
     model_index: int,
 ) -> str:
-    glb_name = f"Object{model_index:02d}.glb"
-    bmd_name = f"Object{model_index:02d}.bmd"
+    glb_name = f"object{model_index:02d}.glb"
+    bmd_name = f"object{model_index:02d}.bmd"
 
     legacy_index = _legacy_object_model_index(legacy_root)
     candidate_dirs: List[int] = [world_number]
@@ -1728,19 +1781,19 @@ def resolve_model_asset_path(
             candidate_dirs.append(object_dir_number)
 
     for object_dir_number in candidate_dirs:
-        object_dir = output_root / f"Object{object_dir_number}"
+        object_dir = output_root / f"object{object_dir_number}"
         if (object_dir / glb_name).exists():
-            return f"data/Object{object_dir_number}/{glb_name}"
+            return f"data/object{object_dir_number}/{glb_name}"
 
     for object_dir_number in candidate_dirs:
-        object_dir = legacy_root / f"Object{object_dir_number}"
+        object_dir = legacy_root / f"object{object_dir_number}"
         if (object_dir / bmd_name).exists():
             # Default to GLB because convert_all_assets.sh emits GLB models.
-            return f"data/Object{object_dir_number}/{glb_name}"
+            return f"data/object{object_dir_number}/{glb_name}"
 
     # No direct match found anywhere: keep deterministic fallback.
     fallback_dir = candidate_dirs[0] if candidate_dirs else world_number
-    return f"data/Object{fallback_dir}/{glb_name}"
+    return f"data/object{fallback_dir}/{glb_name}"
 
 
 def inspect_converted_model(path: Path) -> Tuple[bool, str]:
@@ -1844,7 +1897,7 @@ def discover_object_models(
     output_root: Path,
     world_number: int,
 ) -> List[Tuple[int, str, int, bool, str]]:
-    object_dir = legacy_root / f"Object{world_number}"
+    object_dir = legacy_root / f"object{world_number}"
     if not object_dir.exists() or not object_dir.is_dir():
         return []
 
@@ -1882,7 +1935,7 @@ def estimate_world_anchor(
     world_dir: Path,
     world_number: int,
 ) -> Tuple[float, float, float]:
-    camera_script = legacy_root / world_dir / f"CWScript{world_number}.cws"
+    camera_script = legacy_root / world_dir / f"cw_script{world_number}.cws"
     if camera_script.exists():
         try:
             waypoints = parse_camera_script(camera_script.read_bytes())
@@ -2083,7 +2136,7 @@ def build_placeholder_scene_objects(
                 "type": object_type,
                 "model": model,
                 "position": [round(pos_x, 3), round(object_ground_y + 3.0, 3), round(pos_z, 3)],
-                "rotation": [0.0, round(rot_y, 3), 0.0],
+                "rotation": [0.0, 0.0, round(rot_y, 3)],
                 "scale": [1.0, 1.0, 1.0],
                 "properties": properties,
             }
@@ -2163,13 +2216,15 @@ def emit_empty_scene_objects(
         "objects": placeholder_objects,
         "metadata": {
             "generated_placeholder": True,
-            "reason": "EncTerrain*.obj not found",
+            "reason": "enc_terrain*.obj not found",
             "world": int(world_number) if world_number is not None else None,
             "object_count": len(placeholder_objects),
             "model_candidates": len(model_candidates),
             "renderable_model_candidates": renderable_model_count,
             "non_renderable_model_candidates": non_renderable_model_count,
             "non_renderable_reasons": non_renderable_reasons,
+            "rotation_encoding": "mu_angles_degrees",
+            "rotation_convention": "mu_anglematrix_zyx_degrees",
         },
     }
 
@@ -2188,7 +2243,7 @@ def emit_empty_scene_objects(
 
     stats.scene_objects_json_emitted += 1
     logging.warning(
-        "No EncTerrain*.obj found for %s; emitted placeholder scene_objects.json with %d object(s).",
+        "No enc_terrain*.obj found for %s; emitted placeholder scene_objects.json with %d object(s).",
         world_dir,
         len(placeholder_objects),
     )
@@ -2330,6 +2385,34 @@ def handle_texture(
     return True
 
 
+def _texture_worker(
+    source: Path,
+    legacy_root: Path,
+    output_root: Path,
+    force: bool,
+    dry_run: bool,
+    emit_terrain_json: bool,
+) -> Tuple[ConversionStats, Optional[Path]]:
+    """Worker function for parallel texture processing. Returns (stats, resolved_path_or_None)."""
+    stats = ConversionStats()
+    try:
+        success = handle_texture(
+            source=source,
+            legacy_root=legacy_root,
+            output_root=output_root,
+            force=force,
+            dry_run=dry_run,
+            stats=stats,
+            emit_terrain_json=emit_terrain_json,
+        )
+        return stats, source.resolve() if success else None
+    except Exception as exc:  # noqa: BLE001
+        stats.textures_failed += 1
+        stats.failures.append(f"{source}: unhandled worker error: {exc}")
+        logging.error("Texture worker error for %s: %s", source, exc)
+        return stats, None
+
+
 def is_encrypted_candidate(path: Path) -> bool:
     name_lower = path.name.lower()
     if name_lower.startswith("enc"):
@@ -2380,6 +2463,93 @@ def sidecar_is_generated_placeholder(path: Path) -> bool:
     return bool(metadata.get("generated_placeholder"))
 
 
+@dataclass
+class OtherAssetResult:
+    stats: ConversionStats
+    world_dir: Optional[Path] = None
+    has_scene_objects: bool = False
+    has_camera_tour: bool = False
+
+
+def _other_asset_worker(
+    path: Path,
+    legacy_root: Path,
+    output_root: Path,
+    force: bool,
+    dry_run: bool,
+    sidecar_only_extensions: set,
+    allow_copy_extensions: set,
+) -> OtherAssetResult:
+    """Worker function for parallel other-asset processing."""
+    stats = ConversionStats()
+    result = OtherAssetResult(stats=stats)
+    ext = path.suffix.lower()
+    rel = path.relative_to(legacy_root)
+
+    world_match = WORLD_DIR_PATTERN.match(rel.parent.name.lower())
+    if world_match:
+        result.world_dir = rel.parent
+
+    try:
+        if ext in sidecar_only_extensions:
+            emit_sidecar_assets(
+                source=path,
+                output_root=output_root,
+                legacy_root=legacy_root,
+                dry_run=dry_run,
+                force=force,
+                stats=stats,
+            )
+            if is_scene_objects_asset(path):
+                scene_sidecar = output_root / rel.parent / "scene_objects.json"
+                if scene_sidecar.exists() and not sidecar_is_generated_placeholder(scene_sidecar):
+                    result.has_scene_objects = True
+            if is_camera_script_asset(path):
+                camera_sidecar = output_root / rel.parent / "camera_tour.json"
+                if camera_sidecar.exists() and not sidecar_is_generated_placeholder(camera_sidecar):
+                    result.has_camera_tour = True
+            return result
+
+        if ext not in allow_copy_extensions:
+            return result
+
+        target = output_root / rel
+
+        if target.exists() and not force and not dry_run:
+            stats.others_skipped += 1
+        elif dry_run:
+            logging.info("[dry-run][misc] %s -> %s", path, target)
+        else:
+            ensure_dir(target.parent, dry_run=False)
+            shutil.copy2(path, target)
+            stats.others_copied += 1
+            if is_encrypted_candidate(path):
+                stats.encrypted_candidates.append(str(path))
+
+        emit_sidecar_assets(
+            source=path,
+            output_root=output_root,
+            legacy_root=legacy_root,
+            dry_run=dry_run,
+            force=force,
+            stats=stats,
+        )
+        if is_scene_objects_asset(path):
+            scene_sidecar = output_root / rel.parent / "scene_objects.json"
+            if scene_sidecar.exists() and not sidecar_is_generated_placeholder(scene_sidecar):
+                result.has_scene_objects = True
+        if is_camera_script_asset(path):
+            camera_sidecar = output_root / rel.parent / "camera_tour.json"
+            if camera_sidecar.exists() and not sidecar_is_generated_placeholder(camera_sidecar):
+                result.has_camera_tour = True
+    except Exception as exc:  # noqa: BLE001
+        stats.others_failed += 1
+        stats.failures.append(f"Worker error for {path}: {exc}")
+        logging.error("Other-asset worker error for %s: %s", path, exc)
+
+    return result
+
+
 def copy_other_assets(
     legacy_root: Path,
     output_root: Path,
@@ -2389,6 +2559,7 @@ def copy_other_assets(
     force: bool,
     dry_run: bool,
     stats: ConversionStats,
+    workers: int = 1,
 ) -> None:
     processed_set = {p.resolve() for p in processed}
     world_dirs_seen: set[Path] = set()
@@ -2414,7 +2585,7 @@ def copy_other_assets(
 
     if world_filter:
         for world_number in sorted(world_filter):
-            world_dir = find_case_insensitive_child_dir(legacy_root, f"World{world_number}")
+            world_dir = find_case_insensitive_child_dir(legacy_root, f"world{world_number}")
             if world_dir is None:
                 continue
             try:
@@ -2422,6 +2593,8 @@ def copy_other_assets(
             except ValueError:
                 continue
 
+    # --- Phase 3a: Collect eligible files, then process in parallel ---
+    eligible_files: List[Path] = []
     for path in legacy_root.rglob("*"):
         if not path.is_file():
             continue
@@ -2440,65 +2613,49 @@ def copy_other_assets(
         if world_match:
             world_dirs_seen.add(rel.parent)
 
-        # Sidecar-only extensions: convert to JSON but don't copy the raw file.
-        if ext in SIDECAR_ONLY_EXTENSIONS:
-            emit_sidecar_assets(
-                source=path,
-                output_root=output_root,
+        if ext in SIDECAR_ONLY_EXTENSIONS or ext in ALLOW_COPY_EXTENSIONS:
+            eligible_files.append(path)
+
+    if workers <= 1:
+        for path in eligible_files:
+            result = _other_asset_worker(
+                path=path,
                 legacy_root=legacy_root,
-                dry_run=dry_run,
+                output_root=output_root,
                 force=force,
-                stats=stats,
+                dry_run=dry_run,
+                sidecar_only_extensions=SIDECAR_ONLY_EXTENSIONS,
+                allow_copy_extensions=ALLOW_COPY_EXTENSIONS,
             )
-            if is_scene_objects_asset(path):
-                scene_sidecar = output_root / rel.parent / "scene_objects.json"
-                if scene_sidecar.exists() and not sidecar_is_generated_placeholder(scene_sidecar):
-                    world_dirs_with_scene_objects.add(rel.parent)
-            if is_camera_script_asset(path):
-                camera_sidecar = output_root / rel.parent / "camera_tour.json"
-                if camera_sidecar.exists() and not sidecar_is_generated_placeholder(camera_sidecar):
-                    world_dirs_with_camera_tour.add(rel.parent)
-            continue
-
-        if ext not in ALLOW_COPY_EXTENSIONS:
-            continue
-
-        target = output_root / rel
-
-        if target.exists() and not force and not dry_run:
-            stats.others_skipped += 1
-        elif dry_run:
-            logging.info("[dry-run][misc] %s -> %s", path, target)
-        else:
-            try:
-                ensure_dir(target.parent, dry_run=False)
-                shutil.copy2(path, target)
-                stats.others_copied += 1
-                if is_encrypted_candidate(path):
-                    stats.encrypted_candidates.append(str(path))
-            except Exception as exc:  # noqa: BLE001
-                stats.others_failed += 1
-                stats.failures.append(f"Copy failed for {path} -> {target}: {exc}")
-                logging.error("Failed to copy %s: %s", path, exc)
-                continue
-
-        emit_sidecar_assets(
-            source=path,
-            output_root=output_root,
+            merge_stats(stats, result.stats)
+            if result.world_dir is not None:
+                world_dirs_seen.add(result.world_dir)
+            if result.has_scene_objects and result.world_dir is not None:
+                world_dirs_with_scene_objects.add(result.world_dir)
+            if result.has_camera_tour and result.world_dir is not None:
+                world_dirs_with_camera_tour.add(result.world_dir)
+    else:
+        worker_fn = partial(
+            _other_asset_worker,
             legacy_root=legacy_root,
-            dry_run=dry_run,
+            output_root=output_root,
             force=force,
-            stats=stats,
+            dry_run=dry_run,
+            sidecar_only_extensions=SIDECAR_ONLY_EXTENSIONS,
+            allow_copy_extensions=ALLOW_COPY_EXTENSIONS,
         )
-        if is_scene_objects_asset(path):
-            scene_sidecar = output_root / rel.parent / "scene_objects.json"
-            if scene_sidecar.exists() and not sidecar_is_generated_placeholder(scene_sidecar):
-                world_dirs_with_scene_objects.add(rel.parent)
-        if is_camera_script_asset(path):
-            camera_sidecar = output_root / rel.parent / "camera_tour.json"
-            if camera_sidecar.exists() and not sidecar_is_generated_placeholder(camera_sidecar):
-                world_dirs_with_camera_tour.add(rel.parent)
+        chunksize = max(1, len(eligible_files) // (workers * 4))
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            for result in executor.map(worker_fn, eligible_files, chunksize=chunksize):
+                merge_stats(stats, result.stats)
+                if result.world_dir is not None:
+                    world_dirs_seen.add(result.world_dir)
+                if result.has_scene_objects and result.world_dir is not None:
+                    world_dirs_with_scene_objects.add(result.world_dir)
+                if result.has_camera_tour and result.world_dir is not None:
+                    world_dirs_with_camera_tour.add(result.world_dir)
 
+    # --- Phase 3b: Sequential fallback roots ---
     for world_dir in sorted(world_dirs_seen):
         world_number = parse_world_number(world_dir)
         if world_number is None:
@@ -2512,7 +2669,7 @@ def copy_other_assets(
             if world_dir not in world_dirs_with_camera_tour:
                 fallback_camera = find_case_insensitive_file(
                     fallback_world_dir,
-                    f"CWScript{world_number}.cws",
+                    f"cw_script{world_number}.cws",
                 )
                 if fallback_camera is not None:
                     camera_sidecar = output_root / world_dir / "camera_tour.json"
@@ -2536,7 +2693,7 @@ def copy_other_assets(
             if world_dir not in world_dirs_with_scene_objects:
                 fallback_scene_objects = find_case_insensitive_file(
                     fallback_world_dir,
-                    f"EncTerrain{world_number}.obj",
+                    f"enc_terrain{world_number}.obj",
                 )
                 if fallback_scene_objects is not None:
                     scene_sidecar = output_root / world_dir / "scene_objects.json"
@@ -2558,6 +2715,7 @@ def copy_other_assets(
                             fallback_root,
                         )
 
+    # --- Phase 3c: Emit defaults for worlds missing sidecars ---
     for world_dir in sorted(world_dirs_seen):
         emit_default_terrain_config(
             world_dir=world_dir,
@@ -2613,7 +2771,7 @@ def main(argv: Sequence[str]) -> int:
     if world_filter:
         logging.info(
             "World filter active: %s",
-            ", ".join(f"World{number}" for number in sorted(world_filter)),
+            ", ".join(f"world{number}" for number in sorted(world_filter)),
         )
 
     legacy_root = args.legacy_root.resolve()
@@ -2643,6 +2801,8 @@ def main(argv: Sequence[str]) -> int:
             ", ".join(str(root) for root in fallback_roots),
         )
 
+    workers = max(1, args.workers)
+    logging.info("Using %d worker process(es).", workers)
     stats = ConversionStats()
     processed_paths: set[Path] = set()
 
@@ -2660,19 +2820,40 @@ def main(argv: Sequence[str]) -> int:
             )
         )
         logging.info("Found %d model(s) to process.", len(jobs))
-        for job in jobs:
-            success = execute_bmd_job(
-                job=job,
-                converter=args.bmd_converter,
-                converter_args=args.bmd_arg,
-                copy_raw=args.copy_raw_bmd,
-                dry_run=args.dry_run,
-                stats=stats,
-                target_extension=args.bmd_output_format,
-                force=args.force,
-            )
-            if success:
-                processed_paths.add(job.source.resolve())
+        if workers <= 1:
+            for job in jobs:
+                worker_stats, resolved = _bmd_worker(
+                    job=job,
+                    converter=args.bmd_converter,
+                    converter_args=args.bmd_arg,
+                    copy_raw=args.copy_raw_bmd,
+                    dry_run=args.dry_run,
+                    target_extension=args.bmd_output_format,
+                    force=args.force,
+                )
+                merge_stats(stats, worker_stats)
+                if resolved is not None:
+                    processed_paths.add(resolved)
+        else:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(
+                        _bmd_worker,
+                        job=job,
+                        converter=args.bmd_converter,
+                        converter_args=args.bmd_arg,
+                        copy_raw=args.copy_raw_bmd,
+                        dry_run=args.dry_run,
+                        target_extension=args.bmd_output_format,
+                        force=args.force,
+                    ): job
+                    for job in jobs
+                }
+                for future in as_completed(futures):
+                    worker_stats, resolved = future.result()
+                    merge_stats(stats, worker_stats)
+                    if resolved is not None:
+                        processed_paths.add(resolved)
 
     if not args.skip_textures:
         if Image is None:
@@ -2686,18 +2867,34 @@ def main(argv: Sequence[str]) -> int:
             len(discovered_textures),
             len(textures),
         )
-        for texture in textures:
-            success = handle_texture(
-                source=texture,
+        if workers <= 1:
+            for texture in textures:
+                worker_stats, resolved = _texture_worker(
+                    source=texture,
+                    legacy_root=legacy_root,
+                    output_root=output_root,
+                    force=args.force,
+                    dry_run=args.dry_run,
+                    emit_terrain_json=not args.disable_terrain_height_json,
+                )
+                merge_stats(stats, worker_stats)
+                if resolved is not None:
+                    processed_paths.add(resolved)
+        else:
+            worker_fn = partial(
+                _texture_worker,
                 legacy_root=legacy_root,
                 output_root=output_root,
                 force=args.force,
                 dry_run=args.dry_run,
-                stats=stats,
                 emit_terrain_json=not args.disable_terrain_height_json,
             )
-            if success:
-                processed_paths.add(texture.resolve())
+            chunksize = max(1, len(textures) // (workers * 4))
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                for worker_stats, resolved in executor.map(worker_fn, textures, chunksize=chunksize):
+                    merge_stats(stats, worker_stats)
+                    if resolved is not None:
+                        processed_paths.add(resolved)
 
     if not args.skip_others:
         logging.info("Copying remaining auxiliary assets...")
@@ -2710,6 +2907,7 @@ def main(argv: Sequence[str]) -> int:
             force=args.force,
             dry_run=args.dry_run,
             stats=stats,
+            workers=workers,
         )
 
     if args.report:
@@ -2798,7 +2996,21 @@ def main(argv: Sequence[str]) -> int:
             ", ".join(stats.encrypted_candidates[:5]),
         )
 
-    return 0 if not stats.failures else 1
+    # Only return non-zero for critical failures (textures, models, file copies).
+    # Sidecar-only failures (terrain decrypt, map/att parsing) are non-critical
+    # and should not block the rest of the pipeline.
+    critical_failures = (
+        stats.textures_failed
+        + stats.models_failed
+        + stats.others_failed
+    )
+    if stats.failures:
+        logging.warning(
+            "%d failure(s) recorded (%d critical).",
+            len(stats.failures),
+            critical_failures,
+        )
+    return 0 if critical_failures == 0 else 1
 
 
 if __name__ == "__main__":

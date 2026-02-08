@@ -20,7 +20,6 @@ pub enum WorldMap {
     Unk0 = 0,
 
     // ==================== Main Worlds ====================
-
     /// World1: Lorencia - The starting city and main trading hub
     Lorencia = 1,
 
@@ -55,7 +54,6 @@ pub enum WorldMap {
     Icarus = 11,
 
     // ==================== Blood Castle (8 Levels) ====================
-
     /// World12: Blood Castle 1
     BloodCastle1 = 12,
 
@@ -78,7 +76,6 @@ pub enum WorldMap {
     BloodCastle7 = 18,
 
     // ==================== Chaos Castle (7 Levels) ====================
-
     /// World19: Chaos Castle 1
     ChaosCastle1 = 19,
 
@@ -98,7 +95,6 @@ pub enum WorldMap {
     ChaosCastle6 = 24,
 
     // ==================== Kalima (7 Levels) ====================
-
     /// World25: Kalima 1
     Kalima1 = 25,
 
@@ -118,7 +114,6 @@ pub enum WorldMap {
     Kalima6 = 30,
 
     // ==================== Battle Grounds ====================
-
     /// World31: Valley of Loren - Guild siege warfare area
     ValleyOfLoren = 31,
 
@@ -129,7 +124,6 @@ pub enum WorldMap {
     DevilSquare2 = 33,
 
     // ==================== Extended Maps ====================
-
     /// World34: Aida
     Aida = 34,
 
@@ -140,7 +134,6 @@ pub enum WorldMap {
     Kalima7 = 37,
 
     // ==================== Kanturu ====================
-
     /// World38: Kanturu - Main area
     Kanturu = 38,
 
@@ -151,7 +144,6 @@ pub enum WorldMap {
     RefineTower = 40,
 
     // ==================== Special Areas ====================
-
     /// World41: Silent Map - GM/special area
     SilentMap = 41,
 
@@ -162,7 +154,6 @@ pub enum WorldMap {
     BalgassRefuge = 43,
 
     // ==================== Illusion Temple (5 Levels) ====================
-
     /// World46: Illusion Temple 1
     IllusionTemple1 = 46,
 
@@ -179,7 +170,6 @@ pub enum WorldMap {
     IllusionTemple5 = 50,
 
     // ==================== Elbeland ====================
-
     /// World51: Elbeland 2
     Elbeland2 = 51,
 
@@ -187,7 +177,6 @@ pub enum WorldMap {
     Elbeland = 52,
 
     // ==================== Extended Blood/Chaos Castle ====================
-
     /// World53: Blood Castle 8 (Master Level)
     BloodCastle8 = 53,
 
@@ -195,7 +184,6 @@ pub enum WorldMap {
     ChaosCastle7 = 54,
 
     // ==================== Login & Character Selection ====================
-
     /// World55: Character selection/creation screen
     CharacterScene = 55,
 
@@ -203,7 +191,6 @@ pub enum WorldMap {
     LoginScene = 56,
 
     // ==================== Extended Maps ====================
-
     /// World57: Swamp of Peace
     SwampOfPeace = 57,
 
@@ -214,7 +201,6 @@ pub enum WorldMap {
     RaklionBoss = 59,
 
     // ==================== Holiday/Special Events ====================
-
     /// World63: Santa Village - Christmas event map
     SantaVillage = 63,
 
@@ -225,7 +211,6 @@ pub enum WorldMap {
     DuelArena = 65,
 
     // ==================== Doppelganger (4 Zones) ====================
-
     /// World66: Doppelganger Ice Zone
     DoppelgangerIceZone = 66,
 
@@ -239,7 +224,6 @@ pub enum WorldMap {
     DoppelgangerCrystalCave = 69,
 
     // ==================== Imperial Guardian (4 Phases) ====================
-
     /// World70: Imperial Guardian 4
     ImperialGuardian4 = 70,
 
@@ -253,7 +237,6 @@ pub enum WorldMap {
     ImperialGuardian1 = 73,
 
     // ==================== Login Scenes ====================
-
     /// World74: New login scene (version 1)
     NewLoginScene1 = 74,
 
@@ -267,12 +250,10 @@ pub enum WorldMap {
     NewCharacterScene2 = 79,
 
     // ==================== Market & Trading ====================
-
     /// World80: Loren Market
     LorenMarket = 80,
 
     // ==================== Karutan ====================
-
     /// World81: Karutan 1
     Karutan1 = 81,
 
@@ -280,7 +261,6 @@ pub enum WorldMap {
     Karutan2 = 82,
 
     // ==================== Season 6+ Maps ====================
-
     /// World83: Doppelganger Renewal
     DoppelgangerRenewal = 83,
 
@@ -788,7 +768,10 @@ mod tests {
         assert_eq!(WorldMap::from_id(113), Some(WorldMap::Ferea));
         assert_eq!(WorldMap::from_id(117), Some(WorldMap::DeepDungeon1));
         assert_eq!(WorldMap::from_id(129), Some(WorldMap::AbyssOfAtlans));
-        assert_eq!(WorldMap::from_id(143), Some(WorldMap::DoppelgangerIceZoneNew));
+        assert_eq!(
+            WorldMap::from_id(143),
+            Some(WorldMap::DoppelgangerIceZoneNew)
+        );
     }
 
     #[test]

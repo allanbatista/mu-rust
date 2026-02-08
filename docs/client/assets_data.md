@@ -579,7 +579,13 @@ Bevy.Y = MU.Z       (position[1] in JSON)
 Bevy.Z = MU.Y       (position[2] in JSON)
 ```
 
-The same swizzle applies to rotation angles.
+`position` is emitted in Bevy coordinates. `rotation` is emitted in MU angle
+order (`Angle.X`, `Angle.Y`, `Angle.Z`, degrees), and the client applies MU's
+`AngleMatrix` convention (`(Z * Y) * X`) plus MU→Bevy basis conversion at
+runtime.
+
+Legacy converted assets may contain swizzled Euler rotations. Runtime behavior
+for both formats is selected by `metadata.rotation_encoding`.
 
 ### 7.5 Decryption
 
@@ -618,7 +624,9 @@ The candidate with the highest sanity score (>= 0.45) is selected.
     "entry_size": 30,
     "decode_name": "map_file_decrypt",
     "layout_name": "version_map_count",
-    "decode_score": 0.9500
+    "decode_score": 0.9500,
+    "rotation_encoding": "mu_angles_degrees",
+    "rotation_convention": "mu_anglematrix_zyx_degrees"
   }
 }
 ```
@@ -631,7 +639,7 @@ The candidate with the highest sanity score (>= 0.45) is selected.
 | `type`       | int        | Object type from binary (model_index = type + 1)    |
 | `model`      | string     | Resolved path to GLB model file                     |
 | `position`   | float[3]   | `[X, Y, Z]` in Bevy coordinates (Y-up, swizzled)   |
-| `rotation`   | float[3]   | `[X, Y, Z]` rotation in degrees (swizzled)          |
+| `rotation`   | float[3]   | MU angles `[X, Y, Z]` in degrees (converted at runtime) |
 | `scale`      | float[3]   | `[X, Y, Z]` uniform scale (all three are equal)     |
 | `properties` | object     | Optional properties (see below)                     |
 
@@ -654,6 +662,8 @@ The candidate with the highest sanity score (>= 0.45) is selected.
 | `decode_name`  | string | Decryption method used                             |
 | `layout_name`  | string | Header layout interpretation used                  |
 | `decode_score` | float  | Sanity score of the selected decoding (0.0–1.0+)  |
+| `rotation_encoding` | string | Rotation payload encoding (`mu_angles_degrees` or legacy swizzled formats) |
+| `rotation_convention` | string | Rotation semantics used by runtime (`mu_anglematrix_zyx_degrees`) |
 
 ---
 

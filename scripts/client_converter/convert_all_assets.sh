@@ -27,7 +27,7 @@ REPO_ROOT="$(cd "$RUST_ROOT/.." && pwd)"
 
 # Default paths
 #LEGACY_ROOT="${LEGACY_ROOT:-cpp/MuClient5.2/bin/Data}"
-LEGACY_ROOT="${LEGACY_ROOT:-/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/Data}"
+LEGACY_ROOT="${LEGACY_ROOT:-/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$RUST_ROOT/assets}"
 BMD_CONVERTER="${BMD_CONVERTER:-$SCRIPT_DIR/bmd_converter.py}"
 

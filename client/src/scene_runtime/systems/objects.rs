@@ -1,5 +1,7 @@
 use crate::scene_runtime::components::*;
+use crate::scene_runtime::scene_loader::SceneRotationEncoding;
 use crate::scene_runtime::state::RuntimeSceneAssets;
+use crate::scene_runtime::transforms::scene_object_rotation_to_quat;
 use bevy::ecs::system::EntityCommands;
 use bevy::math::primitives::Cuboid;
 use bevy::prelude::*;
@@ -59,13 +61,19 @@ pub fn spawn_scene_objects_when_ready(
         return;
     };
 
-    let object_defs = if scene_data.objects.is_empty() {
+    let (object_defs, rotation_encoding) = if scene_data.objects.is_empty() {
         warn!(
             "Scene object list is empty; falling back to placeholder login objects. For parity with C++ scene, provide EncTerrain<world>.obj and regenerate scene_objects.json"
         );
-        fallback_scene_objects()
+        (
+            fallback_scene_objects(),
+            SceneRotationEncoding::LegacySwizzledDegrees,
+        )
     } else {
-        scene_data.objects.clone()
+        (
+            scene_data.objects.clone(),
+            scene_data.metadata.rotation_encoding,
+        )
     };
 
     info!("Spawning {} scene objects", object_defs.len());
@@ -82,6 +90,7 @@ pub fn spawn_scene_objects_when_ready(
             &mut proxy_assets,
             object,
             particle_definitions,
+            rotation_encoding,
         );
     }
 
@@ -104,14 +113,10 @@ fn spawn_scene_object(
     proxy_assets: &mut ProxyAssetCache,
     object_def: &SceneObjectDef,
     particle_defs: &ParticleDefinitions,
+    rotation_encoding: SceneRotationEncoding,
 ) {
     let position = Vec3::from(object_def.position);
-    let rotation = Quat::from_euler(
-        EulerRot::XYZ,
-        object_def.rotation[0].to_radians(),
-        object_def.rotation[1].to_radians(),
-        object_def.rotation[2].to_radians(),
-    );
+    let rotation = scene_object_rotation_to_quat(object_def.rotation, rotation_encoding);
     let scale = Vec3::from(object_def.scale);
 
     let mut entity_cmd = commands.spawn((

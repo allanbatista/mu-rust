@@ -33,7 +33,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass, field, fields as dataclass_fields
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -1023,6 +1025,16 @@ class ConversionStats:
     failures: List[Dict] = field(default_factory=list)
 
 
+def merge_stats(target: ConversionStats, source: ConversionStats) -> None:
+    """Merge *source* into *target* by summing int fields and extending list fields."""
+    for f in dataclass_fields(ConversionStats):
+        src_val = getattr(source, f.name)
+        if isinstance(src_val, int):
+            setattr(target, f.name, getattr(target, f.name) + src_val)
+        elif isinstance(src_val, list):
+            getattr(target, f.name).extend(src_val)
+
+
 def is_non_model_bmd(file_path: Path) -> bool:
     """Check if a BMD file is actually a data table, not a 3D model."""
     stem = file_path.stem.lower()
@@ -1103,6 +1115,22 @@ def convert_single_bmd(
     logging.debug("Converted %s -> %s (%d bytes)", source, output_path, len(glb_bytes))
 
 
+def _bmd_convert_worker(
+    source: Path,
+    output_path: Path,
+    force: bool,
+) -> ConversionStats:
+    """Worker function for parallel BMD conversion. Returns local stats."""
+    stats = ConversionStats()
+    try:
+        convert_single_bmd(source, output_path, force, stats)
+    except Exception as exc:  # noqa: BLE001
+        stats.failed += 1
+        stats.failures.append({"source": str(source), "error": str(exc), "type": "worker"})
+        logging.error("BMD worker error for %s: %s", source, exc)
+    return stats
+
+
 def parse_world_token(raw_value: str) -> int:
     token = raw_value.strip()
     if not token:
@@ -1176,13 +1204,14 @@ def convert_all(
     dry_run: bool,
     verbose: bool,
     report_path: Optional[Path],
+    workers: int = 1,
 ) -> ConversionStats:
     """Convert all BMD files found under bmd_root."""
     stats = ConversionStats()
 
     bmd_files = discover_bmd_files(bmd_root, world_filter=world_filter)
     total = len(bmd_files)
-    logging.info("Found %d BMD files under %s", total, bmd_root)
+    logging.info("Found %d BMD files under %s (workers=%d)", total, bmd_root, workers)
 
     if dry_run:
         for f in bmd_files:
@@ -1192,23 +1221,53 @@ def convert_all(
         stats.total_found = total
         return stats
 
-    start_time = time.time()
-    for idx, bmd_path in enumerate(bmd_files):
+    # Pre-compute (source, output) pairs
+    jobs: List[Tuple[Path, Path]] = []
+    for bmd_path in bmd_files:
         rel = bmd_path.relative_to(bmd_root)
         out_path = output_root / rel.with_suffix('.glb')
+        jobs.append((bmd_path, out_path))
 
-        convert_single_bmd(bmd_path, out_path, force, stats)
+    start_time = time.time()
 
-        if (idx + 1) % 500 == 0 or (idx + 1) == total:
-            elapsed = time.time() - start_time
-            logging.info(
-                "Progress: %d/%d (%.1f%%) — converted=%d skipped=%d failed=%d [%.1fs]",
-                idx + 1, total, 100.0 * (idx + 1) / total,
-                stats.converted,
-                stats.skipped_no_geometry + stats.skipped_non_model + stats.skipped_existing + stats.skipped_corrupt,
-                stats.failed,
-                elapsed,
+    if workers <= 1:
+        for idx, (bmd_path, out_path) in enumerate(jobs):
+            convert_single_bmd(bmd_path, out_path, force, stats)
+
+            if (idx + 1) % 500 == 0 or (idx + 1) == total:
+                elapsed = time.time() - start_time
+                logging.info(
+                    "Progress: %d/%d (%.1f%%) — converted=%d skipped=%d failed=%d [%.1fs]",
+                    idx + 1, total, 100.0 * (idx + 1) / total,
+                    stats.converted,
+                    stats.skipped_no_geometry + stats.skipped_non_model + stats.skipped_existing + stats.skipped_corrupt,
+                    stats.failed,
+                    elapsed,
+                )
+    else:
+        completed = 0
+        chunksize = max(1, total // (workers * 4))
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures_iter = executor.map(
+                _bmd_convert_worker,
+                [src for src, _ in jobs],
+                [dst for _, dst in jobs],
+                [force] * total,
+                chunksize=chunksize,
             )
+            for worker_stats in futures_iter:
+                merge_stats(stats, worker_stats)
+                completed += 1
+                if completed % 500 == 0 or completed == total:
+                    elapsed = time.time() - start_time
+                    logging.info(
+                        "Progress: %d/%d (%.1f%%) — converted=%d skipped=%d failed=%d [%.1fs]",
+                        completed, total, 100.0 * completed / total,
+                        stats.converted,
+                        stats.skipped_no_geometry + stats.skipped_non_model + stats.skipped_existing + stats.skipped_corrupt,
+                        stats.failed,
+                        elapsed,
+                    )
 
     elapsed = time.time() - start_time
     logging.info(
@@ -1276,6 +1335,10 @@ def main() -> int:
         "--report", type=Path, default=None,
         help="Path for JSON conversion report",
     )
+    parser.add_argument(
+        "--workers", type=int, default=os.cpu_count() or 4,
+        help="Number of parallel worker processes (default: number of CPUs).",
+    )
 
     args = parser.parse_args()
 
@@ -1301,6 +1364,7 @@ def main() -> int:
             ", ".join(f"World{number}" for number in sorted(world_filter)),
         )
 
+    workers = max(1, args.workers)
     stats = convert_all(
         bmd_root=args.bmd_root,
         output_root=args.output_root,
@@ -1310,6 +1374,7 @@ def main() -> int:
         dry_run=args.dry_run,
         verbose=args.verbose,
         report_path=args.report,
+        workers=workers,
     )
 
     if stats.failed > 0:

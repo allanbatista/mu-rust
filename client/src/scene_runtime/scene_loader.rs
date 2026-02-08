@@ -64,6 +64,27 @@ impl HeightmapData {
 #[derive(Asset, TypePath, Serialize, Deserialize, Clone)]
 pub struct SceneObjectsData {
     pub objects: Vec<SceneObjectDef>,
+    #[serde(default)]
+    pub metadata: SceneObjectsMetadata,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct SceneObjectsMetadata {
+    #[serde(default)]
+    pub rotation_encoding: SceneRotationEncoding,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneRotationEncoding {
+    #[default]
+    #[serde(
+        alias = "legacy_swizzled_xyz_degrees",
+        alias = "legacy_swizzled_xzy_degrees"
+    )]
+    LegacySwizzledDegrees,
+    #[serde(alias = "mu_anglematrix_degrees", alias = "mu_angles_xyz_degrees")]
+    MuAnglesDegrees,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -332,13 +353,13 @@ pub fn normalize_world_name(raw_world_name: &str) -> String {
 
     if let Some(stripped) = trimmed.strip_prefix("World") {
         if let Ok(number) = stripped.parse::<u32>() {
-            return format!("World{}", number);
+            return format!("world{}", number);
         }
         return trimmed.to_string();
     }
 
     if let Ok(number) = trimmed.parse::<u32>() {
-        return format!("World{}", number);
+        return format!("world{}", number);
     }
 
     trimmed.to_string()
