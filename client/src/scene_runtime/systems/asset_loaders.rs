@@ -1,6 +1,6 @@
-use crate::scenes::login::LoginSceneAssets;
-use crate::scenes::login::components::*;
-use crate::scenes::scene_loader::SceneLoader;
+use crate::scene_runtime::components::*;
+use crate::scene_runtime::scene_loader::SceneLoader;
+use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoader, AsyncReadExt, LoadContext};
 use bevy::prelude::*;
@@ -10,11 +10,11 @@ use thiserror::Error;
 // ASSET LOADING SYSTEM
 // ============================================================================
 
-/// System to check if all login assets are loaded.
+/// System to check if all runtime scene assets are loaded.
 /// It requests a world by name through the shared scene loader and only marks
-/// the scene as ready when world data + login-specific assets are available.
-pub fn load_login_assets(
-    mut assets: ResMut<LoginSceneAssets>,
+/// the scene as ready when world data + scene-specific assets are available.
+pub fn load_scene_runtime_assets(
+    mut assets: ResMut<RuntimeSceneAssets>,
     mut scene_loader: ResMut<SceneLoader>,
     asset_server: Res<AssetServer>,
     terrain_configs: Res<Assets<TerrainConfig>>,
@@ -43,7 +43,7 @@ pub fn load_login_assets(
     }
 
     info!(
-        "All login scene assets loaded successfully for {}",
+        "All runtime scene assets loaded successfully for {}",
         world.world_name
     );
     assets.world = Some(world);

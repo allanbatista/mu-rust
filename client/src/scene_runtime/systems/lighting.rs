@@ -1,4 +1,4 @@
-use crate::scenes::login::components::*;
+use crate::scene_runtime::components::*;
 use bevy::prelude::*;
 
 /// Marker for spawned point lights
@@ -13,7 +13,7 @@ pub fn spawn_dynamic_lights(
     for (_entity, dynamic_light, transform) in objects.iter() {
         // Spawn a point light as a child of the object
         commands.spawn((
-            LoginSceneEntity,
+            RuntimeSceneEntity,
             DynamicPointLight,
             dynamic_light.clone(),
             PointLightBundle {

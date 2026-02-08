@@ -1,13 +1,12 @@
-mod components;
-mod systems;
-
-pub use components::*;
-pub use systems::*;
-
-use crate::scenes::scene_loader::LoadedSceneWorld;
+use crate::scene_runtime::components::{
+    ParticleDefinitions, ParticleEmitterDef, RuntimeSceneEntity,
+};
+use crate::scene_runtime::registration::register_scene_runtime;
+use crate::scene_runtime::state::RuntimeSceneAssets;
+use crate::scene_runtime::systems::ParticleDefinitionsLoader;
 use crate::world::{WorldId, WorldRequest};
 use bevy::prelude::*;
-use bevy::state::prelude::{OnEnter, OnExit, in_state};
+use bevy::state::prelude::{OnEnter, OnExit};
 use std::collections::HashMap;
 
 use super::SceneBuilder;
@@ -38,16 +37,7 @@ fn login_world_name() -> String {
     }
 }
 
-#[derive(SystemSet, Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum LoginRenderPipeline {
-    Load,
-    Spawn,
-    Simulate,
-    Lighting,
-    Camera,
-}
-
-/// LoginScene implements the 3D login scene with terrain, objects, particles, and camera tour.
+/// Login scene wiring using the shared 3D runtime systems.
 pub struct LoginScene;
 
 impl SceneBuilder for LoginScene {
@@ -55,92 +45,13 @@ impl SceneBuilder for LoginScene {
         app.init_asset::<ParticleDefinitions>()
             .init_asset_loader::<ParticleDefinitionsLoader>()
             .add_systems(OnEnter(crate::AppState::Mock), setup_login_scene)
-            .configure_sets(
-                Update,
-                (
-                    LoginRenderPipeline::Load,
-                    LoginRenderPipeline::Spawn,
-                    LoginRenderPipeline::Simulate,
-                    LoginRenderPipeline::Lighting,
-                    LoginRenderPipeline::Camera,
-                )
-                    .chain(),
-            )
-            .add_systems(
-                Update,
-                load_login_assets
-                    .in_set(LoginRenderPipeline::Load)
-                    .run_if(in_state(crate::AppState::Mock)),
-            )
-            .add_systems(
-                Update,
-                (
-                    spawn_terrain_when_ready,
-                    spawn_scene_objects_when_ready,
-                    setup_camera_tour,
-                )
-                    .in_set(LoginRenderPipeline::Spawn)
-                    .run_if(in_state(crate::AppState::Mock)),
-            )
-            .add_systems(
-                Update,
-                (update_boids, update_particle_emitters)
-                    .in_set(LoginRenderPipeline::Simulate)
-                    .run_if(in_state(crate::AppState::Mock)),
-            )
-            .add_systems(
-                Update,
-                (spawn_dynamic_lights, update_dynamic_lights)
-                    .in_set(LoginRenderPipeline::Lighting)
-                    .run_if(in_state(crate::AppState::Mock)),
-            )
-            .add_systems(
-                Update,
-                update_camera_tour
-                    .in_set(LoginRenderPipeline::Camera)
-                    .run_if(in_state(crate::AppState::Mock)),
-            )
             .add_systems(OnExit(crate::AppState::Mock), cleanup_login_scene);
-
-        if cfg!(debug_assertions) {
-            app.init_resource::<DebugFreeCameraController>()
-                .init_resource::<DebugSceneStats>()
-                .add_systems(
-                    OnEnter(crate::AppState::Mock),
-                    (
-                        reset_debug_free_camera,
-                        spawn_debug_free_camera_hint,
-                        reset_debug_scene_stats,
-                        spawn_debug_scene_stats_hud,
-                    ),
-                )
-                .add_systems(
-                    Update,
-                    (
-                        toggle_debug_free_camera,
-                        control_debug_free_camera,
-                        update_debug_free_camera_hint,
-                        update_debug_scene_stats,
-                    )
-                        .in_set(LoginRenderPipeline::Camera)
-                        .run_if(in_state(crate::AppState::Mock)),
-                );
-        }
+        register_scene_runtime(app, crate::AppState::Mock);
     }
 }
 
-/// Marker component for login scene root entity.
 #[derive(Component)]
-pub struct LoginSceneRoot;
-
-/// Resource to track login scene asset loading state.
-#[derive(Resource)]
-pub struct LoginSceneAssets {
-    pub world_name: String,
-    pub world: Option<LoadedSceneWorld>,
-    pub particle_defs: Handle<ParticleDefinitions>,
-    pub loaded: bool,
-}
+struct LoginSceneRoot;
 
 fn default_particle_definitions() -> ParticleDefinitions {
     let mut emitters = HashMap::new();
@@ -182,7 +93,6 @@ fn default_particle_definitions() -> ParticleDefinitions {
     ParticleDefinitions { emitters }
 }
 
-/// Setup function called when entering login scene.
 fn setup_login_scene(
     mut commands: Commands,
     mut particle_definitions_assets: ResMut<Assets<ParticleDefinitions>>,
@@ -191,29 +101,25 @@ fn setup_login_scene(
     let world_name = login_world_name();
     info!("Setting up login scene from {}", world_name);
 
-    // Request login world root/camera context.
     world_requests.send(WorldRequest(WorldId::Login));
 
     let particle_defs = particle_definitions_assets.add(default_particle_definitions());
-
-    commands.insert_resource(LoginSceneAssets {
+    commands.insert_resource(RuntimeSceneAssets {
         world_name,
         world: None,
         particle_defs,
         loaded: false,
     });
 
-    // Spawn scene root.
-    commands.spawn((LoginSceneRoot, LoginSceneEntity, SpatialBundle::default()));
+    commands.spawn((LoginSceneRoot, RuntimeSceneEntity, SpatialBundle::default()));
 }
 
-/// Cleanup function called when exiting login scene.
-fn cleanup_login_scene(mut commands: Commands, query: Query<Entity, With<LoginSceneEntity>>) {
+fn cleanup_login_scene(mut commands: Commands, query: Query<Entity, With<RuntimeSceneEntity>>) {
     info!("Cleaning up login scene");
 
     for entity in &query {
         commands.entity(entity).despawn_recursive();
     }
 
-    commands.remove_resource::<LoginSceneAssets>();
+    commands.remove_resource::<RuntimeSceneAssets>();
 }

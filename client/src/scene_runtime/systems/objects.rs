@@ -1,5 +1,5 @@
-use crate::scenes::login::LoginSceneAssets;
-use crate::scenes::login::components::*;
+use crate::scene_runtime::components::*;
+use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::ecs::system::EntityCommands;
 use bevy::math::primitives::Cuboid;
 use bevy::prelude::*;
@@ -28,7 +28,7 @@ pub(crate) struct ProxyAssetCache {
 /// System to spawn scene objects once assets are loaded
 pub fn spawn_scene_objects_when_ready(
     mut commands: Commands,
-    assets: Res<LoginSceneAssets>,
+    assets: Res<RuntimeSceneAssets>,
     scene_objects_data: Res<Assets<SceneObjectsData>>,
     particle_defs: Res<Assets<ParticleDefinitions>>,
     asset_server: Res<AssetServer>,
@@ -87,7 +87,7 @@ pub fn spawn_scene_objects_when_ready(
     }
 
     // Mark as spawned
-    commands.spawn((SceneObjectsSpawned, LoginSceneEntity));
+    commands.spawn((SceneObjectsSpawned, RuntimeSceneEntity));
 
     info!(
         "Scene objects spawned successfully in {} ms",
@@ -116,7 +116,7 @@ fn spawn_scene_object(
     let scale = Vec3::from(object_def.scale);
 
     let mut entity_cmd = commands.spawn((
-        LoginSceneEntity,
+        RuntimeSceneEntity,
         SceneObject {
             id: object_def.id.clone(),
             object_type: object_def.object_type,
@@ -480,7 +480,7 @@ fn spawn_boid(commands: &mut Commands, object_def: &SceneObjectDef) {
     let flight_height = object_def.properties.flight_height.unwrap_or(50.0);
 
     commands.spawn((
-        LoginSceneEntity,
+        RuntimeSceneEntity,
         SpatialBundle {
             transform: Transform::from_translation(spawn_point),
             ..default()

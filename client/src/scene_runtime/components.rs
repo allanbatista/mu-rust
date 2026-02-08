@@ -1,13 +1,13 @@
-pub use crate::scenes::scene_loader::{
+pub use crate::scene_runtime::scene_loader::{
     CameraTourData, HeightmapData, ObjectProperties, SceneObjectDef, SceneObjectsData,
     TerrainConfig,
 };
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Marker applied to every entity owned by the login scene lifecycle.
+/// Marker applied to every entity owned by the runtime scene lifecycle.
 #[derive(Component)]
-pub struct LoginSceneEntity;
+pub struct RuntimeSceneEntity;
 
 // ============================================================================
 // TERRAIN COMPONENTS

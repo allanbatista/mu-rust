@@ -1,4 +1,4 @@
-use crate::scenes::login::components::*;
+use crate::scene_runtime::components::*;
 use bevy::prelude::*;
 use rand::Rng;
 

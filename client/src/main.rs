@@ -1,3 +1,4 @@
+mod scene_runtime;
 mod scenes;
 mod world;
 
@@ -7,10 +8,10 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::state::app::AppExtStates;
 use bevy::window::WindowResolution;
+use scene_runtime::scene_loader::SceneLoaderPlugin;
 use scenes::ScenePlugin;
 use scenes::loading::LoadingScene;
 use scenes::login::LoginScene;
-use scenes::scene_loader::SceneLoaderPlugin;
 use world::WorldPlugin;
 
 #[derive(bevy::prelude::States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]

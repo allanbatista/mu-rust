@@ -1,5 +1,5 @@
-use crate::scenes::login::LoginSceneAssets;
-use crate::scenes::login::components::*;
+use crate::scene_runtime::components::*;
+use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 
@@ -10,7 +10,7 @@ pub struct TerrainSpawned;
 /// System to spawn terrain once assets are loaded
 pub fn spawn_terrain_when_ready(
     mut commands: Commands,
-    assets: Res<LoginSceneAssets>,
+    assets: Res<RuntimeSceneAssets>,
     terrain_configs: Res<Assets<TerrainConfig>>,
     heightmaps: Res<Assets<HeightmapData>>,
     asset_server: Res<AssetServer>,
@@ -73,7 +73,7 @@ pub fn spawn_terrain_when_ready(
     // Spawn terrain entity centered
     let entity = commands
         .spawn((
-            LoginSceneEntity,
+            RuntimeSceneEntity,
             TerrainSpawned,
             Terrain {
                 width: config.size.width,

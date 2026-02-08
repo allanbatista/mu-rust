@@ -1,4 +1,4 @@
-use crate::scenes::login::components::*;
+use crate::scene_runtime::components::*;
 use bevy::asset::AssetId;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
@@ -35,7 +35,7 @@ pub fn reset_debug_scene_stats(mut debug_stats: ResMut<DebugSceneStats>) {
 
 pub fn spawn_debug_scene_stats_hud(mut commands: Commands) {
     commands.spawn((
-        LoginSceneEntity,
+        RuntimeSceneEntity,
         DebugSceneStatsText,
         TextBundle::from_section(
             "",
@@ -59,7 +59,7 @@ pub fn update_debug_scene_stats(
     diagnostics: Res<DiagnosticsStore>,
     adapter_info: Option<Res<RenderAdapterInfo>>,
     meshes: Res<Assets<Mesh>>,
-    login_entities: Query<Entity, With<LoginSceneEntity>>,
+    login_entities: Query<Entity, With<RuntimeSceneEntity>>,
     scene_objects: Query<(), With<SceneObject>>,
     children_query: Query<&Children>,
     mesh_handles: Query<&Handle<Mesh>>,

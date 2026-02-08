@@ -1,5 +1,5 @@
-use crate::scenes::login::LoginSceneAssets;
-use crate::scenes::login::components::*;
+use crate::scene_runtime::components::*;
+use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
@@ -42,7 +42,7 @@ pub fn reset_debug_free_camera(mut controller: ResMut<DebugFreeCameraController>
 
 pub fn spawn_debug_free_camera_hint(mut commands: Commands) {
     commands.spawn((
-        LoginSceneEntity,
+        RuntimeSceneEntity,
         DebugFreeCameraHint,
         TextBundle::from_section(
             "",
@@ -190,7 +190,7 @@ pub fn control_debug_free_camera(
 /// System to setup camera tour once assets are loaded
 pub fn setup_camera_tour(
     mut commands: Commands,
-    assets: Res<LoginSceneAssets>,
+    assets: Res<RuntimeSceneAssets>,
     camera_tour_data: Res<Assets<CameraTourData>>,
     mut camera_query: Query<Entity, (With<Camera3d>, Without<CameraTour>)>,
     setup_query: Query<&CameraTourSetup>,
@@ -253,7 +253,7 @@ pub fn setup_camera_tour(
             CameraTourState { delay_timer: None },
         ));
 
-        commands.spawn((CameraTourSetup, LoginSceneEntity));
+        commands.spawn((CameraTourSetup, RuntimeSceneEntity));
 
         info!("Camera tour setup complete");
     } else {
