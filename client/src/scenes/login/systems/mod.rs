@@ -1,15 +1,15 @@
 mod asset_loaders;
-mod terrain;
+mod boids;
+mod camera;
+mod lighting;
 mod objects;
 mod particles;
-mod lighting;
-mod camera;
-mod boids;
+mod terrain;
 
 pub use asset_loaders::*;
-pub use terrain::*;
+pub use boids::*;
+pub use camera::*;
+pub use lighting::*;
 pub use objects::*;
 pub use particles::*;
-pub use lighting::*;
-pub use camera::*;
-pub use boids::*;
+pub use terrain::*;

@@ -1,5 +1,5 @@
-use crate::scenes::login::components::*;
 use crate::scenes::login::LoginSceneAssets;
+use crate::scenes::login::components::*;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 
@@ -15,7 +15,7 @@ pub fn spawn_terrain_when_ready(
     heightmaps: Res<Assets<HeightmapData>>,
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<TerrainMaterial>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     terrain_query: Query<&TerrainSpawned>,
 ) {
     // Only spawn once
@@ -36,7 +36,10 @@ pub fn spawn_terrain_when_ready(
         return;
     };
 
-    info!("Spawning terrain mesh ({}x{})", heightmap.width, heightmap.height);
+    info!(
+        "Spawning terrain mesh ({}x{})",
+        heightmap.width, heightmap.height
+    );
 
     // Generate terrain mesh
     let mesh = generate_terrain_mesh(heightmap, config);
@@ -44,24 +47,42 @@ pub fn spawn_terrain_when_ready(
 
     info!("Terrain mesh generated successfully");
 
-    // Create simple material (no textures for now)
-    let material = TerrainMaterial {};
-    let material_handle = materials.add(material);
+    // Prefer the pre-baked terrain lightmap to avoid stretched single-tile rendering.
+    let diffuse_path = if config.lightmap.trim().is_empty() {
+        config
+            .texture_layers
+            .first()
+            .map(|layer| layer.path.clone())
+            .unwrap_or_else(|| "data/World74/TileGrass01.png".to_string())
+    } else {
+        config.lightmap.clone()
+    };
+    info!("Using terrain diffuse texture '{}'", diffuse_path);
+    let diffuse = asset_server.load(diffuse_path);
+    let material_handle = materials.add(StandardMaterial {
+        base_color_texture: Some(diffuse),
+        perceptual_roughness: 1.0,
+        metallic: 0.0,
+        ..default()
+    });
 
     // Spawn terrain entity centered
-    let entity = commands.spawn((
-        TerrainSpawned,
-        Terrain {
-            width: config.size.width,
-            height: config.size.depth,
-        },
-        MaterialMeshBundle {
-            mesh: mesh_handle,
-            material: material_handle,
-            transform: Transform::from_xyz(0.0, 0.0, 0.0),
-            ..default()
-        },
-    )).id();
+    let entity = commands
+        .spawn((
+            LoginSceneEntity,
+            TerrainSpawned,
+            Terrain {
+                width: config.size.width,
+                height: config.size.depth,
+            },
+            PbrBundle {
+                mesh: mesh_handle,
+                material: material_handle,
+                transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                ..default()
+            },
+        ))
+        .id();
 
     info!("Terrain spawned successfully at entity {:?}", entity);
 }
@@ -71,23 +92,50 @@ fn generate_terrain_mesh(heightmap: &HeightmapData, config: &TerrainConfig) -> M
     let width = heightmap.width as usize;
     let height = heightmap.height as usize;
     let scale = config.size.scale;
+    let vertical_scale = config.height_multiplier * (scale / config.legacy_terrain_scale.max(1.0));
 
-    info!("Generating mesh: {}x{} vertices, scale={}", width, height, scale);
+    info!(
+        "Generating mesh: {}x{} vertices, scale={}, vertical_scale={}",
+        width, height, scale, vertical_scale
+    );
 
     let mut positions = Vec::new();
     let mut uvs = Vec::new();
     let mut indices = Vec::new();
+    let mut min_height = f32::MAX;
+    let mut max_height = f32::MIN;
 
     // Generate vertices
     for z in 0..height {
         for x in 0..width {
-            let h = heightmap.get_height(x, z) * 50.0; // Scale height for visibility
+            let h = heightmap.get_height(x, z) * vertical_scale;
+            min_height = min_height.min(h);
+            max_height = max_height.max(h);
             positions.push([x as f32 * scale, h, z as f32 * scale]);
-            uvs.push([x as f32 / width as f32, z as f32 / height as f32]);
+            let u = if width > 1 {
+                x as f32 / (width - 1) as f32
+            } else {
+                0.0
+            };
+            let v = if height > 1 {
+                z as f32 / (height - 1) as f32
+            } else {
+                0.0
+            };
+            uvs.push([u, v]);
         }
     }
 
     info!("Generated {} vertices", positions.len());
+    info!(
+        "Terrain height range: min={:.3}, max={:.3}",
+        min_height, max_height
+    );
+    if (max_height - min_height).abs() <= f32::EPSILON {
+        warn!(
+            "Terrain heightmap is flat; this usually indicates the source world relies on static object geometry"
+        );
+    }
 
     // Generate indices for triangles
     for z in 0..(height - 1) {

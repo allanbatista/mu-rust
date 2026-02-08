@@ -3,11 +3,14 @@ use server::config::ServerConfig;
 use server::handlers;
 use server::monitor::HealthMonitor;
 
+fn servers_config_path() -> String {
+    format!("{}/config/servers.toml", env!("CARGO_MANIFEST_DIR"))
+}
+
 #[actix_web::test]
 async fn test_list_servers() {
-    // Load test configuration
-    let config = ServerConfig::load_from_file("server/config/servers.toml")
-        .expect("Failed to load test config");
+    let config =
+        ServerConfig::load_from_file(servers_config_path()).expect("Failed to load test config");
 
     let health_monitor = HealthMonitor::new();
 
@@ -27,12 +30,13 @@ async fn test_list_servers() {
     let body: serde_json::Value = test::read_body_json(resp).await;
     assert!(body["servers"].is_array());
     assert_eq!(body["servers"].as_array().unwrap().len(), 2);
+    assert!(body["servers"][0]["id"].is_string());
 }
 
 #[actix_web::test]
-async fn test_list_worlds() {
-    let config = ServerConfig::load_from_file("server/config/servers.toml")
-        .expect("Failed to load test config");
+async fn test_list_worlds_only_online() {
+    let config =
+        ServerConfig::load_from_file(servers_config_path()).expect("Failed to load test config");
 
     let health_monitor = HealthMonitor::new();
 
@@ -54,18 +58,12 @@ async fn test_list_worlds() {
     assert!(resp.status().is_success());
 
     let body: serde_json::Value = test::read_body_json(resp).await;
-    assert!(body["servers"].is_array());
-
-    // Count online worlds
-    let mut total_online = 0;
-    for server in body["servers"].as_array().unwrap() {
-        total_online += server["worlds"].as_array().unwrap().len();
-    }
-    assert_eq!(total_online, 2);
+    assert!(body["worlds"].is_array());
+    assert_eq!(body["worlds"].as_array().unwrap().len(), 2);
 }
 
 #[actix_web::test]
-async fn test_heartbeat() {
+async fn test_heartbeat_endpoint_updates_monitor() {
     use serde_json::json;
 
     let health_monitor = HealthMonitor::new();
@@ -79,8 +77,8 @@ async fn test_heartbeat() {
 
     let payload = json!({
         "world_id": "test-world",
-        "ip": "192.168.1.100",
-        "port": 55901
+        "current_players": 42,
+        "timestamp": 123456
     });
 
     let req = test::TestRequest::post()
@@ -92,8 +90,8 @@ async fn test_heartbeat() {
     assert!(resp.status().is_success());
 
     let body: serde_json::Value = test::read_body_json(resp).await;
-    assert_eq!(body["status"], "ok");
+    assert_eq!(body["success"], true);
+    assert_eq!(body["next_heartbeat_in"], 15);
 
-    // Verify the world is now tracked
     assert!(health_monitor.is_world_online("test-world"));
 }

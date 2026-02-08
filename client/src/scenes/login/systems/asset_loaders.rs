@@ -2,7 +2,13 @@ use crate::scenes::login::components::*;
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoader, AsyncReadExt, LoadContext};
 use bevy::prelude::*;
+use serde::Deserialize;
 use thiserror::Error;
+
+const TERRAIN_DIMENSION: usize = 256;
+const OZB_PREFIX_BYTES: usize = 4;
+const LEGACY_BMP_HEADER_BYTES: usize = 1080;
+const TERRAIN_SAMPLE_COUNT: usize = TERRAIN_DIMENSION * TERRAIN_DIMENSION;
 
 // ============================================================================
 // ASSET LOADING SYSTEM
@@ -84,6 +90,10 @@ pub enum HeightmapLoaderError {
     Io(#[from] std::io::Error),
     #[error("Could not parse JSON: {0}")]
     JsonError(#[from] serde_json::Error),
+    #[error("Could not parse legacy OZB terrain format: {0}")]
+    OzbFormat(String),
+    #[error("Invalid legacy heightmap format: {0}")]
+    InvalidFormat(String),
 }
 
 impl AssetLoader for HeightmapLoader {
@@ -99,13 +109,94 @@ impl AssetLoader for HeightmapLoader {
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let heightmap = serde_json::from_slice::<HeightmapData>(&bytes)?;
-        Ok(heightmap)
+
+        if let Some(heightmap) = parse_legacy_ozb_heightmap(&bytes)? {
+            return Ok(heightmap);
+        }
+
+        if let Ok(heightmap) = serde_json::from_slice::<HeightmapData>(&bytes) {
+            return Ok(heightmap);
+        }
+
+        // Fallback for converter output already present in the repository.
+        // Some JSON dumps store heights as u8 (0..255) in `terrain_data`.
+        let legacy = serde_json::from_slice::<LegacyTerrainData>(&bytes)?;
+        let (width, height) = validate_legacy_rows(&legacy.terrain_data)?;
+        let heights = legacy
+            .terrain_data
+            .into_iter()
+            .map(|row| row.into_iter().map(f32::from).collect())
+            .collect();
+
+        Ok(HeightmapData {
+            width: width as u32,
+            height: height as u32,
+            heights,
+        })
     }
 
     fn extensions(&self) -> &[&str] {
-        &["heightmap.json", "json"]
+        &["heightmap.json", "json", "ozb"]
     }
+}
+
+#[derive(Deserialize)]
+struct LegacyTerrainData {
+    terrain_data: Vec<Vec<u8>>,
+}
+
+fn validate_legacy_rows(rows: &[Vec<u8>]) -> Result<(usize, usize), HeightmapLoaderError> {
+    let height = rows.len();
+    if height == 0 {
+        return Err(HeightmapLoaderError::InvalidFormat(
+            "terrain_data is empty".to_string(),
+        ));
+    }
+
+    let width = rows[0].len();
+    if width == 0 {
+        return Err(HeightmapLoaderError::InvalidFormat(
+            "terrain_data first row is empty".to_string(),
+        ));
+    }
+
+    if rows.iter().any(|row| row.len() != width) {
+        return Err(HeightmapLoaderError::InvalidFormat(
+            "terrain_data rows must all have the same width".to_string(),
+        ));
+    }
+
+    Ok((width, height))
+}
+
+fn parse_legacy_ozb_heightmap(bytes: &[u8]) -> Result<Option<HeightmapData>, HeightmapLoaderError> {
+    let required = OZB_PREFIX_BYTES + LEGACY_BMP_HEADER_BYTES + TERRAIN_SAMPLE_COUNT;
+    if bytes.len() < required {
+        return Ok(None);
+    }
+
+    let payload = &bytes[OZB_PREFIX_BYTES..];
+    if payload.len() < LEGACY_BMP_HEADER_BYTES + TERRAIN_SAMPLE_COUNT {
+        return Err(HeightmapLoaderError::OzbFormat(
+            "payload shorter than expected terrain format".to_string(),
+        ));
+    }
+
+    if &payload[..2] != b"BM" {
+        return Ok(None);
+    }
+
+    let samples = &payload[LEGACY_BMP_HEADER_BYTES..LEGACY_BMP_HEADER_BYTES + TERRAIN_SAMPLE_COUNT];
+    let heights = samples
+        .chunks_exact(TERRAIN_DIMENSION)
+        .map(|row| row.iter().map(|sample| f32::from(*sample)).collect())
+        .collect();
+
+    Ok(Some(HeightmapData {
+        width: TERRAIN_DIMENSION as u32,
+        height: TERRAIN_DIMENSION as u32,
+        heights,
+    }))
 }
 
 // ============================================================================

@@ -3,6 +3,9 @@ name = "server"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+
 [lib]
 name = "server"
 path = "src/lib.rs"
@@ -10,6 +13,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "server"
 path = "src/main.rs"
+
+[[bin]]
+name = "sim-client"
+path = "src/bin/sim_client.rs"
 
 [dependencies]
 protocol = { workspace = true }
@@ -29,6 +36,7 @@ bson = "2"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "rustls-tls"] }
 
 # Password hashing
 bcrypt = "0.15"
@@ -55,7 +63,12 @@ thiserror = "1"
 # Concurrency
 dashmap = "6"
 
+# QUIC transport
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = "0.23"
+rustls-pemfile = "2"
+rcgen = "0.13"
+
 [dev-dependencies]
 # Testing (actix-web already includes test utilities)
 serial_test = "3"
-

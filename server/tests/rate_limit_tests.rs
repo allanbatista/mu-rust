@@ -18,7 +18,10 @@ fn test_rate_limit_allows_under_limit() {
 
     // Send 10 requests (the limit)
     for _ in 0..10 {
-        assert!(limiter.check_rate_limit(ip), "Should allow requests under limit");
+        assert!(
+            limiter.check_rate_limit(ip),
+            "Should allow requests under limit"
+        );
     }
 }
 

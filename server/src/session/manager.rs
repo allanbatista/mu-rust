@@ -60,9 +60,12 @@ impl SessionManager {
         let account_id_str = account_id.to_hex();
 
         // Check for existing session (duplicate login)
-        if let Some(old_session_id) = self.account_sessions.get(&account_id_str) {
+        let old_session_id = self
+            .account_sessions
+            .get(&account_id_str)
+            .map(|entry| entry.value().clone());
+        if let Some(old_session_id) = old_session_id {
             // Invalidate old session
-            let old_session_id = old_session_id.clone();
             self.invalidate_session(&old_session_id);
             log::info!("Kicked old session for account: {}", account_id_str);
         }

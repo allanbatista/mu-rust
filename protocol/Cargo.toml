@@ -5,12 +5,11 @@ edition = "2024"
 
 [features]
 default = []
-gameserver_update_ge_602 = []
-gameserver_update_ge_701 = []
-gameserver_extra = []
 
 [dependencies]
 thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
 
 [dev-dependencies]
 criterion = "0.5"

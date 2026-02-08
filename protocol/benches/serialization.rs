@@ -1,133 +1,110 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use protocol::header::{PBMSG_HEAD, PSBMSG_HEAD};
-use protocol::packets::{CHAT_MESSAGE_LEN, PMSG_CHARACTER_INFO_SEND, PMSG_CHAT_RECV};
-use protocol::{de, ser};
+use protocol::channel::QuicChannel;
+use protocol::codec::WireCodec;
+use protocol::message::{ClientHello, ClientMessage, RouteKey, WirePacket};
 
-fn sample_chat_packet() -> PMSG_CHAT_RECV {
-    PMSG_CHAT_RECV {
-        header: PBMSG_HEAD {
-            r#type: 0xC1,
-            size: (core::mem::size_of::<PMSG_CHAT_RECV>()) as u8,
-            head: 0x00,
+fn sample_move_packet() -> WirePacket {
+    WirePacket::client(
+        42,
+        RouteKey {
+            world_id: 1,
+            entry_id: 1,
+            map_id: 0,
+            instance_id: 1,
         },
-        name: *b"BenchUser\0",
-        message: [0x41; CHAT_MESSAGE_LEN],
-    }
+        100,
+        Some(99),
+        7_500,
+        ClientMessage::Move(protocol::MoveInput {
+            client_tick: 333,
+            x: 124,
+            y: 118,
+            direction: 2,
+            path: [1, 1, 2, 3, 5, 8, 13, 21],
+        }),
+    )
 }
 
-fn sample_character_info_packet() -> PMSG_CHARACTER_INFO_SEND {
-    PMSG_CHARACTER_INFO_SEND {
-        header: PSBMSG_HEAD {
-            r#type: 0xC3,
-            size: (core::mem::size_of::<PMSG_CHARACTER_INFO_SEND>()) as u8,
-            head: 0xF3,
-            subh: 0x03,
-        },
-        x: 120,
-        y: 125,
-        map: 3,
-        dir: 2,
-        experience: [0; 8],
-        next_experience: [0; 8],
-        level_up_point: 10,
-        strength: 200,
-        dexterity: 150,
-        vitality: 180,
-        energy: 140,
-        life: 1100,
-        max_life: 1200,
-        mana: 600,
-        max_mana: 650,
-        shield: 300,
-        max_shield: 320,
-        bp: 100,
-        max_bp: 120,
-        money: 1_000_000,
-        pk_level: 3,
-        ctl_code: 0,
-        fruit_add_point: 0,
-        max_fruit_add_point: 0,
-        leadership: 0,
-        fruit_sub_point: 0,
-        max_fruit_sub_point: 0,
-        #[cfg(feature = "gameserver_update_ge_602")]
-        ext_inventory: 1,
-        #[cfg(feature = "gameserver_extra")]
-        view_reset: 0,
-        #[cfg(feature = "gameserver_extra")]
-        view_point: 0,
-        #[cfg(feature = "gameserver_extra")]
-        view_cur_hp: 1200,
-        #[cfg(feature = "gameserver_extra")]
-        view_max_hp: 1300,
-        #[cfg(feature = "gameserver_extra")]
-        view_cur_mp: 600,
-        #[cfg(feature = "gameserver_extra")]
-        view_max_mp: 650,
-        #[cfg(feature = "gameserver_extra")]
-        view_cur_bp: 110,
-        #[cfg(feature = "gameserver_extra")]
-        view_max_bp: 130,
-        #[cfg(feature = "gameserver_extra")]
-        view_cur_sd: 300,
-        #[cfg(feature = "gameserver_extra")]
-        view_max_sd: 320,
-        #[cfg(feature = "gameserver_extra")]
-        view_strength: 200,
-        #[cfg(feature = "gameserver_extra")]
-        view_dexterity: 150,
-        #[cfg(feature = "gameserver_extra")]
-        view_vitality: 180,
-        #[cfg(feature = "gameserver_extra")]
-        view_energy: 140,
-        #[cfg(feature = "gameserver_extra")]
-        view_leadership: 0,
-    }
+fn sample_control_packet() -> WirePacket {
+    WirePacket::client(
+        42,
+        RouteKey::LOBBY,
+        1,
+        None,
+        7_000,
+        ClientMessage::Hello(ClientHello {
+            account_id: 900,
+            auth_token: "bench-token".to_string(),
+            client_build: "0.1.0-bench".to_string(),
+            locale: "en-US".to_string(),
+        }),
+    )
 }
 
-fn bench_chat_packets(c: &mut Criterion) {
-    let packet = sample_chat_packet();
+fn bench_datagram(c: &mut Criterion) {
+    let codec = WireCodec::default();
+    let packet = sample_move_packet();
+
     c.bench_with_input(
-        BenchmarkId::new("serialize", "chat"),
+        BenchmarkId::new("encode_datagram", "move"),
         &packet,
         |b, packet| {
-            b.iter(|| ser::serialize(black_box(packet)));
+            b.iter(|| {
+                codec
+                    .encode_datagram_frame(QuicChannel::GameplayInput, black_box(packet))
+                    .unwrap()
+            });
         },
     );
 
-    let bytes = ser::serialize(&packet);
+    let bytes = codec
+        .encode_datagram_frame(QuicChannel::GameplayInput, &packet)
+        .unwrap();
     c.bench_with_input(
-        BenchmarkId::new("deserialize", "chat"),
+        BenchmarkId::new("decode_datagram", "move"),
         &bytes,
         |b, bytes| {
-            b.iter(|| de::deserialize::<PMSG_CHAT_RECV>(black_box(bytes)).unwrap());
+            b.iter(|| codec.decode_datagram_frame(black_box(bytes)).unwrap());
         },
     );
 }
 
-fn bench_character_info_packets(c: &mut Criterion) {
-    let packet = sample_character_info_packet();
+fn bench_stream(c: &mut Criterion) {
+    let codec = WireCodec::default();
+    let packet = sample_control_packet();
+
     c.bench_with_input(
-        BenchmarkId::new("serialize", "character_info"),
+        BenchmarkId::new("encode_stream", "control"),
         &packet,
         |b, packet| {
-            b.iter(|| ser::serialize(black_box(packet)));
+            b.iter(|| {
+                codec
+                    .encode_stream_frame(QuicChannel::Control, black_box(packet))
+                    .unwrap()
+            });
         },
     );
 
-    let bytes = ser::serialize(&packet);
+    let frame = codec
+        .encode_stream_frame(QuicChannel::Control, &packet)
+        .unwrap();
     c.bench_with_input(
-        BenchmarkId::new("deserialize", "character_info"),
-        &bytes,
-        |b, bytes| {
-            b.iter(|| de::deserialize::<PMSG_CHARACTER_INFO_SEND>(black_box(bytes)).unwrap());
+        BenchmarkId::new("decode_stream", "control"),
+        &frame,
+        |b, frame| {
+            b.iter(|| {
+                codec
+                    .try_decode_stream_frame(black_box(frame))
+                    .unwrap()
+                    .unwrap()
+            });
         },
     );
 }
 
 fn protocol_benches(c: &mut Criterion) {
-    bench_chat_packets(c);
-    bench_character_info_packets(c);
+    bench_datagram(c);
+    bench_stream(c);
 }
 
 criterion_group!(benches, protocol_benches);

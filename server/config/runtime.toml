@@ -1,0 +1,89 @@
+[gateway]
+host = "0.0.0.0"
+port = 6000
+
+[ticks]
+player_tick_ms = 50
+monster_tick_ms = 150
+
+[persistence]
+flush_tick_ms = 2000
+max_flush_lag_ms = 15000
+max_batch_size = 300
+
+[[worlds]]
+id = 1
+name = "Midgard"
+
+[[worlds.entry_points]]
+id = 1
+name = "Midgard-1"
+host = "127.0.0.1"
+port = 55901
+max_players = 4000
+
+[[worlds.entry_points.maps]]
+id = 0
+name = "Lorencia"
+base_instances = 2
+soft_player_cap = 300
+
+[[worlds.entry_points.maps]]
+id = 1
+name = "Noria"
+base_instances = 1
+soft_player_cap = 250
+
+[[worlds.entry_points.maps]]
+id = 2
+name = "Devias"
+base_instances = 1
+soft_player_cap = 250
+
+[[worlds.entry_points]]
+id = 2
+name = "Midgard-2"
+host = "127.0.0.1"
+port = 55911
+max_players = 4000
+
+[[worlds.entry_points.maps]]
+id = 0
+name = "Lorencia"
+base_instances = 2
+soft_player_cap = 300
+
+[[worlds.entry_points.maps]]
+id = 1
+name = "Noria"
+base_instances = 1
+soft_player_cap = 250
+
+[[worlds.entry_points.maps]]
+id = 2
+name = "Devias"
+base_instances = 1
+soft_player_cap = 250
+
+[[worlds]]
+id = 2
+name = "Asgard"
+
+[[worlds.entry_points]]
+id = 1
+name = "Asgard-1"
+host = "127.0.0.1"
+port = 56001
+max_players = 2000
+
+[[worlds.entry_points.maps]]
+id = 10
+name = "Atlans"
+base_instances = 1
+soft_player_cap = 220
+
+[[worlds.entry_points.maps]]
+id = 11
+name = "Tarkan"
+base_instances = 1
+soft_player_cap = 220

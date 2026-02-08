@@ -20,14 +20,14 @@ async fn test_health_check() {
 
     let body: serde_json::Value = test::read_body_json(resp).await;
     assert_eq!(body["status"], "healthy");
-    assert!(body.get("timestamp").is_some());
+    assert_eq!(body["active_sessions"], 0);
+    assert_eq!(body["online_worlds"], 0);
 }
 
 #[actix_web::test]
 async fn test_health_check_with_active_worlds() {
     let health_monitor = HealthMonitor::new();
 
-    // Add a test world
     health_monitor.record_heartbeat("test-world-1".to_string(), 10);
 
     let app = test::init_service(
@@ -44,5 +44,5 @@ async fn test_health_check_with_active_worlds() {
 
     let body: serde_json::Value = test::read_body_json(resp).await;
     assert_eq!(body["status"], "healthy");
-    assert_eq!(body["active_worlds"], 1);
+    assert_eq!(body["online_worlds"], 1);
 }

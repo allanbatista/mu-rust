@@ -12,6 +12,9 @@ The Connect Server is a microservice responsible for user authentication, sessio
 - **Character Management**: Retrieve user's characters
 - **Health Monitoring**: Heartbeat-based system for tracking world server health
 - **Rate Limiting**: Protection against brute force login attempts (10 req/min per IP)
+- **MU Core Runtime**: world/entry/map runtime with one `MapServer` per map instance
+- **QUIC Gateway**: binary protocol v2 ingress (stream + datagram)
+- **Buffered Persistence**: coalesced flush for non-critical state + immediate critical events
 
 ## Architecture
 
@@ -20,6 +23,19 @@ The server is built with:
 - **MongoDB**: Database for accounts and characters
 - **In-memory sessions**: DashMap for concurrent session storage
 - **Background tasks**: Automatic cleanup of expired sessions and stale heartbeats
+- **MU Core**:
+  - `WorldDirectory` for routing and occupancy
+  - `MapServer` per map instance (character-priority tick loop)
+  - `MessageHub` for chat/event fanout
+  - `PersistenceWorker` for write buffering
+  - `QUIC Gateway` for protocol v2 transport
+
+### Protocol Roadmap
+
+The workspace protocol uses a QUIC-ready typed protocol (`protocol v2`) end-to-end.
+
+- Current protocol spec: `docs/architecture/protocol-v2-quic.md`
+- Migration phases and rollout: `docs/architecture/protocol-migration-roadmap.md`
 
 ## API Endpoints
 
@@ -32,6 +48,10 @@ The server is built with:
 | GET | `/worlds` | List online world instances |
 | POST | `/heartbeat` | Game server health check |
 | GET | `/health` | Connect server health status |
+| GET | `/runtime/worlds` | Runtime topology snapshot (world/entry/map) |
+| GET | `/runtime/maps` | Runtime map loop metrics |
+| GET | `/runtime/persistence` | Buffered persistence metrics |
+| GET | `/runtime/stats` | Runtime high-level stats |
 
 ### Protected Endpoints (Require Authentication)
 
@@ -71,11 +91,19 @@ SERVER_PORT=8080
 # Session settings
 SESSION_EXPIRY_HOURS=24
 
+# Runtime/QUIC
+ENABLE_MU_CORE=true
+ENABLE_QUIC_GATEWAY=true
+RUNTIME_CONFIG_PATH=server/config/runtime.toml
+QUIC_CERT_PATH=server/config/certs/server.crt   # optional
+QUIC_KEY_PATH=server/config/certs/server.key    # optional
+
 # Logging
 RUST_LOG=info
 ```
 
 **Important**: The `MONGODB_URI` must include authentication credentials when using the Docker setup from `rust/docker/`. The default credentials are `admin:admin123`, but you should change them in production.
+If `QUIC_CERT_PATH`/`QUIC_KEY_PATH` are not set, the server generates a self-signed certificate on startup.
 
 ### Server Configuration File
 
@@ -166,6 +194,35 @@ cargo test --manifest-path rust/server/Cargo.toml session
 
 # Test configuration
 cargo test --manifest-path rust/server/Cargo.toml config
+```
+
+### Protocol + Login Simulation
+
+Use the simulator client to validate concrete flows:
+- HTTP login (`POST /login`)
+- authenticated request (`GET /characters`)
+- QUIC protocol v2 (`Hello` -> `HelloAck`, `KeepAlive` -> `Pong`)
+
+Command:
+
+```bash
+./server/scripts/sim_client.sh \
+  --http-base http://127.0.0.1:8080 \
+  --username testuser \
+  --password testpass \
+  --quic-addr 127.0.0.1:6000 \
+  --quic-server-name localhost \
+  --quic-ca-cert server/config/certs/server.crt
+```
+
+If you only want login/session validation:
+
+```bash
+./server/scripts/sim_client.sh \
+  --http-base http://127.0.0.1:8080 \
+  --username testuser \
+  --password testpass \
+  --skip-quic
 ```
 
 ## API Examples

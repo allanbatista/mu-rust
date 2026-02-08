@@ -1,6 +1,9 @@
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 use serde::{Deserialize, Serialize};
+
+/// Marker applied to every entity owned by the login scene lifecycle.
+#[derive(Component)]
+pub struct LoginSceneEntity;
 
 // ============================================================================
 // TERRAIN COMPONENTS
@@ -13,26 +16,25 @@ pub struct Terrain {
     pub height: u32,
 }
 
-/// Custom material for terrain with multi-texturing and lightmap
-#[derive(Asset, TypePath, AsBindGroup, Clone)]
-pub struct TerrainMaterial {
-    // Empty for now - just using shader color
-    // TODO: Add texture bindings later
-}
-
-impl Material for TerrainMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/terrain.wgsl".into()
-    }
-}
-
 /// Terrain configuration loaded from JSON
 #[derive(Asset, TypePath, Serialize, Deserialize, Clone, Debug)]
 pub struct TerrainConfig {
     pub size: TerrainSize,
+    #[serde(default = "default_height_multiplier")]
+    pub height_multiplier: f32,
+    #[serde(default = "default_legacy_terrain_scale")]
+    pub legacy_terrain_scale: f32,
     pub texture_layers: Vec<TextureLayer>,
     pub alpha_map: String,
     pub lightmap: String,
+}
+
+fn default_height_multiplier() -> f32 {
+    1.5
+}
+
+fn default_legacy_terrain_scale() -> f32 {
+    100.0
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -99,6 +101,8 @@ pub struct SceneObjectDef {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct ObjectProperties {
+    pub model_renderable: Option<bool>,
+    pub model_validation_reason: Option<String>,
     pub particle_emitter: Option<String>,
     pub light_color: Option<[f32; 3]>,
     pub light_intensity: Option<f32>,

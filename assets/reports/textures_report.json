@@ -1,0 +1,30 @@
+{
+  "legacy_root": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/Data",
+  "legacy_fallback_roots": [],
+  "output_root": "/home/allanbatista/Workspaces/mu-rust/rust/assets/data",
+  "stats": {
+    "textures_converted": 17309,
+    "textures_skipped": 1,
+    "textures_failed": 0,
+    "terrain_height_json_emitted": 78,
+    "terrain_height_json_failed": 0,
+    "terrain_map_json_emitted": 80,
+    "terrain_map_json_failed": 0,
+    "terrain_att_json_emitted": 84,
+    "terrain_att_json_failed": 0,
+    "terrain_config_json_emitted": 80,
+    "terrain_config_json_failed": 0,
+    "camera_tour_json_emitted": 80,
+    "camera_tour_json_failed": 0,
+    "scene_objects_json_emitted": 80,
+    "scene_objects_json_failed": 0,
+    "models_converted": 0,
+    "models_skipped": 0,
+    "models_failed": 0,
+    "others_copied": 0,
+    "others_skipped": 0,
+    "others_failed": 0
+  },
+  "failures": [],
+  "encrypted_candidates": []
+}

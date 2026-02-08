@@ -1,7 +1,7 @@
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{AmbientLight, DirectionalLight, DirectionalLightBundle};
 use bevy::prelude::*;
-use bevy::render::camera::{ClearColorConfig, OrthographicProjection, Projection, ScalingMode};
+use bevy::render::camera::{ClearColorConfig, PerspectiveProjection, Projection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorldId {
@@ -76,14 +76,18 @@ fn setup_world_camera(mut commands: Commands) {
         WorldCamera,
         Camera3dBundle {
             camera: Camera {
-                order: 0,  // Render 3D world first
+                order: 0, // Render 3D world first
                 clear_color: ClearColorConfig::Custom(Color::srgb(0.1, 0.1, 0.15)),
                 ..Default::default()
             },
             tonemapping: Tonemapping::None,
-            projection: Projection::Perspective(Default::default()),
-            transform: Transform::from_xyz(128.0, 50.0, 128.0)
-                .looking_at(Vec3::new(128.0, 0.0, 150.0), Vec3::Y),
+            projection: Projection::Perspective(PerspectiveProjection {
+                near: 10.0,
+                far: 50_000.0,
+                ..default()
+            }),
+            transform: Transform::from_xyz(24_920.0, 520.0, 2_500.0)
+                .looking_at(Vec3::new(24_056.0, 170.0, 2_500.0), Vec3::Y),
             ..Default::default()
         },
     ));
@@ -91,8 +95,8 @@ fn setup_world_camera(mut commands: Commands) {
     // 2D Camera for UI overlay
     commands.spawn(Camera2dBundle {
         camera: Camera {
-            order: 1,  // Render UI on top
-            clear_color: ClearColorConfig::None,  // Don't clear, draw over 3D
+            order: 1,                            // Render UI on top
+            clear_color: ClearColorConfig::None, // Don't clear, draw over 3D
             ..Default::default()
         },
         tonemapping: Tonemapping::None,
@@ -106,8 +110,8 @@ fn setup_world_camera(mut commands: Commands) {
             shadows_enabled: false,
             ..Default::default()
         },
-        transform: Transform::from_xyz(50.0, 100.0, 50.0)
-            .looking_at(Vec3::new(128.0, 0.0, 128.0), Vec3::Y),
+        transform: Transform::from_xyz(20_000.0, 6_000.0, 2_000.0)
+            .looking_at(Vec3::new(22_000.0, 170.0, 2_500.0), Vec3::Y),
         ..Default::default()
     });
 }

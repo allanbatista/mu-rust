@@ -1,0 +1,31 @@
+{
+  "total_found": 11575,
+  "converted": 11475,
+  "skipped_no_geometry": 32,
+  "skipped_non_model": 64,
+  "skipped_existing": 0,
+  "skipped_corrupt": 4,
+  "failed": 0,
+  "failures": [
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/Data/Object3/Object25.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/Data/Object3/Object27.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/Data/Object3/Object33.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    },
+    {
+      "source": "/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/Data/Object3/Object90.bmd",
+      "error": "Corrupt/empty BMD (version 0x00)",
+      "type": "parse"
+    }
+  ]
+}
