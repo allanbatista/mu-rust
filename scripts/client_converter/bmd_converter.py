@@ -73,6 +73,7 @@ NON_MODEL_STEMS = {
 
 WORLD_DIR_PATTERN = re.compile(r"^world(\d+)$", re.IGNORECASE)
 OBJECT_DIR_PATTERN = re.compile(r"^object(\d+)$", re.IGNORECASE)
+NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9]+")
 
 # ---------------------------------------------------------------------------
 # Decryption
@@ -341,6 +342,13 @@ class BmdModel:
     meshs: List[BmdMesh]
     actions: List[BmdAction]
     bones: List[BmdBone]
+
+
+@dataclass(frozen=True)
+class ResolvedTexture:
+    uri: str
+    png_bytes: Optional[bytes]
+    found_on_disk: bool
 
 
 # ---------------------------------------------------------------------------
@@ -681,8 +689,111 @@ def _texture_name_to_png_uri(texture_name: str) -> Optional[str]:
     return f"{stem}.png"
 
 
-def _resolve_mesh_texture_uri(meshes: List[BmdMesh], mesh_index: int) -> Optional[str]:
-    """Resolve the effective texture URI for a mesh, honoring BMD texture indirection."""
+def _normalize_texture_lookup_key(raw_name: str) -> str:
+    return NON_ALNUM_PATTERN.sub("", raw_name.lower())
+
+
+class TextureResolver:
+    """Resolve BMD texture names against converted PNGs in a model output directory."""
+
+    def __init__(self, texture_dir: Path, embed_textures: bool) -> None:
+        self.texture_dir = texture_dir
+        self.embed_textures = embed_textures
+        self._index_built = False
+        self._by_lower_name: Dict[str, str] = {}
+        self._by_lower_stem: Dict[str, str] = {}
+        self._by_normalized_stem: Dict[str, str] = {}
+        self._cache: Dict[str, ResolvedTexture] = {}
+
+    def _build_index(self) -> None:
+        if self._index_built:
+            return
+        self._index_built = True
+
+        if not self.texture_dir.exists() or not self.texture_dir.is_dir():
+            return
+
+        png_files = sorted(
+            (
+                child for child in self.texture_dir.iterdir()
+                if child.is_file() and child.suffix.lower() == ".png"
+            ),
+            key=lambda path: path.name.lower(),
+        )
+
+        for path in png_files:
+            file_name = path.name
+            lower_name = file_name.lower()
+            lower_stem = path.stem.lower()
+            normalized_stem = _normalize_texture_lookup_key(path.stem)
+
+            self._by_lower_name.setdefault(lower_name, file_name)
+            self._by_lower_stem.setdefault(lower_stem, file_name)
+            if normalized_stem:
+                self._by_normalized_stem.setdefault(normalized_stem, file_name)
+
+    def _resolve_png_name(self, requested_uri: str) -> Optional[str]:
+        direct = self.texture_dir / requested_uri
+        if direct.exists() and direct.is_file():
+            return direct.name
+
+        self._build_index()
+
+        lower_name = requested_uri.lower()
+        if lower_name in self._by_lower_name:
+            return self._by_lower_name[lower_name]
+
+        requested_stem = Path(requested_uri).stem
+        lower_stem = requested_stem.lower()
+        if lower_stem in self._by_lower_stem:
+            return self._by_lower_stem[lower_stem]
+
+        normalized_stem = _normalize_texture_lookup_key(requested_stem)
+        if normalized_stem and normalized_stem in self._by_normalized_stem:
+            return self._by_normalized_stem[normalized_stem]
+
+        return None
+
+    def resolve(self, texture_name: str) -> Optional[ResolvedTexture]:
+        texture_uri = _texture_name_to_png_uri(texture_name)
+        if texture_uri is None:
+            return None
+
+        cache_key = texture_uri.lower()
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        resolved_name = self._resolve_png_name(texture_uri)
+        if resolved_name is None:
+            resolved = ResolvedTexture(uri=texture_uri, png_bytes=None, found_on_disk=False)
+            self._cache[cache_key] = resolved
+            return resolved
+
+        png_bytes: Optional[bytes] = None
+        if self.embed_textures:
+            texture_path = self.texture_dir / resolved_name
+            try:
+                png_bytes = texture_path.read_bytes()
+            except OSError as exc:
+                logging.warning(
+                    "Failed to read texture '%s' for embedding: %s",
+                    texture_path,
+                    exc,
+                )
+                png_bytes = None
+
+        resolved = ResolvedTexture(uri=resolved_name, png_bytes=png_bytes, found_on_disk=True)
+        self._cache[cache_key] = resolved
+        return resolved
+
+
+def _resolve_mesh_texture(
+    meshes: List[BmdMesh],
+    mesh_index: int,
+    texture_resolver: Optional[TextureResolver],
+) -> Optional[ResolvedTexture]:
+    """Resolve the effective texture for a mesh, honoring BMD texture indirection."""
     mesh = meshes[mesh_index]
     candidates: List[str] = []
 
@@ -691,15 +802,29 @@ def _resolve_mesh_texture_uri(meshes: List[BmdMesh], mesh_index: int) -> Optiona
         candidates.append(meshes[mesh.texture].texture_name)
     candidates.append(mesh.texture_name)
 
+    fallback: Optional[ResolvedTexture] = None
     for candidate in candidates:
-        uri = _texture_name_to_png_uri(candidate)
-        if uri:
-            return uri
+        if texture_resolver is None:
+            uri = _texture_name_to_png_uri(candidate)
+            if uri:
+                return ResolvedTexture(uri=uri, png_bytes=None, found_on_disk=False)
+            continue
 
-    return None
+        resolved = texture_resolver.resolve(candidate)
+        if resolved is None:
+            continue
+        if resolved.found_on_disk:
+            return resolved
+        if fallback is None:
+            fallback = resolved
+
+    return fallback
 
 
-def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
+def bmd_to_glb(
+    model: BmdModel,
+    texture_resolver: Optional[TextureResolver] = None,
+) -> Optional[bytes]:
     """Convert a parsed BMD model to GLB (GLTF Binary) bytes.
 
     Returns None if the model has no renderable geometry.
@@ -726,6 +851,8 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
 
     primitives_info: List[Tuple[int, int, int, int, Optional[str]]] = []
     # (vert_offset, vert_count, idx_offset, idx_count, texture_uri)
+    embedded_texture_payloads: Dict[str, bytes] = {}
+    missing_textures: set[str] = set()
 
     for mesh_index, mesh in enumerate(model.meshs):
         if mesh.num_triangles == 0:
@@ -828,12 +955,29 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
         # Offset indices
         all_indices.extend(i + vert_offset for i in mesh_indices)
 
+        resolved_texture = _resolve_mesh_texture(
+            model.meshs,
+            mesh_index,
+            texture_resolver,
+        )
+
+        texture_uri: Optional[str] = None
+        if resolved_texture is not None:
+            if resolved_texture.found_on_disk:
+                texture_uri = resolved_texture.uri
+                if resolved_texture.png_bytes is not None:
+                    embedded_texture_payloads.setdefault(texture_uri, resolved_texture.png_bytes)
+            else:
+                missing_textures.add(resolved_texture.uri)
+                if texture_resolver is None or not texture_resolver.embed_textures:
+                    texture_uri = resolved_texture.uri
+
         primitives_info.append((
             vert_offset,
             len(mesh_positions),
             idx_offset,
             len(mesh_indices),
-            _resolve_mesh_texture_uri(model.meshs, mesh_index),
+            texture_uri,
         ))
 
     if not all_positions or not all_indices:
@@ -870,24 +1014,38 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
     idx_offset_buf = tc_offset + tc_size
     idx_size = len(idx_data)
 
-    total_buf = pos_size + norm_size + tc_size + idx_size
+    binary_buffer = bytearray(pos_data + norm_data + tc_data + idx_data)
 
-    binary_buffer = pos_data + norm_data + tc_data + idx_data
+    POSITION_BUFFER_VIEW = 0
+    NORMAL_BUFFER_VIEW = 1
+    TEXCOORD_BUFFER_VIEW = 2
+    INDEX_BUFFER_VIEW = 3
+
+    buffer_views: List[Dict[str, object]] = [
+        # 0: positions
+        {"buffer": 0, "byteOffset": pos_offset, "byteLength": pos_size, "target": 34962},
+        # 1: normals
+        {"buffer": 0, "byteOffset": norm_offset, "byteLength": norm_size, "target": 34962},
+        # 2: texcoords
+        {"buffer": 0, "byteOffset": tc_offset, "byteLength": tc_size, "target": 34962},
+        # 3: indices
+        {"buffer": 0, "byteOffset": idx_offset_buf, "byteLength": idx_size, "target": 34963},
+    ]
 
     accessors: List[Dict[str, object]] = [
         # 0: POSITION
         {
-            "bufferView": 0, "componentType": 5126, "count": num_verts,
+            "bufferView": POSITION_BUFFER_VIEW, "componentType": 5126, "count": num_verts,
             "type": "VEC3", "max": max_pos, "min": min_pos,
         },
         # 1: NORMAL
         {
-            "bufferView": 1, "componentType": 5126, "count": num_verts,
+            "bufferView": NORMAL_BUFFER_VIEW, "componentType": 5126, "count": num_verts,
             "type": "VEC3",
         },
         # 2: TEXCOORD_0
         {
-            "bufferView": 2, "componentType": 5126, "count": num_verts,
+            "bufferView": TEXCOORD_BUFFER_VIEW, "componentType": 5126, "count": num_verts,
             "type": "VEC2",
         },
     ]
@@ -896,6 +1054,25 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
     textures: List[Dict[str, object]] = []
     materials: List[Dict[str, object]] = []
     material_index_by_texture: Dict[Optional[str], int] = {}
+    image_buffer_view_by_texture: Dict[str, int] = {}
+
+    if missing_textures:
+        missing_preview = ", ".join(sorted(missing_textures)[:4])
+        if texture_resolver is not None:
+            logging.debug(
+                "Model '%s': %d missing textures in %s (sample: %s)",
+                model.name,
+                len(missing_textures),
+                texture_resolver.texture_dir,
+                missing_preview,
+            )
+        else:
+            logging.debug(
+                "Model '%s': %d missing textures (sample: %s)",
+                model.name,
+                len(missing_textures),
+                missing_preview,
+            )
 
     def ensure_material(texture_uri: Optional[str]) -> int:
         cached = material_index_by_texture.get(texture_uri)
@@ -911,7 +1088,35 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
 
         if texture_uri:
             image_index = len(images)
-            images.append({"uri": texture_uri})
+            embedded_payload = embedded_texture_payloads.get(texture_uri)
+            if embedded_payload is not None:
+                image_buffer_view = image_buffer_view_by_texture.get(texture_uri)
+                if image_buffer_view is None:
+                    image_offset = len(binary_buffer)
+                    binary_buffer.extend(embedded_payload)
+                    image_padding = (4 - len(binary_buffer) % 4) % 4
+                    if image_padding:
+                        binary_buffer.extend(b"\x00" * image_padding)
+
+                    image_buffer_view = len(buffer_views)
+                    buffer_views.append(
+                        {
+                            "buffer": 0,
+                            "byteOffset": image_offset,
+                            "byteLength": len(embedded_payload),
+                        }
+                    )
+                    image_buffer_view_by_texture[texture_uri] = image_buffer_view
+
+                images.append(
+                    {
+                        "bufferView": image_buffer_view,
+                        "mimeType": "image/png",
+                        "name": texture_uri,
+                    }
+                )
+            else:
+                images.append({"uri": texture_uri})
 
             texture_index = len(textures)
             textures.append({"source": image_index})
@@ -930,7 +1135,7 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
     index_component_size = 4 if use_uint32 else 2
     for (_vert_offset, _vert_count, idx_offset, idx_count, texture_uri) in primitives_info:
         accessor: Dict[str, object] = {
-            "bufferView": 3,
+            "bufferView": INDEX_BUFFER_VIEW,
             "componentType": index_component_type,
             "count": idx_count,
             "type": "SCALAR",
@@ -959,17 +1164,8 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"mesh": 0, "name": model.name}],
-        "buffers": [{"byteLength": total_buf}],
-        "bufferViews": [
-            # 0: positions
-            {"buffer": 0, "byteOffset": pos_offset, "byteLength": pos_size, "target": 34962},
-            # 1: normals
-            {"buffer": 0, "byteOffset": norm_offset, "byteLength": norm_size, "target": 34962},
-            # 2: texcoords
-            {"buffer": 0, "byteOffset": tc_offset, "byteLength": tc_size, "target": 34962},
-            # 3: indices
-            {"buffer": 0, "byteOffset": idx_offset_buf, "byteLength": idx_size, "target": 34963},
-        ],
+        "buffers": [{"byteLength": len(binary_buffer)}],
+        "bufferViews": buffer_views,
         "accessors": accessors,
         "meshes": [{
             "name": model.name,
@@ -1021,6 +1217,8 @@ class ConversionStats:
     skipped_non_model: int = 0
     skipped_existing: int = 0
     skipped_corrupt: int = 0
+    pruned_embedded_pngs: int = 0
+    kept_pngs_with_external_refs: int = 0
     failed: int = 0
     failures: List[Dict] = field(default_factory=list)
 
@@ -1045,6 +1243,7 @@ def convert_single_bmd(
     source: Path,
     output_path: Path,
     force: bool,
+    embed_textures: bool,
     stats: ConversionStats,
 ) -> None:
     """Convert a single BMD file to GLB."""
@@ -1088,7 +1287,11 @@ def convert_single_bmd(
         return
 
     try:
-        glb_bytes = bmd_to_glb(model)
+        texture_resolver = TextureResolver(
+            texture_dir=output_path.parent,
+            embed_textures=embed_textures,
+        )
+        glb_bytes = bmd_to_glb(model, texture_resolver=texture_resolver)
     except Exception as exc:
         stats.failed += 1
         stats.failures.append({"source": str(source), "error": str(exc), "type": "convert"})
@@ -1119,11 +1322,12 @@ def _bmd_convert_worker(
     source: Path,
     output_path: Path,
     force: bool,
+    embed_textures: bool,
 ) -> ConversionStats:
     """Worker function for parallel BMD conversion. Returns local stats."""
     stats = ConversionStats()
     try:
-        convert_single_bmd(source, output_path, force, stats)
+        convert_single_bmd(source, output_path, force, embed_textures, stats)
     except Exception as exc:  # noqa: BLE001
         stats.failed += 1
         stats.failures.append({"source": str(source), "error": str(exc), "type": "worker"})
@@ -1195,6 +1399,104 @@ def discover_bmd_files(root: Path, world_filter: Optional[set[int]] = None) -> L
     return result
 
 
+def _read_glb_json_chunk(path: Path) -> Dict[str, object]:
+    data = path.read_bytes()
+    if len(data) < 20:
+        raise ValueError("GLB payload too small")
+
+    magic, version, total_length = struct.unpack_from("<III", data, 0)
+    if magic != 0x46546C67:
+        raise ValueError("invalid GLB magic")
+    if version != 2:
+        raise ValueError(f"unsupported GLB version: {version}")
+    if total_length > len(data):
+        raise ValueError("GLB truncated")
+
+    json_length, json_type = struct.unpack_from("<II", data, 12)
+    if json_type != 0x4E4F534A:
+        raise ValueError("GLB missing JSON chunk")
+
+    json_start = 20
+    json_end = json_start + json_length
+    if json_end > len(data):
+        raise ValueError("GLB JSON chunk truncated")
+
+    payload = json.loads(data[json_start:json_end].decode("utf-8").rstrip(" \t\r\n\x00"))
+    if not isinstance(payload, dict):
+        raise ValueError("GLB JSON root is not an object")
+    return payload
+
+
+def _external_png_uris_from_glb(path: Path) -> set[str]:
+    payload = _read_glb_json_chunk(path)
+    images = payload.get("images")
+    if not isinstance(images, list):
+        return set()
+
+    uris: set[str] = set()
+    for image in images:
+        if not isinstance(image, dict):
+            continue
+        uri = image.get("uri")
+        if not isinstance(uri, str) or not uri or uri.startswith("data:"):
+            continue
+        uri_path = uri.replace("\\", "/")
+        uris.add(Path(uri_path).name.lower())
+    return uris
+
+
+def prune_embedded_texture_pngs(
+    model_dirs: List[Path],
+    dry_run: bool,
+) -> Tuple[int, int]:
+    """Remove redundant PNGs in object dirs when GLBs are self-contained."""
+    pruned = 0
+    kept_external = 0
+
+    for model_dir in sorted(set(model_dirs)):
+        if not model_dir.exists() or not model_dir.is_dir():
+            continue
+        if OBJECT_DIR_PATTERN.fullmatch(model_dir.name) is None:
+            continue
+
+        glb_files = sorted(model_dir.glob("*.glb"))
+        if not glb_files:
+            continue
+
+        external_refs: set[str] = set()
+        parse_failed = False
+        for glb_path in glb_files:
+            try:
+                external_refs.update(_external_png_uris_from_glb(glb_path))
+            except Exception as exc:  # noqa: BLE001
+                logging.warning(
+                    "Skipping PNG prune in %s due to unreadable GLB %s (%s)",
+                    model_dir,
+                    glb_path.name,
+                    exc,
+                )
+                parse_failed = True
+                break
+        if parse_failed:
+            continue
+
+        for png_path in sorted(model_dir.glob("*.png")):
+            if png_path.name.lower() in external_refs:
+                kept_external += 1
+                continue
+            if dry_run:
+                logging.info("[DRY-RUN] Would prune embedded texture PNG: %s", png_path)
+                pruned += 1
+                continue
+            try:
+                png_path.unlink()
+                pruned += 1
+            except OSError as exc:
+                logging.warning("Failed to prune PNG %s: %s", png_path, exc)
+
+    return pruned, kept_external
+
+
 def convert_all(
     bmd_root: Path,
     output_root: Path,
@@ -1204,6 +1506,8 @@ def convert_all(
     dry_run: bool,
     verbose: bool,
     report_path: Optional[Path],
+    embed_textures: bool,
+    prune_embedded_textures: bool,
     workers: int = 1,
 ) -> ConversionStats:
     """Convert all BMD files found under bmd_root."""
@@ -1232,7 +1536,7 @@ def convert_all(
 
     if workers <= 1:
         for idx, (bmd_path, out_path) in enumerate(jobs):
-            convert_single_bmd(bmd_path, out_path, force, stats)
+            convert_single_bmd(bmd_path, out_path, force, embed_textures, stats)
 
             if (idx + 1) % 500 == 0 or (idx + 1) == total:
                 elapsed = time.time() - start_time
@@ -1253,6 +1557,7 @@ def convert_all(
                 [src for src, _ in jobs],
                 [dst for _, dst in jobs],
                 [force] * total,
+                [embed_textures] * total,
                 chunksize=chunksize,
             )
             for worker_stats in futures_iter:
@@ -1278,16 +1583,34 @@ def convert_all(
         stats.failed,
     )
 
+    if embed_textures and prune_embedded_textures:
+        touched_dirs = [out.parent for _, out in jobs]
+        pruned, kept_external = prune_embedded_texture_pngs(
+            model_dirs=touched_dirs,
+            dry_run=dry_run,
+        )
+        stats.pruned_embedded_pngs += pruned
+        stats.kept_pngs_with_external_refs += kept_external
+        logging.info(
+            "Embedded-texture cleanup: %d PNGs pruned, %d kept (still externally referenced)",
+            pruned,
+            kept_external,
+        )
+
     if report_path:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report = {
             "total_found": stats.total_found,
             "world_filter": sorted(world_filter) if world_filter else None,
+            "embed_textures": embed_textures,
+            "prune_embedded_textures": prune_embedded_textures,
             "converted": stats.converted,
             "skipped_no_geometry": stats.skipped_no_geometry,
             "skipped_non_model": stats.skipped_non_model,
             "skipped_existing": stats.skipped_existing,
             "skipped_corrupt": stats.skipped_corrupt,
+            "pruned_embedded_pngs": stats.pruned_embedded_pngs,
+            "kept_pngs_with_external_refs": stats.kept_pngs_with_external_refs,
             "failed": stats.failed,
             "failures": stats.failures,
         }
@@ -1330,6 +1653,22 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true", help="Force reconversion")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    parser.add_argument(
+        "--no-embed-textures",
+        action="store_true",
+        help=(
+            "Keep external PNG references in GLB instead of embedding textures. "
+            "Default behavior is to embed PNG payloads into the GLB."
+        ),
+    )
+    parser.add_argument(
+        "--keep-object-png-textures",
+        action="store_true",
+        help=(
+            "When embedding textures, keep PNG files in object*/ directories. "
+            "Default behavior prunes redundant PNGs after GLB generation."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument(
         "--report", type=Path, default=None,
@@ -1364,6 +1703,17 @@ def main() -> int:
             ", ".join(f"World{number}" for number in sorted(world_filter)),
         )
 
+    embed_textures = not args.no_embed_textures
+    prune_embedded_textures = embed_textures and (not args.keep_object_png_textures)
+    logging.info(
+        "Texture mode: %s",
+        "embedded in GLB" if embed_textures else "external PNG URIs",
+    )
+    if prune_embedded_textures:
+        logging.info("PNG cleanup mode: prune redundant object textures")
+    elif embed_textures:
+        logging.info("PNG cleanup mode: keep object texture PNG files")
+
     workers = max(1, args.workers)
     stats = convert_all(
         bmd_root=args.bmd_root,
@@ -1374,6 +1724,8 @@ def main() -> int:
         dry_run=args.dry_run,
         verbose=args.verbose,
         report_path=args.report,
+        embed_textures=embed_textures,
+        prune_embedded_textures=prune_embedded_textures,
         workers=workers,
     )
 

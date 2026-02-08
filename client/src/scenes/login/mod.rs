@@ -31,7 +31,7 @@ use super::SceneBuilder;
 
 // Default login world (can be changed via MU_LOGIN_WORLD environment variable)
 // Valid login worlds are: 55, 73, 77 (LoginScene, NewLoginScene1, NewLoginScene2)
-const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::Lorencia;
+const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::Noria;
 const DEFAULT_FIRE_PARTICLE_TEXTURE: &str = "data/Skill/bons_particle.png";
 const DEFAULT_CLOUD_PARTICLE_TEXTURE: &str = "data/Effect/hart_particle02.png";
 

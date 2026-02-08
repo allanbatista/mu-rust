@@ -13,6 +13,8 @@
 #   --textures-only     Only convert textures (skip models)
 #   --models-only       Only convert models (skip textures)
 #   --worlds LIST       Convert only selected worlds (ex: 74 or 74,75)
+#   --no-embed-textures Keep external PNG references in GLBs
+#   --keep-object-png-textures Keep object PNG files even when embedding into GLB
 #   --dry-run           Show what would be done without executing
 #   --force             Force reconversion of all files
 #   --verbose           Enable verbose logging
@@ -48,6 +50,7 @@ DRY_RUN=""
 FORCE=""
 VERBOSE=""
 WORLD_FILTER_ARGS=()
+MODEL_TEXTURE_ARGS=()
 
 # Colors for output
 RED='\033[0;31m'
@@ -65,6 +68,8 @@ function print_help() {
     echo "  --textures-only     Only convert textures (skip models)"
     echo "  --models-only       Only convert models (skip textures)"
     echo "  --worlds LIST       Convert only selected worlds (ex: 74 or 74,75)"
+    echo "  --no-embed-textures Keep external PNG references in GLBs"
+    echo "  --keep-object-png-textures Keep object PNG files even when embedding into GLB"
     echo "  --dry-run           Show what would be done without executing"
     echo "  --force             Force reconversion of all files"
     echo "  --verbose           Enable verbose logging"
@@ -112,6 +117,14 @@ while [[ $# -gt 0 ]]; do
             WORLD_FILTER_ARGS+=("--world" "$2")
             shift 2
             ;;
+        --no-embed-textures)
+            MODEL_TEXTURE_ARGS+=("--no-embed-textures")
+            shift
+            ;;
+        --keep-object-png-textures)
+            MODEL_TEXTURE_ARGS+=("--keep-object-png-textures")
+            shift
+            ;;
         --dry-run)
             DRY_RUN="--dry-run"
             shift
@@ -147,6 +160,9 @@ log_info "Legacy root: $LEGACY_ROOT"
 log_info "Output root: $OUTPUT_ROOT"
 if [ ${#WORLD_FILTER_ARGS[@]} -gt 0 ]; then
     log_info "World filter args: ${WORLD_FILTER_ARGS[*]}"
+fi
+if [ ${#MODEL_TEXTURE_ARGS[@]} -gt 0 ]; then
+    log_info "Model texture args: ${MODEL_TEXTURE_ARGS[*]}"
 fi
 
 START_TIME=$(date +%s)
@@ -184,6 +200,7 @@ if [ "$CONVERT_MODELS" = true ]; then
         --output-root "$OUTPUT_ROOT/data" \
         --format glb \
         "${WORLD_FILTER_ARGS[@]}" \
+        "${MODEL_TEXTURE_ARGS[@]}" \
         $DRY_RUN \
         $FORCE \
         $VERBOSE \
