@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use protocol::RouteKey;
 use serde::Serialize;
 
-use super::config::{EntryPointConfig, RuntimeConfig};
+use super::config::RuntimeConfig;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EntryPointRoute {
@@ -196,12 +196,14 @@ impl WorldDirectory {
         self.route_players.insert(route, players);
     }
 
+    #[cfg(test)]
     pub fn increment_route_players(&self, route: RouteKey) -> Option<u32> {
         let mut entry = self.route_players.get_mut(&route)?;
         *entry += 1;
         Some(*entry)
     }
 
+    #[cfg(test)]
     pub fn decrement_route_players(&self, route: RouteKey) -> Option<u32> {
         let mut entry = self.route_players.get_mut(&route)?;
         if *entry > 0 {
@@ -210,6 +212,7 @@ impl WorldDirectory {
         Some(*entry)
     }
 
+    #[cfg(test)]
     pub fn current_players_for_route(&self, route: RouteKey) -> Option<u32> {
         self.route_players.get(&route).map(|e| *e)
     }
@@ -311,31 +314,6 @@ impl WorldDirectory {
             })
             .map(|entry| *entry.value())
             .sum()
-    }
-
-    pub fn all_entry_points(&self) -> Vec<EntryPointRoute> {
-        let mut points = Vec::new();
-        for ((world_id, entry_id), entry) in self.entry_static.iter() {
-            points.push(EntryPointRoute {
-                world_id: *world_id,
-                entry_id: *entry_id,
-                host: entry.host.clone(),
-                port: entry.port,
-                max_players: entry.max_players,
-            });
-        }
-        points.sort_by_key(|e| (e.world_id, e.entry_id));
-        points
-    }
-
-    pub fn entry_route_from_config(world_id: u16, entry: &EntryPointConfig) -> EntryPointRoute {
-        EntryPointRoute {
-            world_id,
-            entry_id: entry.id,
-            host: entry.host.clone(),
-            port: entry.port,
-            max_players: entry.max_players,
-        }
     }
 }
 

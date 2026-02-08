@@ -4,8 +4,15 @@ members = [
     "protocol",
     "client",
     "server",
+    "common",
 ]
 
 [workspace.dependencies]
 protocol = { path = "protocol" }
+common = { path = "common" }
 
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

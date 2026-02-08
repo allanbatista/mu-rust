@@ -2,18 +2,24 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{AmbientLight, DirectionalLight, DirectionalLightBundle};
 use bevy::prelude::*;
 use bevy::render::camera::{ClearColorConfig, PerspectiveProjection, Projection};
+use common::WorldMap;
 
+/// Represents the current world/map being displayed in the client
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorldId {
+    /// Loading screen
     Loading,
-    Login,
+    /// Login/Character selection scene (uses a specific map)
+    Login(WorldMap),
+    /// Gameplay world
+    Game(WorldMap),
 }
 
 #[derive(Event)]
 pub struct WorldRequest(pub WorldId);
 
 #[derive(Event)]
-pub struct WorldReady(pub WorldId);
+pub struct WorldReady;
 
 #[derive(Component)]
 struct WorldRoot;
@@ -54,17 +60,22 @@ fn process_world_requests(
 
         spawn_world(&mut commands, *requested);
         current_world.0 = Some(*requested);
-        ready_writer.send(WorldReady(*requested));
+        ready_writer.send(WorldReady);
     }
 }
 
 fn spawn_world(commands: &mut Commands, world_id: WorldId) {
     match world_id {
         WorldId::Loading => {
+            info!("Spawning loading world");
             commands.spawn((WorldRoot, SpatialBundle::default()));
         }
-        WorldId::Login => {
-            // Placeholder; actual assets/camera setup will be added later
+        WorldId::Login(map) => {
+            info!("Spawning login world: {} (ID: {})", map.name(), map as u8);
+            commands.spawn((WorldRoot, SpatialBundle::default()));
+        }
+        WorldId::Game(map) => {
+            info!("Spawning game world: {} (ID: {})", map.name(), map as u8);
             commands.spawn((WorldRoot, SpatialBundle::default()));
         }
     }

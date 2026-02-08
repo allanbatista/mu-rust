@@ -27,6 +27,7 @@ import json
 import logging
 import math
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -67,6 +68,9 @@ NON_MODEL_STEMS = {
     "npcname", "quest", "skill", "filter", "dialog", "movelist",
     "serverlist", "chaosbox", "mixlist",
 }
+
+WORLD_DIR_PATTERN = re.compile(r"^world(\d+)$", re.IGNORECASE)
+OBJECT_DIR_PATTERN = re.compile(r"^object(\d+)$", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Decryption
@@ -1099,13 +1103,66 @@ def convert_single_bmd(
     logging.debug("Converted %s -> %s (%d bytes)", source, output_path, len(glb_bytes))
 
 
-def discover_bmd_files(root: Path) -> List[Path]:
+def parse_world_token(raw_value: str) -> int:
+    token = raw_value.strip()
+    if not token:
+        raise ValueError("empty world token")
+
+    world_match = WORLD_DIR_PATTERN.fullmatch(token)
+    if world_match:
+        return int(world_match.group(1))
+
+    object_match = OBJECT_DIR_PATTERN.fullmatch(token)
+    if object_match:
+        return int(object_match.group(1))
+
+    if token.isdigit():
+        return int(token)
+
+    raise ValueError(
+        f"invalid world token '{raw_value}'. Use values like '74' or 'World74'."
+    )
+
+
+def parse_world_filters(raw_values: List[str]) -> Optional[set[int]]:
+    if not raw_values:
+        return None
+
+    worlds: set[int] = set()
+    for raw in raw_values:
+        for token in raw.split(","):
+            stripped = token.strip()
+            if not stripped:
+                continue
+            worlds.add(parse_world_token(stripped))
+    return worlds or None
+
+
+def path_matches_world_filter(path: Path, world_filter: Optional[set[int]]) -> bool:
+    if not world_filter:
+        return True
+
+    for part in path.parts:
+        world_match = WORLD_DIR_PATTERN.fullmatch(part)
+        if world_match and int(world_match.group(1)) in world_filter:
+            return True
+        object_match = OBJECT_DIR_PATTERN.fullmatch(part)
+        if object_match and int(object_match.group(1)) in world_filter:
+            return True
+    return False
+
+
+def discover_bmd_files(root: Path, world_filter: Optional[set[int]] = None) -> List[Path]:
     """Discover all .bmd files under root, case-insensitive."""
     result = []
     for dirpath, _dirnames, filenames in os.walk(root):
         for fname in filenames:
             if fname.lower().endswith('.bmd'):
-                result.append(Path(dirpath) / fname)
+                candidate = Path(dirpath) / fname
+                rel = candidate.relative_to(root)
+                if not path_matches_world_filter(rel, world_filter):
+                    continue
+                result.append(candidate)
     result.sort()
     return result
 
@@ -1114,6 +1171,7 @@ def convert_all(
     bmd_root: Path,
     output_root: Path,
     fmt: str,
+    world_filter: Optional[set[int]],
     force: bool,
     dry_run: bool,
     verbose: bool,
@@ -1122,7 +1180,7 @@ def convert_all(
     """Convert all BMD files found under bmd_root."""
     stats = ConversionStats()
 
-    bmd_files = discover_bmd_files(bmd_root)
+    bmd_files = discover_bmd_files(bmd_root, world_filter=world_filter)
     total = len(bmd_files)
     logging.info("Found %d BMD files under %s", total, bmd_root)
 
@@ -1165,6 +1223,7 @@ def convert_all(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report = {
             "total_found": stats.total_found,
+            "world_filter": sorted(world_filter) if world_filter else None,
             "converted": stats.converted,
             "skipped_no_geometry": stats.skipped_no_geometry,
             "skipped_non_model": stats.skipped_non_model,
@@ -1199,6 +1258,17 @@ def main() -> int:
         "--format", choices=["glb"], default="glb",
         help="Output format (default: glb)",
     )
+    parser.add_argument(
+        "--world",
+        action="append",
+        default=[],
+        metavar="WORLD",
+        help=(
+            "Restrict conversion to specific worlds. Accepts values like '74' or "
+            "'World74'. Can be repeated and also supports comma-separated values "
+            "(example: --world 74,75)."
+        ),
+    )
     parser.add_argument("--force", action="store_true", help="Force reconversion")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
@@ -1219,10 +1289,23 @@ def main() -> int:
         logging.error("BMD root directory not found: %s", args.bmd_root)
         return 1
 
+    try:
+        world_filter = parse_world_filters(args.world)
+    except ValueError as exc:
+        logging.error("Invalid --world filter: %s", exc)
+        return 1
+
+    if world_filter:
+        logging.info(
+            "World filter active: %s",
+            ", ".join(f"World{number}" for number in sorted(world_filter)),
+        )
+
     stats = convert_all(
         bmd_root=args.bmd_root,
         output_root=args.output_root,
         fmt=args.format,
+        world_filter=world_filter,
         force=args.force,
         dry_run=args.dry_run,
         verbose=args.verbose,

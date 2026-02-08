@@ -11,7 +11,6 @@ pub struct SessionData {
     pub session_id: String,
     pub account_id: ObjectId,
     pub character_id: Option<ObjectId>,
-    pub login_timestamp: Instant,
     pub expires_at: Instant,
 }
 
@@ -25,7 +24,6 @@ impl SessionData {
             session_id: session_id.clone(),
             account_id,
             character_id: None,
-            login_timestamp: now,
             expires_at,
         }
     }
@@ -101,6 +99,7 @@ impl SessionManager {
         Ok(session.clone())
     }
 
+    #[cfg(test)]
     pub fn get_session(&self, session_id: &str) -> Option<SessionData> {
         self.sessions.get(session_id).map(|s| s.clone())
     }
@@ -119,6 +118,7 @@ impl SessionManager {
         }
     }
 
+    #[cfg(test)]
     pub fn select_character(&self, session_id: &str, character_id: ObjectId) -> Result<()> {
         let character_id_str = character_id.to_hex();
 

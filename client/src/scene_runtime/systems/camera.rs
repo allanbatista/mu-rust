@@ -223,7 +223,6 @@ pub fn setup_camera_tour(
         .waypoints
         .iter()
         .map(|wp| CameraWaypoint {
-            index: wp.index,
             position: Vec3::from(wp.position),
             look_at: Vec3::from(wp.look_at),
             move_acceleration: wp.move_acceleration,
@@ -248,7 +247,6 @@ pub fn setup_camera_tour(
                 speed: 1.0,
                 active: true,
                 loop_enabled: tour_data.r#loop,
-                blend_distance: tour_data.blend_distance,
             },
             CameraTourState { delay_timer: None },
         ));

@@ -28,35 +28,6 @@ pub fn update_boids(
                     transform.look_to(forward, Vec3::Y);
                 }
             }
-            FlightPattern::Patrol { points, current } => {
-                // Patrol between waypoints
-                if points.is_empty() {
-                    continue;
-                }
-
-                let target = points[*current];
-                let direction = (target - transform.translation).normalize();
-
-                // Move towards target
-                transform.translation += direction * boid.velocity.length() * time.delta_seconds();
-
-                // Check if reached target
-                if transform.translation.distance(target) < 1.0 {
-                    // Move to next point
-                    let mut new_current = *current + 1;
-                    if new_current >= points.len() {
-                        new_current = 0;
-                    }
-                    if let FlightPattern::Patrol { current, .. } = &mut pattern.pattern_type {
-                        *current = new_current;
-                    }
-                }
-
-                // Orient towards movement direction
-                if direction.length_squared() > 0.0 {
-                    transform.look_to(direction, Vec3::Y);
-                }
-            }
         }
 
         // Update animation timer

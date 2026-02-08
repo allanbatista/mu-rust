@@ -51,7 +51,6 @@ impl MapServerStats {
 #[derive(Debug)]
 enum MapServerCommand {
     Join {
-        session_id: u64,
         character_id: u64,
         x: u16,
         y: u16,
@@ -77,7 +76,6 @@ enum MapServerCommand {
 
 #[derive(Debug, Clone)]
 struct PlayerState {
-    session_id: u64,
     character_id: u64,
     x: u16,
     y: u16,
@@ -95,18 +93,13 @@ pub struct MapServerHandle {
 impl MapServerHandle {
     pub async fn join(
         &self,
-        session_id: u64,
+        _session_id: u64,
         character_id: u64,
         x: u16,
         y: u16,
     ) -> anyhow::Result<()> {
         self.tx
-            .send(MapServerCommand::Join {
-                session_id,
-                character_id,
-                x,
-                y,
-            })
+            .send(MapServerCommand::Join { character_id, x, y })
             .await?;
         Ok(())
     }
@@ -184,9 +177,8 @@ pub fn start_map_server(
             tokio::select! {
                 cmd = rx.recv() => {
                     match cmd {
-                        Some(MapServerCommand::Join { session_id, character_id, x, y }) => {
+                        Some(MapServerCommand::Join { character_id, x, y }) => {
                             players.insert(character_id, PlayerState {
-                                session_id,
                                 character_id,
                                 x,
                                 y,

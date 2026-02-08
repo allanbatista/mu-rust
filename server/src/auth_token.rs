@@ -119,10 +119,6 @@ impl AuthTokenService {
         })
     }
 
-    pub fn ttl(&self) -> Duration {
-        self.ttl
-    }
-
     pub fn issue_session_token(
         &self,
         account_id: u64,

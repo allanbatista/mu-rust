@@ -15,10 +15,7 @@ pub struct RuntimeSceneEntity;
 
 /// Component marking an entity as terrain
 #[derive(Component)]
-pub struct Terrain {
-    pub width: u32,
-    pub height: u32,
-}
+pub struct Terrain;
 
 // ============================================================================
 // SCENE OBJECT COMPONENTS
@@ -26,10 +23,7 @@ pub struct Terrain {
 
 /// Component marking a scene object
 #[derive(Component)]
-pub struct SceneObject {
-    pub id: String,
-    pub object_type: u32,
-}
+pub struct SceneObject;
 
 // ============================================================================
 // PARTICLE COMPONENTS
@@ -46,23 +40,9 @@ pub struct ParticleEmitter {
 
 #[derive(Clone)]
 pub struct ParticleEmitterConfig {
-    pub texture: Handle<Image>,
-    pub spawn_rate: f32,
     pub lifetime_range: (f32, f32),
     pub initial_velocity: Vec3,
     pub velocity_variance: Vec3,
-    pub scale_range: (f32, f32),
-    pub scale_variance: f32,
-    pub color_start: Color,
-    pub color_end: Color,
-    pub blend_mode: ParticleBlendMode,
-    pub rotation_speed: Option<f32>,
-}
-
-#[derive(Clone, Copy)]
-pub enum ParticleBlendMode {
-    Additive,
-    Alpha,
 }
 
 pub struct Particle {
@@ -70,8 +50,6 @@ pub struct Particle {
     pub velocity: Vec3,
     pub lifetime: f32,
     pub max_lifetime: f32,
-    pub scale: f32,
-    pub rotation: f32,
 }
 
 /// Particle definitions loaded from JSON
@@ -130,12 +108,10 @@ pub struct CameraTour {
     pub speed: f32,
     pub active: bool,
     pub loop_enabled: bool,
-    pub blend_distance: f32,
 }
 
 #[derive(Clone, Debug)]
 pub struct CameraWaypoint {
-    pub index: u32,
     pub position: Vec3,
     pub look_at: Vec3,
     pub move_acceleration: f32,
@@ -156,17 +132,8 @@ pub struct CameraTourState {
 /// Component for boid entities (eagles)
 #[derive(Component)]
 pub struct Boid {
-    pub boid_type: BoidType,
-    pub velocity: Vec3,
-    pub flight_radius: f32,
-    pub flight_height: f32,
     pub spawn_point: Vec3,
     pub animation_timer: Timer,
-}
-
-#[derive(Clone, Copy)]
-pub enum BoidType {
-    Eagle,
 }
 
 /// Component for boid flight pattern
@@ -179,5 +146,4 @@ pub struct BoidFlightPattern {
 #[derive(Clone)]
 pub enum FlightPattern {
     Circular { radius: f32, speed: f32 },
-    Patrol { points: Vec<Vec3>, current: usize },
 }

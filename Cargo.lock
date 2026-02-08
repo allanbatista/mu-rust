@@ -1682,6 +1682,7 @@ name = "client"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "common",
  "protocol",
  "rand 0.8.5",
  "serde",
@@ -1763,6 +1764,10 @@ dependencies = [
  "bytes",
  "memchr",
 ]
+
+[[package]]
+name = "common"
+version = "0.1.0"
 
 [[package]]
 name = "concurrent-queue"

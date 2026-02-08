@@ -83,16 +83,6 @@ impl AccountRepository {
         Ok(account)
     }
 
-    pub async fn find_by_id(&self, id: &ObjectId) -> Result<Option<Account>> {
-        let account = self.collection.find_one(doc! { "_id": id }).await?;
-        Ok(account)
-    }
-
-    pub async fn create(&self, account: &Account) -> Result<ObjectId> {
-        let result = self.collection.insert_one(account).await?;
-        Ok(result.inserted_id.as_object_id().unwrap())
-    }
-
     pub async fn update_last_login(&self, id: &ObjectId) -> Result<()> {
         let now = BsonDateTime::now();
         self.collection
@@ -121,20 +111,5 @@ impl CharacterRepository {
         }
 
         Ok(characters)
-    }
-
-    pub async fn find_by_name(&self, name: &str) -> Result<Option<Character>> {
-        let character = self.collection.find_one(doc! { "name": name }).await?;
-        Ok(character)
-    }
-
-    pub async fn create(&self, character: &Character) -> Result<ObjectId> {
-        let result = self.collection.insert_one(character).await?;
-        Ok(result.inserted_id.as_object_id().unwrap())
-    }
-
-    pub async fn delete_by_id(&self, id: &ObjectId) -> Result<()> {
-        self.collection.delete_one(doc! { "_id": id }).await?;
-        Ok(())
     }
 }

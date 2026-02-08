@@ -12,6 +12,7 @@
 # Options:
 #   --textures-only     Only convert textures (skip models)
 #   --models-only       Only convert models (skip textures)
+#   --worlds LIST       Convert only selected worlds (ex: 74 or 74,75)
 #   --dry-run           Show what would be done without executing
 #   --force             Force reconversion of all files
 #   --verbose           Enable verbose logging
@@ -20,11 +21,25 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUST_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$RUST_ROOT/.." && pwd)"
+
 # Default paths
 #LEGACY_ROOT="${LEGACY_ROOT:-cpp/MuClient5.2/bin/Data}"
 LEGACY_ROOT="${LEGACY_ROOT:-/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/Data}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-rust/assets}"
-BMD_CONVERTER="${BMD_CONVERTER:-bmd_converter.py}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-$RUST_ROOT/assets}"
+BMD_CONVERTER="${BMD_CONVERTER:-$SCRIPT_DIR/bmd_converter.py}"
+
+if [[ "$LEGACY_ROOT" != /* ]]; then
+    LEGACY_ROOT="$REPO_ROOT/$LEGACY_ROOT"
+fi
+if [[ "$OUTPUT_ROOT" != /* ]]; then
+    OUTPUT_ROOT="$REPO_ROOT/$OUTPUT_ROOT"
+fi
+if [[ "$BMD_CONVERTER" != /* ]]; then
+    BMD_CONVERTER="$SCRIPT_DIR/$BMD_CONVERTER"
+fi
 
 # Flags
 CONVERT_TEXTURES=true
@@ -32,6 +47,7 @@ CONVERT_MODELS=true
 DRY_RUN=""
 FORCE=""
 VERBOSE=""
+WORLD_FILTER_ARGS=()
 
 # Colors for output
 RED='\033[0;31m'
@@ -48,6 +64,7 @@ function print_help() {
     echo "Options:"
     echo "  --textures-only     Only convert textures (skip models)"
     echo "  --models-only       Only convert models (skip textures)"
+    echo "  --worlds LIST       Convert only selected worlds (ex: 74 or 74,75)"
     echo "  --dry-run           Show what would be done without executing"
     echo "  --force             Force reconversion of all files"
     echo "  --verbose           Enable verbose logging"
@@ -87,6 +104,14 @@ while [[ $# -gt 0 ]]; do
             CONVERT_TEXTURES=false
             shift
             ;;
+        --world|--worlds)
+            if [[ -z "${2:-}" ]]; then
+                log_error "Missing value for $1 (expected world list like 74 or 74,75)"
+                exit 1
+            fi
+            WORLD_FILTER_ARGS+=("--world" "$2")
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN="--dry-run"
             shift
@@ -120,6 +145,9 @@ fi
 log_info "Starting asset conversion pipeline"
 log_info "Legacy root: $LEGACY_ROOT"
 log_info "Output root: $OUTPUT_ROOT"
+if [ ${#WORLD_FILTER_ARGS[@]} -gt 0 ]; then
+    log_info "World filter args: ${WORLD_FILTER_ARGS[*]}"
+fi
 
 START_TIME=$(date +%s)
 
@@ -127,10 +155,11 @@ START_TIME=$(date +%s)
 if [ "$CONVERT_TEXTURES" = true ]; then
     log_info "Converting textures and auxiliary assets..."
 
-    python3 assets_convert.py \
+    python3 "$SCRIPT_DIR/assets_convert.py" \
         --legacy-root "$LEGACY_ROOT" \
         --output-root "$OUTPUT_ROOT/data" \
         --skip-models \
+        "${WORLD_FILTER_ARGS[@]}" \
         $DRY_RUN \
         $FORCE \
         $VERBOSE \
@@ -154,6 +183,7 @@ if [ "$CONVERT_MODELS" = true ]; then
         --bmd-root "$LEGACY_ROOT" \
         --output-root "$OUTPUT_ROOT/data" \
         --format glb \
+        "${WORLD_FILTER_ARGS[@]}" \
         $DRY_RUN \
         $FORCE \
         $VERBOSE \

@@ -7,7 +7,6 @@ use crate::{error::Result, monitor::HealthMonitor, session::SessionManager};
 pub struct HeartbeatRequest {
     pub world_id: String,
     pub current_players: u32,
-    pub timestamp: u64,
 }
 
 #[derive(Debug, Serialize)]

@@ -17,6 +17,7 @@ pub struct Account {
 }
 
 impl Account {
+    #[cfg(test)]
     pub fn new(username: String, password: &str) -> Result<Self> {
         let password_hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)?;
 
@@ -33,10 +34,6 @@ impl Account {
     pub fn verify_password(&self, password: &str) -> Result<bool> {
         Ok(bcrypt::verify(password, &self.password_hash)?)
     }
-
-    pub fn update_last_login(&mut self) {
-        self.last_login = Utc::now();
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +48,7 @@ pub struct Character {
 }
 
 impl Character {
+    #[cfg(test)]
     pub fn new(account_id: ObjectId, name: String, class: String) -> Self {
         Self {
             id: None,

@@ -7,10 +7,6 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageScope {
     LocalMap(RouteKey),
-    Party(u64),
-    Guild(u64),
-    Global(u16),
-    Whisper(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +30,7 @@ impl MessageHub {
         }
     }
 
+    #[cfg(test)]
     pub fn subscribe(&self, scope: MessageScope) -> broadcast::Receiver<HubMessage> {
         let key = scope_key(&scope);
         let sender = self.channels.entry(key).or_insert_with(|| {
@@ -53,10 +50,6 @@ impl MessageHub {
 
         sender.send(message).unwrap_or(0)
     }
-
-    pub fn active_channel_count(&self) -> usize {
-        self.channels.len()
-    }
 }
 
 impl Default for MessageHub {
@@ -71,10 +64,6 @@ fn scope_key(scope: &MessageScope) -> String {
             "local:{}:{}:{}:{}",
             route.world_id, route.entry_id, route.map_id, route.instance_id
         ),
-        MessageScope::Party(id) => format!("party:{id}"),
-        MessageScope::Guild(id) => format!("guild:{id}"),
-        MessageScope::Global(world_id) => format!("global:{world_id}"),
-        MessageScope::Whisper(char_id) => format!("whisper:{char_id}"),
     }
 }
 

@@ -39,10 +39,12 @@ impl ServerConfig {
         Ok(config)
     }
 
+    #[cfg(test)]
     pub fn get_server(&self, server_id: &str) -> Option<&GameServer> {
         self.servers.iter().find(|s| s.id == server_id)
     }
 
+    #[cfg(test)]
     pub fn get_world(&self, world_id: &str) -> Option<(&GameServer, &WorldServer)> {
         for server in &self.servers {
             if let Some(world) = server.worlds.iter().find(|w| w.id == world_id) {

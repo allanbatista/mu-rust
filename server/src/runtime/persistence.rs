@@ -21,8 +21,6 @@ pub struct CharacterStateSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CriticalEventKind {
-    TradeCommit,
-    InventoryMutation,
     EconomyMutation,
 }
 
@@ -71,7 +69,6 @@ enum PersistenceCommand {
         event: CriticalEvent,
         ack: Option<oneshot::Sender<Result<(), PersistenceError>>>,
     },
-    FlushNow,
     Shutdown,
 }
 
@@ -106,10 +103,12 @@ impl InMemoryPersistenceSink {
         }
     }
 
+    #[cfg(test)]
     pub fn state_count(&self) -> usize {
         self.states.len()
     }
 
+    #[cfg(test)]
     pub fn critical_count(&self) -> usize {
         self.critical_log
             .lock()
@@ -117,6 +116,7 @@ impl InMemoryPersistenceSink {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub fn get_state(&self, character_id: u64) -> Option<CharacterStateSnapshot> {
         self.states
             .get(&character_id)
@@ -188,13 +188,6 @@ impl PersistenceHandle {
         ack_rx.await.map_err(|_| PersistenceError::ChannelClosed)?
     }
 
-    pub async fn flush_now(&self) -> Result<(), PersistenceError> {
-        self.tx
-            .send(PersistenceCommand::FlushNow)
-            .await
-            .map_err(|_| PersistenceError::ChannelClosed)
-    }
-
     pub async fn shutdown(&self) -> Result<(), PersistenceError> {
         self.tx
             .send(PersistenceCommand::Shutdown)
@@ -251,9 +244,6 @@ pub fn start_persistence_worker(
                             if let Some(ack) = ack {
                                 let _ = ack.send(result);
                             }
-                        }
-                        Some(PersistenceCommand::FlushNow) => {
-                            flush_pending(&sink, &mut pending, max_batch_size, &metrics_clone).await;
                         }
                         Some(PersistenceCommand::Shutdown) | None => {
                             flush_pending(&sink, &mut pending, max_batch_size, &metrics_clone).await;
@@ -434,7 +424,7 @@ mod tests {
                 event_id: 99,
                 character_id: 7,
                 route: sample_route(),
-                kind: CriticalEventKind::TradeCommit,
+                kind: CriticalEventKind::EconomyMutation,
                 payload: "trade#99".to_string(),
                 occurred_at_ms: 123,
             })

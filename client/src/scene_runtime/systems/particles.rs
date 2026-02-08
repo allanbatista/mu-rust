@@ -2,6 +2,8 @@ use crate::scene_runtime::components::*;
 use bevy::prelude::*;
 use rand::Rng;
 
+const MAX_PARTICLE_SPAWNS_PER_FRAME: u32 = 32;
+
 /// System to update particle emitters
 pub fn update_particle_emitters(
     mut emitters: Query<(&mut ParticleEmitter, &GlobalTransform)>,
@@ -15,8 +17,13 @@ pub fn update_particle_emitters(
         // Update spawn timer
         emitter.spawn_timer.tick(time.delta());
 
-        // Spawn new particles
-        while emitter.spawn_timer.just_finished() {
+        // Spawn particles for each timer completion this tick.
+        // Cap the burst to avoid large CPU spikes when a frame stalls.
+        let spawn_count = emitter
+            .spawn_timer
+            .times_finished_this_tick()
+            .min(MAX_PARTICLE_SPAWNS_PER_FRAME);
+        for _ in 0..spawn_count {
             spawn_particle(&mut emitter, transform.translation());
         }
 
@@ -39,18 +46,11 @@ fn spawn_particle(emitter: &mut ParticleEmitter, position: Vec3) {
 
     let velocity = emitter.config.initial_velocity + velocity_offset;
 
-    let scale_variance =
-        rng.gen_range(-emitter.config.scale_variance..=emitter.config.scale_variance);
-    let scale =
-        rng.gen_range(emitter.config.scale_range.0..=emitter.config.scale_range.1) + scale_variance;
-
     let particle = Particle {
         position,
         velocity,
         lifetime: 0.0,
         max_lifetime: lifetime,
-        scale,
-        rotation: 0.0,
     };
 
     emitter.particles.push(particle);

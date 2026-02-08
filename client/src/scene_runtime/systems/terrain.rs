@@ -75,10 +75,7 @@ pub fn spawn_terrain_when_ready(
         .spawn((
             RuntimeSceneEntity,
             TerrainSpawned,
-            Terrain {
-                width: config.size.width,
-                height: config.size.depth,
-            },
+            Terrain,
             PbrBundle {
                 mesh: mesh_handle,
                 material: material_handle,

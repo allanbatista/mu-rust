@@ -3,7 +3,6 @@ use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::ecs::system::EntityCommands;
 use bevy::math::primitives::Cuboid;
 use bevy::prelude::*;
-use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -117,10 +116,7 @@ fn spawn_scene_object(
 
     let mut entity_cmd = commands.spawn((
         RuntimeSceneEntity,
-        SceneObject {
-            id: object_def.id.clone(),
-            object_type: object_def.object_type,
-        },
+        SceneObject,
         SpatialBundle {
             transform: Transform {
                 translation: position,
@@ -182,7 +178,7 @@ fn spawn_scene_object(
     // Add particle emitter if specified
     if let Some(emitter_type) = &object_def.properties.particle_emitter {
         if let Some(emitter_def) = particle_defs.emitters.get(emitter_type) {
-            add_particle_emitter(&mut entity_cmd, asset_server, emitter_def);
+            add_particle_emitter(&mut entity_cmd, emitter_def);
         } else {
             warn!(
                 "Particle emitter '{}' not found for object '{}'",
@@ -252,114 +248,6 @@ fn asset_disk_path(asset_path: &str) -> PathBuf {
         .join(asset_path)
 }
 
-fn validate_gltf_asset(path: &Path) -> Result<(), String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|error| format!("failed to read glTF '{}': {}", path.display(), error))?;
-    let json: Value = serde_json::from_str(&raw)
-        .map_err(|error| format!("invalid glTF JSON '{}': {}", path.display(), error))?;
-
-    let meshes = json.get("meshes").and_then(Value::as_array);
-    let buffers = json.get("buffers").and_then(Value::as_array);
-    let accessors = json.get("accessors").and_then(Value::as_array);
-    let buffer_views = json.get("bufferViews").and_then(Value::as_array);
-
-    let mesh_count = meshes.map_or(0, |items| items.len());
-    let buffer_count = buffers.map_or(0, |items| items.len());
-    let accessor_count = accessors.map_or(0, |items| items.len());
-    let buffer_view_count = buffer_views.map_or(0, |items| items.len());
-
-    if mesh_count == 0 || buffer_count == 0 || accessor_count == 0 || buffer_view_count == 0 {
-        return Err(format!(
-            "non-renderable glTF: meshes={}, buffers={}, accessors={}, bufferViews={}",
-            mesh_count, buffer_count, accessor_count, buffer_view_count
-        ));
-    }
-
-    let Some(meshes) = meshes else {
-        return Err("non-renderable glTF: missing meshes array".to_string());
-    };
-    let Some(accessors) = accessors else {
-        return Err("non-renderable glTF: missing accessors array".to_string());
-    };
-    let Some(buffer_views) = buffer_views else {
-        return Err("non-renderable glTF: missing bufferViews array".to_string());
-    };
-    let Some(buffers) = buffers else {
-        return Err("non-renderable glTF: missing buffers array".to_string());
-    };
-
-    let mut primitive_count = 0usize;
-    let mut position_primitive_count = 0usize;
-    for mesh in meshes {
-        let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) else {
-            continue;
-        };
-        primitive_count += primitives.len();
-        for primitive in primitives {
-            let Some(attributes) = primitive.get("attributes").and_then(Value::as_object) else {
-                continue;
-            };
-            let Some(position_accessor) = attributes.get("POSITION").and_then(Value::as_u64) else {
-                continue;
-            };
-            if (position_accessor as usize) < accessors.len() {
-                position_primitive_count += 1;
-            }
-        }
-    }
-
-    if primitive_count == 0 || position_primitive_count == 0 {
-        return Err(format!(
-            "non-renderable glTF: primitives={}, primitives_with_position={}",
-            primitive_count, position_primitive_count
-        ));
-    }
-
-    for accessor in accessors {
-        let Some(buffer_view_index) = accessor.get("bufferView").and_then(Value::as_u64) else {
-            return Err("non-renderable glTF: accessor without bufferView".to_string());
-        };
-        if (buffer_view_index as usize) >= buffer_views.len() {
-            return Err("non-renderable glTF: accessor references missing bufferView".to_string());
-        }
-    }
-
-    for buffer_view in buffer_views {
-        let Some(buffer_index) = buffer_view.get("buffer").and_then(Value::as_u64) else {
-            return Err("non-renderable glTF: bufferView without buffer".to_string());
-        };
-        if (buffer_index as usize) >= buffers.len() {
-            return Err("non-renderable glTF: bufferView references missing buffer".to_string());
-        }
-    }
-
-    for buffer in buffers {
-        let Some(uri) = buffer.get("uri").and_then(Value::as_str) else {
-            continue;
-        };
-        if uri.starts_with("data:") {
-            continue;
-        }
-
-        let binary_path = path.parent().unwrap_or_else(|| Path::new("")).join(uri);
-        let metadata = fs::metadata(&binary_path).map_err(|error| {
-            format!(
-                "non-renderable glTF: missing buffer payload '{}': {}",
-                binary_path.display(),
-                error
-            )
-        })?;
-        if metadata.len() == 0 {
-            return Err(format!(
-                "non-renderable glTF: empty buffer payload '{}'",
-                binary_path.display()
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 fn validate_glb_asset(path: &Path) -> Result<(), String> {
     let size = fs::metadata(path)
         .map_err(|error| format!("failed to stat GLB '{}': {}", path.display(), error))?
@@ -407,44 +295,11 @@ fn spawn_model_proxy(
 }
 
 /// Add particle emitter component to entity
-fn add_particle_emitter(
-    entity_cmd: &mut EntityCommands,
-    asset_server: &AssetServer,
-    emitter_def: &ParticleEmitterDef,
-) {
-    let texture = asset_server.load(&emitter_def.texture);
-
-    let blend_mode = match emitter_def.blend_mode.as_str() {
-        "additive" => ParticleBlendMode::Additive,
-        "alpha" => ParticleBlendMode::Alpha,
-        _ => {
-            warn!("Unknown blend mode: {}", emitter_def.blend_mode);
-            ParticleBlendMode::Alpha
-        }
-    };
-
+fn add_particle_emitter(entity_cmd: &mut EntityCommands, emitter_def: &ParticleEmitterDef) {
     let config = ParticleEmitterConfig {
-        texture,
-        spawn_rate: emitter_def.spawn_rate,
         lifetime_range: (emitter_def.lifetime[0], emitter_def.lifetime[1]),
         initial_velocity: Vec3::from(emitter_def.initial_velocity),
         velocity_variance: Vec3::from(emitter_def.velocity_variance),
-        scale_range: (emitter_def.scale[0], emitter_def.scale[1]),
-        scale_variance: emitter_def.scale_variance,
-        color_start: Color::srgba(
-            emitter_def.color[0],
-            emitter_def.color[1],
-            emitter_def.color[2],
-            emitter_def.color[3],
-        ),
-        color_end: Color::srgba(
-            emitter_def.color_fade[0],
-            emitter_def.color_fade[1],
-            emitter_def.color_fade[2],
-            emitter_def.color_fade[3],
-        ),
-        blend_mode,
-        rotation_speed: emitter_def.rotation_speed,
     };
 
     entity_cmd.insert(ParticleEmitter {
@@ -477,7 +332,6 @@ fn add_dynamic_light(
 fn spawn_boid(commands: &mut Commands, object_def: &SceneObjectDef) {
     let spawn_point = Vec3::from(object_def.position);
     let flight_radius = object_def.properties.flight_radius.unwrap_or(30.0);
-    let flight_height = object_def.properties.flight_height.unwrap_or(50.0);
 
     commands.spawn((
         RuntimeSceneEntity,
@@ -486,10 +340,6 @@ fn spawn_boid(commands: &mut Commands, object_def: &SceneObjectDef) {
             ..default()
         },
         Boid {
-            boid_type: BoidType::Eagle,
-            velocity: Vec3::ZERO,
-            flight_radius,
-            flight_height,
             spawn_point,
             animation_timer: Timer::from_seconds(0.1, TimerMode::Repeating),
         },

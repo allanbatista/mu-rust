@@ -49,6 +49,7 @@ impl ProtocolRuntime {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn codec(&self) -> &WireCodec {
         &self.codec

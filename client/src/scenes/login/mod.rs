@@ -1,3 +1,20 @@
+//! # Login Scene Module
+//!
+//! Manages the login/character selection scene using the WorldMap enum from the common crate.
+//!
+//! ## Setting Login World
+//!
+//! The login world can be configured via the `MU_LOGIN_WORLD` environment variable:
+//!
+//! ```bash
+//! # Using world ID (numeric)
+//! MU_LOGIN_WORLD=55    # Original login scene (WD_55LOGINSCENE)
+//! MU_LOGIN_WORLD=73    # New login scene v1 (WD_73NEW_LOGIN_SCENE)
+//! MU_LOGIN_WORLD=77    # New login scene v2 (WD_77NEW_LOGIN_SCENE)
+//! ```
+//!
+//! If not set, defaults to `WorldMap::LoginScene` (ID 55).
+
 use crate::scene_runtime::components::{
     ParticleDefinitions, ParticleEmitterDef, RuntimeSceneEntity,
 };
@@ -7,33 +24,61 @@ use crate::scene_runtime::systems::ParticleDefinitionsLoader;
 use crate::world::{WorldId, WorldRequest};
 use bevy::prelude::*;
 use bevy::state::prelude::{OnEnter, OnExit};
+use common::WorldMap;
 use std::collections::HashMap;
 
 use super::SceneBuilder;
 
-const DEFAULT_LOGIN_WORLD: u32 = 73;
+// Default login world (can be changed via MU_LOGIN_WORLD environment variable)
+// Valid login worlds are: 55, 73, 77 (LoginScene, NewLoginScene1, NewLoginScene2)
+const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::Lorencia;
 const DEFAULT_FIRE_PARTICLE_TEXTURE: &str = "data/Skill/bons_particle.png";
 const DEFAULT_CLOUD_PARTICLE_TEXTURE: &str = "data/Effect/hart_particle02.png";
 
-fn login_world_name() -> String {
+/// Gets the login world from environment variable or returns the default.
+///
+/// Accepts:
+/// - `MU_LOGIN_WORLD=55` or `MU_LOGIN_WORLD=LoginScene`
+/// - `MU_LOGIN_WORLD=73` or `MU_LOGIN_WORLD=NewLoginScene1`
+/// - `MU_LOGIN_WORLD=77` or `MU_LOGIN_WORLD=NewLoginScene2`
+fn get_login_world() -> WorldMap {
     match std::env::var("MU_LOGIN_WORLD") {
         Ok(raw_world) => {
             let trimmed = raw_world.trim();
-            if let Some(stripped) = trimmed.strip_prefix("World") {
-                if let Ok(parsed) = stripped.parse::<u32>() {
-                    return format!("World{}", parsed);
+
+            // Try to parse as world ID (u8)
+            if let Ok(id) = trimmed.parse::<u8>() {
+                if let Some(map) = WorldMap::from_id(id) {
+                    // Validate that it's a login scene
+                    if map.is_login_scene() {
+                        info!("Using login world from MU_LOGIN_WORLD: {} (ID: {})", map.name(), id);
+                        return map;
+                    } else {
+                        warn!(
+                            "MU_LOGIN_WORLD={} (ID: {}) is not a login scene; using default {}",
+                            id,
+                            id,
+                            DEFAULT_LOGIN_WORLD.name()
+                        );
+                    }
+                } else {
+                    warn!(
+                        "MU_LOGIN_WORLD={} is not a valid world ID; using default {}",
+                        id,
+                        DEFAULT_LOGIN_WORLD.name()
+                    );
                 }
-            } else if let Ok(parsed) = trimmed.parse::<u32>() {
-                return format!("World{}", parsed);
+            } else {
+                warn!(
+                    "MU_LOGIN_WORLD='{}' is not a valid world ID; using default {}",
+                    raw_world,
+                    DEFAULT_LOGIN_WORLD.name()
+                );
             }
 
-            warn!(
-                "Invalid MU_LOGIN_WORLD='{}'; using default World{}",
-                raw_world, DEFAULT_LOGIN_WORLD
-            );
-            format!("World{}", DEFAULT_LOGIN_WORLD)
+            DEFAULT_LOGIN_WORLD
         }
-        Err(_) => format!("World{}", DEFAULT_LOGIN_WORLD),
+        Err(_) => DEFAULT_LOGIN_WORLD,
     }
 }
 
@@ -98,10 +143,17 @@ fn setup_login_scene(
     mut particle_definitions_assets: ResMut<Assets<ParticleDefinitions>>,
     mut world_requests: EventWriter<WorldRequest>,
 ) {
-    let world_name = login_world_name();
-    info!("Setting up login scene from {}", world_name);
+    let login_world = get_login_world();
+    let world_name = format!("World{}", login_world as u8);
 
-    world_requests.send(WorldRequest(WorldId::Login));
+    info!(
+        "Setting up login scene: {} (ID: {})",
+        login_world.name(),
+        login_world as u8
+    );
+
+    // Send world request with the login world map
+    world_requests.send(WorldRequest(WorldId::Login(login_world)));
 
     let particle_defs = particle_definitions_assets.add(default_particle_definitions());
     commands.insert_resource(RuntimeSceneAssets {

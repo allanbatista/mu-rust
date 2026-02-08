@@ -6,15 +6,13 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct HeartbeatData {
-    pub world_id: String,
     pub last_heartbeat: Instant,
     pub current_players: u32,
 }
 
 impl HeartbeatData {
-    pub fn new(world_id: String, current_players: u32) -> Self {
+    pub fn new(current_players: u32) -> Self {
         Self {
-            world_id,
             last_heartbeat: Instant::now(),
             current_players,
         }
@@ -51,7 +49,7 @@ impl HealthMonitor {
                 current_players
             );
         } else {
-            let heartbeat = HeartbeatData::new(world_id.clone(), current_players);
+            let heartbeat = HeartbeatData::new(current_players);
             self.heartbeats.insert(world_id.clone(), heartbeat);
             log::info!(
                 "First heartbeat received for world {} with {} players",
@@ -94,6 +92,7 @@ impl HealthMonitor {
         removed
     }
 
+    #[cfg(test)]
     pub fn get_all_online_worlds(&self) -> Vec<(String, u32)> {
         self.heartbeats
             .iter()

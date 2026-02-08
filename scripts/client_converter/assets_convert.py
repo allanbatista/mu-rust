@@ -194,6 +194,17 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--world",
+        action="append",
+        default=[],
+        metavar="WORLD",
+        help=(
+            "Restrict conversion to specific worlds. Accepts values like '74' or "
+            "'World74'. Can be repeated and also supports comma-separated values "
+            "(example: --world 74,75)."
+        ),
+    )
+    parser.add_argument(
         "--output-root",
         type=Path,
         default=DEFAULT_OUTPUT_ROOT,
@@ -270,17 +281,75 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def parse_world_token(raw_value: str) -> int:
+    token = raw_value.strip()
+    if not token:
+        raise ValueError("empty world token")
+
+    world_match = WORLD_DIR_PATTERN.fullmatch(token.lower())
+    if world_match:
+        return int(world_match.group(1))
+
+    object_match = OBJECT_DIR_PATTERN.fullmatch(token.lower())
+    if object_match:
+        return int(object_match.group(1))
+
+    if token.isdigit():
+        return int(token)
+
+    raise ValueError(
+        f"invalid world token '{raw_value}'. Use values like '74' or 'World74'."
+    )
+
+
+def parse_world_filters(raw_values: Sequence[str]) -> Optional[set[int]]:
+    if not raw_values:
+        return None
+
+    worlds: set[int] = set()
+    for raw in raw_values:
+        for token in raw.split(","):
+            stripped = token.strip()
+            if not stripped:
+                continue
+            worlds.add(parse_world_token(stripped))
+
+    return worlds or None
+
+
+def path_matches_world_filter(path: Path, world_filter: Optional[set[int]]) -> bool:
+    if not world_filter:
+        return True
+
+    for part in path.parts:
+        world_match = WORLD_DIR_PATTERN.fullmatch(part.lower())
+        if world_match and int(world_match.group(1)) in world_filter:
+            return True
+
+        object_match = OBJECT_DIR_PATTERN.fullmatch(part.lower())
+        if object_match and int(object_match.group(1)) in world_filter:
+            return True
+
+    return False
+
+
 def ensure_dir(path: Path, dry_run: bool) -> None:
     if dry_run:
         return
     path.mkdir(parents=True, exist_ok=True)
 
 
-def prepare_model_jobs(legacy_root: Path, output_root: Path) -> Iterator[ModelJob]:
+def prepare_model_jobs(
+    legacy_root: Path,
+    output_root: Path,
+    world_filter: Optional[set[int]] = None,
+) -> Iterator[ModelJob]:
     for src in legacy_root.rglob("*.bmd"):
         if not src.is_file():
             continue
         rel = src.relative_to(legacy_root)
+        if not path_matches_world_filter(rel, world_filter):
+            continue
         dst = output_root / "models" / rel
         yield ModelJob(source=src, target=dst)
 
@@ -357,9 +426,15 @@ def execute_bmd_job(
             return False
 
 
-def discover_textures(legacy_root: Path) -> Iterator[Path]:
+def discover_textures(
+    legacy_root: Path,
+    world_filter: Optional[set[int]] = None,
+) -> Iterator[Path]:
     for path in legacy_root.rglob("*"):
         if not path.is_file():
+            continue
+        rel = path.relative_to(legacy_root)
+        if not path_matches_world_filter(rel, world_filter):
             continue
         ext = path.suffix.lower()
         if ext in IMAGE_SPECS:
@@ -2310,6 +2385,7 @@ def copy_other_assets(
     output_root: Path,
     fallback_roots: Sequence[Path],
     processed: Iterable[Path],
+    world_filter: Optional[set[int]],
     force: bool,
     dry_run: bool,
     stats: ConversionStats,
@@ -2336,6 +2412,16 @@ def copy_other_assets(
     # Only copy files with extensions that the Rust client actually needs.
     ALLOW_COPY_EXTENSIONS = {".png", ".json", ".glb", ".bin", ".wgsl"}
 
+    if world_filter:
+        for world_number in sorted(world_filter):
+            world_dir = find_case_insensitive_child_dir(legacy_root, f"World{world_number}")
+            if world_dir is None:
+                continue
+            try:
+                world_dirs_seen.add(world_dir.relative_to(legacy_root))
+            except ValueError:
+                continue
+
     for path in legacy_root.rglob("*"):
         if not path.is_file():
             continue
@@ -2347,6 +2433,8 @@ def copy_other_assets(
             continue
 
         rel = path.relative_to(legacy_root)
+        if not path_matches_world_filter(rel, world_filter):
+            continue
 
         world_match = WORLD_DIR_PATTERN.match(rel.parent.name.lower())
         if world_match:
@@ -2516,6 +2604,18 @@ def main(argv: Sequence[str]) -> int:
         format="[%(levelname)s] %(message)s",
     )
 
+    try:
+        world_filter = parse_world_filters(args.world)
+    except ValueError as exc:
+        logging.error("Invalid --world filter: %s", exc)
+        return 1
+
+    if world_filter:
+        logging.info(
+            "World filter active: %s",
+            ", ".join(f"World{number}" for number in sorted(world_filter)),
+        )
+
     legacy_root = args.legacy_root.resolve()
     output_root = args.output_root.resolve()
     fallback_roots: List[Path] = []
@@ -2552,7 +2652,13 @@ def main(argv: Sequence[str]) -> int:
                 "No BMD converter provided and --copy-raw-bmd not set; all .bmd files will be skipped."
             )
         logging.info("Scanning for BMD models under %s", legacy_root)
-        jobs = list(prepare_model_jobs(legacy_root=legacy_root, output_root=output_root))
+        jobs = list(
+            prepare_model_jobs(
+                legacy_root=legacy_root,
+                output_root=output_root,
+                world_filter=world_filter,
+            )
+        )
         logging.info("Found %d model(s) to process.", len(jobs))
         for job in jobs:
             success = execute_bmd_job(
@@ -2573,7 +2679,7 @@ def main(argv: Sequence[str]) -> int:
             logging.error("Pillow is required for texture conversion. Install with `pip install Pillow`.")
             return 1
         logging.info("Scanning for textures/images under %s", legacy_root)
-        discovered_textures = list(discover_textures(legacy_root))
+        discovered_textures = list(discover_textures(legacy_root, world_filter=world_filter))
         textures = select_texture_sources(legacy_root, discovered_textures)
         logging.info(
             "Found %d texture file(s), selected %d source(s) after deduplication.",
@@ -2600,6 +2706,7 @@ def main(argv: Sequence[str]) -> int:
             output_root=output_root,
             fallback_roots=fallback_roots,
             processed=processed_paths,
+            world_filter=world_filter,
             force=args.force,
             dry_run=args.dry_run,
             stats=stats,
@@ -2611,6 +2718,7 @@ def main(argv: Sequence[str]) -> int:
             "legacy_root": str(legacy_root),
             "legacy_fallback_roots": [str(root) for root in fallback_roots],
             "output_root": str(output_root),
+            "world_filter": sorted(world_filter) if world_filter else None,
             "stats": {
                 "textures_converted": stats.textures_converted,
                 "textures_skipped": stats.textures_skipped,

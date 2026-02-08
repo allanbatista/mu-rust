@@ -453,10 +453,6 @@ impl MuCoreRuntime {
         &self.config
     }
 
-    pub fn message_hub(&self) -> &MessageHub {
-        &self.message_hub
-    }
-
     fn handle_hello(
         &self,
         packet: &WirePacket,
