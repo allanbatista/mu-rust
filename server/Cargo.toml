@@ -63,6 +63,11 @@ thiserror = "1"
 # Concurrency
 dashmap = "6"
 
+# Auth token signing
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+
 # QUIC transport
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = "0.23"

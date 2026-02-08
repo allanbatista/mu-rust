@@ -213,9 +213,11 @@ The following `.bmd` stems are data tables, not 3D models, and are skipped:
 
 Output: **GLB** (GLTF Binary 2.0)
 
-- Single buffer with interleaved POSITION (VEC3), NORMAL (VEC3), TEXCOORD_0 (VEC2), indices (SCALAR).
+- Single binary buffer containing POSITION (VEC3), NORMAL (VEC3), TEXCOORD_0 (VEC2), and indices (SCALAR) sections.
 - Index type: uint16 when vertex count <= 65535, otherwise uint32.
-- All meshes are combined into a single primitive per GLB.
+- MU coordinates are swizzled from `(X, Y, Z-up)` to `(X, Y-up, Z)` and triangle winding is reversed after swizzle.
+- Each source BMD mesh is emitted as one glTF primitive (shared vertex stream, per-primitive index accessor).
+- Materials/images/textures are emitted from BMD mesh texture names (`*.jpg|*.tga|...` -> `*.png` URI beside the GLB).
 - Generator tag: `mu-rust bmd_converter.py`
 
 ---

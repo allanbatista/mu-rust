@@ -1,3 +1,4 @@
+mod auth_token;
 mod config;
 mod db;
 mod error;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 
+use auth_token::AuthTokenService;
 use config::ServerConfig;
 use db::MongoDbContext;
 use middleware::{auth_middleware, rate_limit_middleware, RateLimiter};
@@ -81,6 +83,32 @@ async fn main() -> std::io::Result<()> {
 
     log::info!("Session expiry set to {} hours", session_expiry_hours);
 
+    let auth_token_ttl_seconds: u64 = std::env::var("AUTH_TOKEN_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_800);
+
+    let auth_token_secret = std::env::var("AUTH_TOKEN_SECRET")
+        .unwrap_or_else(|_| {
+            let generated = format!(
+                "ephemeral-{}-{}",
+                uuid::Uuid::new_v4(),
+                uuid::Uuid::new_v4()
+            );
+            log::warn!(
+                "AUTH_TOKEN_SECRET not configured. Using ephemeral in-memory secret; restart will invalidate QUIC auth tokens."
+            );
+            generated
+        })
+        .into_bytes();
+
+    let auth_token_service =
+        AuthTokenService::new(auth_token_secret, Duration::from_secs(auth_token_ttl_seconds))
+            .unwrap_or_else(|err| {
+                eprintln!("Failed to initialize auth token service: {}", err);
+                std::process::exit(1);
+            });
+
     // Bootstrap MU core runtime (World/Entry/Map + MessageHub + PersistenceWorker).
     let enable_mu_core = std::env::var("ENABLE_MU_CORE")
         .ok()
@@ -100,7 +128,7 @@ async fn main() -> std::io::Result<()> {
             RuntimeConfig::default()
         });
 
-        match MuCoreRuntime::bootstrap(runtime_config) {
+        match MuCoreRuntime::bootstrap(runtime_config, auth_token_service.clone()) {
             Ok(runtime) => {
                 log::info!("MU core runtime started");
                 Some(Arc::new(runtime))
@@ -220,6 +248,7 @@ async fn main() -> std::io::Result<()> {
     log::info!("Starting HTTP server at {}:{}...", server_host, server_port);
 
     let runtime_core_for_app = runtime_core.clone();
+    let auth_token_for_app = auth_token_service.clone();
 
     // Start HTTP server
     let http_result = HttpServer::new(move || {
@@ -231,6 +260,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(config.clone()))
             .app_data(web::Data::new(rate_limiter.clone()))
             .app_data(web::Data::new(runtime_core_for_app.clone()))
+            .app_data(web::Data::new(auth_token_for_app.clone()))
             // Middleware
             .wrap(actix_middleware::Logger::default())
             .wrap(actix_middleware::Compress::default())

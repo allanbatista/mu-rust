@@ -128,7 +128,10 @@ pub enum ClientMessage {
     Move(MoveInput),
     UseSkill(UseSkillInput),
     Chat(ChatPayload),
-    MapTransferAck { transfer_id: u64 },
+    MapTransferAck {
+        transfer_id: u64,
+        route_token: String,
+    },
     Logout,
 }
 
@@ -180,6 +183,7 @@ pub enum ServerMessage {
         session_id: u64,
         heartbeat_interval_ms: u32,
         motd: String,
+        characters: Vec<CharacterSummary>,
     },
     CharacterList {
         entries: Vec<CharacterSummary>,

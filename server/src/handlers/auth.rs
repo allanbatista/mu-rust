@@ -2,6 +2,7 @@ use actix_web::{cookie::Cookie, post, web, HttpResponse};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    auth_token::{class_name_to_id, now_ms, object_id_to_u64, AuthCharacterSummary, AuthTokenService},
     db::MongoDbContext,
     error::{ConnectServerError, Result},
     session::SessionManager,
@@ -17,6 +18,7 @@ pub struct LoginRequest {
 pub struct LoginResponse {
     pub success: bool,
     pub account_id: String,
+    pub auth_token: String,
     pub message: String,
 }
 
@@ -25,6 +27,7 @@ pub async fn login(
     req: web::Json<LoginRequest>,
     db: web::Data<MongoDbContext>,
     session_manager: web::Data<SessionManager>,
+    auth_tokens: web::Data<AuthTokenService>,
 ) -> Result<HttpResponse> {
     log::info!("Login attempt for user: {}", req.username);
 
@@ -49,6 +52,28 @@ pub async fn login(
     // Update last login time
     db.accounts().update_last_login(&account_id).await?;
 
+    let characters = db.characters().find_by_account_id(&account_id).await?;
+    let token_characters: Vec<AuthCharacterSummary> = characters
+        .into_iter()
+        .filter_map(|character| {
+            character.id.map(|id| AuthCharacterSummary {
+                character_id: object_id_to_u64(&id),
+                name: character.name,
+                class_id: class_name_to_id(&character.class),
+                level: character.level,
+            })
+        })
+        .collect();
+
+    let auth_token = auth_tokens
+        .issue_session_token(
+            object_id_to_u64(&account_id),
+            session.session_id.clone(),
+            token_characters,
+            now_ms(),
+        )
+        .map_err(|err| ConnectServerError::Internal(format!("Failed to issue auth token: {err}")))?;
+
     log::info!(
         "Successful login for user: {} (session: {})",
         req.username,
@@ -66,6 +91,7 @@ pub async fn login(
     let response = LoginResponse {
         success: true,
         account_id: account_id.to_hex(),
+        auth_token,
         message: "Login successful".to_string(),
     };
 

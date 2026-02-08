@@ -103,6 +103,7 @@ impl ProtocolRuntime {
                         session_id: packet.session_id,
                         heartbeat_interval_ms: 5_000,
                         motd: self.motd.clone(),
+                        characters: Vec::new(),
                     }),
                     protocol::ClientMessage::KeepAlive { .. } => {
                         Some(ServerMessage::Pong { server_time_ms })

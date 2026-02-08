@@ -38,6 +38,7 @@ struct SimConfig {
 struct LoginResponse {
     success: bool,
     account_id: String,
+    auth_token: String,
     message: String,
 }
 
@@ -72,10 +73,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let mut login_account_hex: Option<String> = None;
+    let mut login_auth_token: Option<String> = None;
 
     if !cfg.skip_http {
-        let account_hex = run_http_login_flow(&cfg).await?;
+        let (account_hex, auth_token) = run_http_login_flow(&cfg).await?;
         login_account_hex = Some(account_hex.clone());
+        login_auth_token = Some(auth_token);
 
         if cfg.account_id == 0 {
             cfg.account_id = derive_account_id_hint(&account_hex);
@@ -88,8 +91,9 @@ async fn main() -> anyhow::Result<()> {
 
     if !cfg.skip_quic {
         if cfg.auth_token.is_empty() {
-            cfg.auth_token = login_account_hex
+            cfg.auth_token = login_auth_token
                 .clone()
+                .or(login_account_hex.clone())
                 .unwrap_or_else(|| "sim-token".to_string());
         }
 
@@ -100,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_http_login_flow(cfg: &SimConfig) -> anyhow::Result<String> {
+async fn run_http_login_flow(cfg: &SimConfig) -> anyhow::Result<(String, String)> {
     let username = cfg
         .username
         .as_deref()
@@ -186,7 +190,7 @@ async fn run_http_login_flow(cfg: &SimConfig) -> anyhow::Result<String> {
         }
     }
 
-    Ok(login.account_id)
+    Ok((login.account_id, login.auth_token))
 }
 
 async fn run_quic_protocol_flow(cfg: &SimConfig) -> anyhow::Result<()> {

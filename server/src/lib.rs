@@ -1,5 +1,6 @@
 // Library exports for testing and reuse
 
+pub mod auth_token;
 pub mod config;
 pub mod db;
 pub mod error;

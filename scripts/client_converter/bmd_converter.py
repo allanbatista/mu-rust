@@ -653,6 +653,46 @@ def compute_bone_fixups(model: BmdModel) -> List[BoneFixup]:
 # GLTF / GLB Emission
 # ---------------------------------------------------------------------------
 
+def _swizzle_mu_to_gltf(v: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """Convert MU (X, Y, Z-up) coordinates into client/glTF (X, Y-up, Z) coordinates."""
+    return (v[0], v[2], v[1])
+
+
+def _texture_name_to_png_uri(texture_name: str) -> Optional[str]:
+    """Normalize a BMD texture name to a PNG URI stored beside the converted GLB."""
+    cleaned = texture_name.strip().replace("\\", "/")
+    if not cleaned:
+        return None
+
+    basename = Path(cleaned).name
+    if not basename:
+        return None
+
+    stem = Path(basename).stem
+    if not stem:
+        return None
+
+    return f"{stem}.png"
+
+
+def _resolve_mesh_texture_uri(meshes: List[BmdMesh], mesh_index: int) -> Optional[str]:
+    """Resolve the effective texture URI for a mesh, honoring BMD texture indirection."""
+    mesh = meshes[mesh_index]
+    candidates: List[str] = []
+
+    # In BMD, Mesh.Texture can point to another entry in the texture table.
+    if 0 <= mesh.texture < len(meshes):
+        candidates.append(meshes[mesh.texture].texture_name)
+    candidates.append(mesh.texture_name)
+
+    for candidate in candidates:
+        uri = _texture_name_to_png_uri(candidate)
+        if uri:
+            return uri
+
+    return None
+
+
 def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
     """Convert a parsed BMD model to GLB (GLTF Binary) bytes.
 
@@ -678,9 +718,10 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
     all_texcoords: List[Tuple[float, float]] = []
     all_indices: List[int] = []
 
-    primitives_info: List[Tuple[int, int, int, int]] = []  # (vert_offset, vert_count, idx_offset, idx_count)
+    primitives_info: List[Tuple[int, int, int, int, Optional[str]]] = []
+    # (vert_offset, vert_count, idx_offset, idx_count, texture_uri)
 
-    for mesh in model.meshs:
+    for mesh_index, mesh in enumerate(model.meshs):
         if mesh.num_triangles == 0:
             continue
 
@@ -755,18 +796,19 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
                     else:
                         world_norm = vector_normalize(norm.normal)
 
-                    mesh_positions.append(world_pos)
-                    mesh_normals.append(world_norm)
+                    mesh_positions.append(_swizzle_mu_to_gltf(world_pos))
+                    mesh_normals.append(vector_normalize(_swizzle_mu_to_gltf(world_norm)))
                     # UV flip: v_gltf = 1.0 - v_bmd (reference: BMD_SMD.cpp:755)
                     mesh_texcoords.append((tc.u, 1.0 - tc.v))
                     corners.append(idx)
 
             # Triangulate
             if len(corners) >= 3:
-                mesh_indices.extend([corners[0], corners[1], corners[2]])
+                # Axis swizzle flips handedness, so we reverse winding for correct front faces.
+                mesh_indices.extend([corners[0], corners[2], corners[1]])
             if len(corners) >= 4:
                 # Quad -> two triangles: (0,1,2) and (0,2,3)
-                mesh_indices.extend([corners[0], corners[2], corners[3]])
+                mesh_indices.extend([corners[0], corners[3], corners[2]])
 
         if not mesh_indices:
             continue
@@ -781,15 +823,17 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
         all_indices.extend(i + vert_offset for i in mesh_indices)
 
         primitives_info.append((
-            vert_offset, len(mesh_positions),
-            idx_offset, len(mesh_indices),
+            vert_offset,
+            len(mesh_positions),
+            idx_offset,
+            len(mesh_indices),
+            _resolve_mesh_texture_uri(model.meshs, mesh_index),
         ))
 
     if not all_positions or not all_indices:
         return None
 
     num_verts = len(all_positions)
-    num_indices = len(all_indices)
     use_uint32 = num_verts > 65535
 
     # Compute bounding box for POSITION accessor
@@ -824,6 +868,85 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
 
     binary_buffer = pos_data + norm_data + tc_data + idx_data
 
+    accessors: List[Dict[str, object]] = [
+        # 0: POSITION
+        {
+            "bufferView": 0, "componentType": 5126, "count": num_verts,
+            "type": "VEC3", "max": max_pos, "min": min_pos,
+        },
+        # 1: NORMAL
+        {
+            "bufferView": 1, "componentType": 5126, "count": num_verts,
+            "type": "VEC3",
+        },
+        # 2: TEXCOORD_0
+        {
+            "bufferView": 2, "componentType": 5126, "count": num_verts,
+            "type": "VEC2",
+        },
+    ]
+
+    images: List[Dict[str, object]] = []
+    textures: List[Dict[str, object]] = []
+    materials: List[Dict[str, object]] = []
+    material_index_by_texture: Dict[Optional[str], int] = {}
+
+    def ensure_material(texture_uri: Optional[str]) -> int:
+        cached = material_index_by_texture.get(texture_uri)
+        if cached is not None:
+            return cached
+
+        material: Dict[str, object] = {
+            "pbrMetallicRoughness": {
+                "metallicFactor": 0.0,
+                "roughnessFactor": 1.0,
+            }
+        }
+
+        if texture_uri:
+            image_index = len(images)
+            images.append({"uri": texture_uri})
+
+            texture_index = len(textures)
+            textures.append({"source": image_index})
+
+            pbr = material["pbrMetallicRoughness"]
+            if isinstance(pbr, dict):
+                pbr["baseColorTexture"] = {"index": texture_index}
+
+        material_index = len(materials)
+        materials.append(material)
+        material_index_by_texture[texture_uri] = material_index
+        return material_index
+
+    mesh_primitives: List[Dict[str, object]] = []
+    index_component_type = 5125 if use_uint32 else 5123
+    index_component_size = 4 if use_uint32 else 2
+    for (_vert_offset, _vert_count, idx_offset, idx_count, texture_uri) in primitives_info:
+        accessor: Dict[str, object] = {
+            "bufferView": 3,
+            "componentType": index_component_type,
+            "count": idx_count,
+            "type": "SCALAR",
+        }
+
+        byte_offset = idx_offset * index_component_size
+        if byte_offset:
+            accessor["byteOffset"] = byte_offset
+
+        index_accessor = len(accessors)
+        accessors.append(accessor)
+
+        mesh_primitives.append({
+            "attributes": {
+                "POSITION": 0,
+                "NORMAL": 1,
+                "TEXCOORD_0": 2,
+            },
+            "indices": index_accessor,
+            "material": ensure_material(texture_uri),
+        })
+
     # Build GLTF JSON
     gltf = {
         "asset": {"version": "2.0", "generator": "mu-rust bmd_converter.py"},
@@ -841,59 +964,19 @@ def bmd_to_glb(model: BmdModel) -> Optional[bytes]:
             # 3: indices
             {"buffer": 0, "byteOffset": idx_offset_buf, "byteLength": idx_size, "target": 34963},
         ],
-        "accessors": [
-            # 0: POSITION
-            {
-                "bufferView": 0, "componentType": 5126, "count": num_verts,
-                "type": "VEC3", "max": max_pos, "min": min_pos,
-            },
-            # 1: NORMAL
-            {
-                "bufferView": 1, "componentType": 5126, "count": num_verts,
-                "type": "VEC3",
-            },
-            # 2: TEXCOORD_0
-            {
-                "bufferView": 2, "componentType": 5126, "count": num_verts,
-                "type": "VEC2",
-            },
-            # 3: indices
-            {
-                "bufferView": 3,
-                "componentType": 5125 if use_uint32 else 5123,
-                "count": num_indices,
-                "type": "SCALAR",
-            },
-        ],
+        "accessors": accessors,
         "meshes": [{
             "name": model.name,
-            "primitives": [],
+            "primitives": mesh_primitives,
         }],
     }
 
-    # Build primitives (one per mesh, or combined)
-    if len(primitives_info) == 1:
-        gltf["meshes"][0]["primitives"] = [{
-            "attributes": {
-                "POSITION": 0,
-                "NORMAL": 1,
-                "TEXCOORD_0": 2,
-            },
-            "indices": 3,
-        }]
-    else:
-        # Multiple meshes: we've already combined into a single buffer,
-        # but we use a single primitive for simplicity. Per-mesh primitives
-        # would need separate accessors per mesh. For the Bevy client,
-        # a single combined primitive works fine.
-        gltf["meshes"][0]["primitives"] = [{
-            "attributes": {
-                "POSITION": 0,
-                "NORMAL": 1,
-                "TEXCOORD_0": 2,
-            },
-            "indices": 3,
-        }]
+    if images:
+        gltf["images"] = images
+    if textures:
+        gltf["textures"] = textures
+    if materials:
+        gltf["materials"] = materials
 
     # Encode GLB
     json_bytes = json.dumps(gltf, indent=2).encode('ascii')

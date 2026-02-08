@@ -1,7 +1,7 @@
 use actix_web::{get, post, web, HttpResponse};
 use serde::{Deserialize, Serialize};
 
-use crate::{error::Result, monitor::HealthMonitor};
+use crate::{error::Result, monitor::HealthMonitor, session::SessionManager};
 
 #[derive(Debug, Deserialize)]
 pub struct HeartbeatRequest {
@@ -45,12 +45,18 @@ pub struct HealthCheckResponse {
 }
 
 #[get("/health")]
-pub async fn health_check(health_monitor: web::Data<HealthMonitor>) -> Result<HttpResponse> {
+pub async fn health_check(
+    health_monitor: web::Data<HealthMonitor>,
+    session_manager: Option<web::Data<SessionManager>>,
+) -> Result<HttpResponse> {
     let online_worlds = health_monitor.online_world_count();
+    let active_sessions = session_manager
+        .map(|manager| manager.active_session_count())
+        .unwrap_or(0);
 
     let response = HealthCheckResponse {
         status: "healthy".to_string(),
-        active_sessions: 0, // Will be populated when we wire up session manager
+        active_sessions,
         online_worlds,
     };
 

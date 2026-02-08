@@ -1,12 +1,21 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use actix_web::{test, web, App};
+use server::auth_token::AuthTokenService;
 use server::handlers;
 use server::runtime::{MuCoreRuntime, RuntimeConfig};
 
 #[actix_web::test]
 async fn runtime_endpoints_return_data_when_enabled() {
-    let runtime = Arc::new(MuCoreRuntime::bootstrap(RuntimeConfig::default()).expect("runtime"));
+    let auth_tokens = AuthTokenService::new(
+        b"01234567890123456789012345678901".to_vec(),
+        Duration::from_secs(3600),
+    )
+    .expect("auth tokens");
+    let runtime = Arc::new(
+        MuCoreRuntime::bootstrap(RuntimeConfig::default(), auth_tokens).expect("runtime"),
+    );
 
     let app = test::init_service(
         App::new()
