@@ -123,8 +123,12 @@ pub struct UseSkillInput {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ClientMessage {
     Hello(ClientHello),
-    KeepAlive { client_time_ms: u64 },
-    SelectCharacter { character_id: u64 },
+    KeepAlive {
+        client_time_ms: u64,
+    },
+    SelectCharacter {
+        character_id: u64,
+    },
     Move(MoveInput),
     UseSkill(UseSkillInput),
     Chat(ChatPayload),

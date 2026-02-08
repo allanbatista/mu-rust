@@ -5,6 +5,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use mongodb::bson::oid::ObjectId;
 use protocol::message::CharacterSummary;
+use protocol::RouteKey;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
@@ -36,6 +37,7 @@ pub enum AuthTokenError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuthCharacterSummary {
     pub character_id: u64,
+    pub db_id: String,
     pub name: String,
     pub class_id: u8,
     pub level: u16,
@@ -83,6 +85,22 @@ impl AuthSessionClaims {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MapTransferTokenClaims {
+    pub session_id: u64,
+    pub transfer_id: u64,
+    pub character_id: u64,
+    pub route: RouteKey,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+impl MapTransferTokenClaims {
+    pub fn is_expired(&self, reference_ms: u64) -> bool {
+        reference_ms >= self.expires_at_ms
+    }
+}
+
 #[derive(Clone)]
 pub struct AuthTokenService {
     secret: Arc<[u8]>,
@@ -124,12 +142,14 @@ impl AuthTokenService {
     }
 
     pub fn issue(&self, claims: &AuthSessionClaims) -> Result<String, AuthTokenError> {
-        let payload =
-            serde_json::to_vec(claims).map_err(|_| AuthTokenError::PayloadParse)?;
-        let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
-        let signature = self.sign(payload_b64.as_bytes())?;
-        let signature_b64 = URL_SAFE_NO_PAD.encode(signature);
-        Ok(format!("{payload_b64}.{signature_b64}"))
+        self.issue_payload(claims)
+    }
+
+    pub fn issue_transfer_token(
+        &self,
+        claims: &MapTransferTokenClaims,
+    ) -> Result<String, AuthTokenError> {
+        self.issue_payload(claims)
     }
 
     pub fn verify(
@@ -137,9 +157,42 @@ impl AuthTokenService {
         token: &str,
         reference_ms: u64,
     ) -> Result<AuthSessionClaims, AuthTokenError> {
-        let (payload_b64, signature_b64) = token
-            .split_once('.')
-            .ok_or(AuthTokenError::InvalidFormat)?;
+        let claims: AuthSessionClaims = self.verify_payload(token)?;
+
+        if claims.session_id.is_empty() || claims.is_expired(reference_ms) {
+            return Err(AuthTokenError::Expired);
+        }
+
+        Ok(claims)
+    }
+
+    pub fn verify_transfer_token(
+        &self,
+        token: &str,
+        reference_ms: u64,
+    ) -> Result<MapTransferTokenClaims, AuthTokenError> {
+        let claims: MapTransferTokenClaims = self.verify_payload(token)?;
+        if claims.is_expired(reference_ms) {
+            return Err(AuthTokenError::Expired);
+        }
+
+        Ok(claims)
+    }
+
+    fn issue_payload<T: Serialize>(&self, payload: &T) -> Result<String, AuthTokenError> {
+        let bytes = serde_json::to_vec(payload).map_err(|_| AuthTokenError::PayloadParse)?;
+        let payload_b64 = URL_SAFE_NO_PAD.encode(bytes);
+        let signature = self.sign(payload_b64.as_bytes())?;
+        let signature_b64 = URL_SAFE_NO_PAD.encode(signature);
+        Ok(format!("{payload_b64}.{signature_b64}"))
+    }
+
+    fn verify_payload<T: for<'de> Deserialize<'de>>(
+        &self,
+        token: &str,
+    ) -> Result<T, AuthTokenError> {
+        let (payload_b64, signature_b64) =
+            token.split_once('.').ok_or(AuthTokenError::InvalidFormat)?;
 
         let signature = URL_SAFE_NO_PAD
             .decode(signature_b64)
@@ -155,14 +208,7 @@ impl AuthTokenService {
             .decode(payload_b64)
             .map_err(|_| AuthTokenError::PayloadDecode)?;
 
-        let claims: AuthSessionClaims =
-            serde_json::from_slice(&payload).map_err(|_| AuthTokenError::PayloadParse)?;
-
-        if claims.session_id.is_empty() || claims.is_expired(reference_ms) {
-            return Err(AuthTokenError::Expired);
-        }
-
-        Ok(claims)
+        serde_json::from_slice(&payload).map_err(|_| AuthTokenError::PayloadParse)
     }
 
     fn sign(&self, bytes: &[u8]) -> Result<Vec<u8>, AuthTokenError> {
@@ -226,6 +272,7 @@ mod tests {
                 "session-1".to_string(),
                 vec![AuthCharacterSummary {
                     character_id: 10,
+                    db_id: "507f1f77bcf86cd799439011".to_string(),
                     name: "Knight".to_string(),
                     class_id: 1,
                     level: 150,
@@ -267,6 +314,37 @@ mod tests {
 
         assert!(matches!(
             service.verify(&token, 35_000),
+            Err(AuthTokenError::Expired)
+        ));
+    }
+
+    #[test]
+    fn transfer_token_roundtrip_and_expiration() {
+        let service = test_service();
+        let claims = MapTransferTokenClaims {
+            session_id: 7,
+            transfer_id: 100,
+            character_id: 55,
+            route: RouteKey {
+                world_id: 1,
+                entry_id: 1,
+                map_id: 0,
+                instance_id: 1,
+            },
+            issued_at_ms: 1_000,
+            expires_at_ms: 2_000,
+        };
+
+        let token = service
+            .issue_transfer_token(&claims)
+            .expect("issue transfer token");
+        let parsed = service
+            .verify_transfer_token(&token, 1_500)
+            .expect("verify transfer token");
+        assert_eq!(parsed, claims);
+
+        assert!(matches!(
+            service.verify_transfer_token(&token, 2_500),
             Err(AuthTokenError::Expired)
         ));
     }

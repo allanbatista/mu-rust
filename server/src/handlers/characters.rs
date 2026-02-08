@@ -1,7 +1,9 @@
 use actix_web::{get, web, HttpResponse};
 use serde::Serialize;
 
-use crate::{db::MongoDbContext, error::Result, session::SessionManager};
+use crate::{
+    auth_token::object_id_to_u64, db::MongoDbContext, error::Result, session::SessionManager,
+};
 
 #[derive(Debug, Serialize)]
 pub struct CharacterListResponse {
@@ -11,6 +13,7 @@ pub struct CharacterListResponse {
 #[derive(Debug, Serialize)]
 pub struct CharacterInfo {
     pub id: String,
+    pub protocol_character_id: u64,
     pub name: String,
     pub level: u16,
     pub class: String,
@@ -35,11 +38,15 @@ pub async fn list_characters(
 
     let character_list: Vec<CharacterInfo> = characters
         .iter()
-        .map(|c| CharacterInfo {
-            id: c.id.expect("Character should have ID").to_hex(),
-            name: c.name.clone(),
-            level: c.level,
-            class: c.class.clone(),
+        .map(|c| {
+            let id = c.id.expect("Character should have ID");
+            CharacterInfo {
+                id: id.to_hex(),
+                protocol_character_id: object_id_to_u64(&id),
+                name: c.name.clone(),
+                level: c.level,
+                class: c.class.clone(),
+            }
         })
         .collect();
 

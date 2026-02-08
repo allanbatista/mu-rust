@@ -1,10 +1,191 @@
 use crate::scenes::login::LoginSceneAssets;
 use crate::scenes::login::components::*;
+use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
 /// Marker for camera tour setup
 #[derive(Component)]
 pub struct CameraTourSetup;
+
+/// UI marker for debug free camera hint text.
+#[derive(Component)]
+pub struct DebugFreeCameraHint;
+
+#[derive(Resource)]
+pub struct DebugFreeCameraController {
+    pub enabled: bool,
+    pub move_speed: f32,
+    pub look_sensitivity: f32,
+    pub zoom_sensitivity: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub tour_was_active: bool,
+}
+
+impl Default for DebugFreeCameraController {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            move_speed: 2_500.0,
+            look_sensitivity: 0.0025,
+            zoom_sensitivity: 350.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            tour_was_active: true,
+        }
+    }
+}
+
+pub fn reset_debug_free_camera(mut controller: ResMut<DebugFreeCameraController>) {
+    *controller = DebugFreeCameraController::default();
+}
+
+pub fn spawn_debug_free_camera_hint(mut commands: Commands) {
+    commands.spawn((
+        LoginSceneEntity,
+        DebugFreeCameraHint,
+        TextBundle::from_section(
+            "",
+            TextStyle {
+                font_size: 16.0,
+                color: Color::srgb(0.95, 0.9, 0.6),
+                ..default()
+            },
+        )
+        .with_style(Style {
+            position_type: PositionType::Absolute,
+            top: Val::Px(14.0),
+            left: Val::Px(14.0),
+            ..default()
+        }),
+    ));
+}
+
+pub fn update_debug_free_camera_hint(
+    controller: Res<DebugFreeCameraController>,
+    mut hints: Query<&mut Text, With<DebugFreeCameraHint>>,
+) {
+    let mode = if controller.enabled { "ON" } else { "OFF" };
+    for mut text in &mut hints {
+        text.sections[0].value = format!(
+            "[DEBUG] Ctrl+W: Free Camera {mode} | WASD mover | Botao direito + mouse olhar | Scroll zoom"
+        );
+    }
+}
+
+pub fn toggle_debug_free_camera(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut controller: ResMut<DebugFreeCameraController>,
+    mut camera_query: Query<(&Transform, Option<&mut CameraTour>), With<Camera3d>>,
+) {
+    let ctrl_pressed = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if !(ctrl_pressed && keys.just_pressed(KeyCode::KeyW)) {
+        return;
+    }
+
+    let Ok((transform, maybe_tour)) = camera_query.get_single_mut() else {
+        return;
+    };
+
+    controller.enabled = !controller.enabled;
+    if controller.enabled {
+        let forward = transform.forward();
+        controller.yaw = forward.x.atan2(forward.z);
+        controller.pitch = forward.y.clamp(-0.999, 0.999).asin();
+    }
+
+    if let Some(mut tour) = maybe_tour {
+        if controller.enabled {
+            controller.tour_was_active = tour.active;
+            tour.active = false;
+        } else {
+            tour.active = controller.tour_was_active;
+        }
+    }
+
+    info!(
+        "Debug free camera {}",
+        if controller.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+}
+
+pub fn control_debug_free_camera(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mut mouse_motion: EventReader<MouseMotion>,
+    mut mouse_wheel: EventReader<MouseWheel>,
+    mut controller: ResMut<DebugFreeCameraController>,
+    mut camera_query: Query<&mut Transform, With<Camera3d>>,
+) {
+    if !controller.enabled {
+        // Drain events while disabled so accumulated movement isn't applied on toggle.
+        for _ in mouse_motion.read() {}
+        for _ in mouse_wheel.read() {}
+        return;
+    }
+
+    let Ok(mut transform) = camera_query.get_single_mut() else {
+        return;
+    };
+
+    let mut mouse_delta = Vec2::ZERO;
+    for motion in mouse_motion.read() {
+        mouse_delta += motion.delta;
+    }
+    if mouse_buttons.pressed(MouseButton::Right) {
+        controller.yaw -= mouse_delta.x * controller.look_sensitivity;
+        controller.pitch =
+            (controller.pitch - mouse_delta.y * controller.look_sensitivity).clamp(-1.54, 1.54);
+        transform.rotation = Quat::from_euler(EulerRot::YXZ, controller.yaw, controller.pitch, 0.0);
+    }
+
+    let mut move_dir = Vec3::ZERO;
+    if keys.pressed(KeyCode::KeyW) {
+        move_dir += *transform.forward();
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        move_dir -= *transform.forward();
+    }
+    if keys.pressed(KeyCode::KeyA) {
+        move_dir -= *transform.right();
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        move_dir += *transform.right();
+    }
+    if keys.pressed(KeyCode::Space) {
+        move_dir += Vec3::Y;
+    }
+    if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+        move_dir -= Vec3::Y;
+    }
+    if move_dir.length_squared() > f32::EPSILON {
+        let sprint = if keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight) {
+            3.5
+        } else {
+            1.0
+        };
+        transform.translation +=
+            move_dir.normalize() * controller.move_speed * sprint * time.delta_seconds();
+    }
+
+    let mut zoom_units = 0.0;
+    for wheel in mouse_wheel.read() {
+        let unit_scale = match wheel.unit {
+            MouseScrollUnit::Line => 1.0,
+            MouseScrollUnit::Pixel => 0.03,
+        };
+        zoom_units += wheel.y * unit_scale;
+    }
+    if zoom_units.abs() > f32::EPSILON {
+        let forward = *transform.forward();
+        transform.translation += forward * zoom_units * controller.zoom_sensitivity;
+    }
+}
 
 /// System to setup camera tour once assets are loaded
 pub fn setup_camera_tour(
@@ -82,9 +263,17 @@ pub fn setup_camera_tour(
 
 /// System to update camera tour
 pub fn update_camera_tour(
+    debug_free_camera: Option<Res<DebugFreeCameraController>>,
     mut camera_query: Query<(&mut Transform, &mut CameraTour, &mut CameraTourState)>,
     time: Res<Time>,
 ) {
+    if debug_free_camera
+        .as_ref()
+        .is_some_and(|controller| controller.enabled)
+    {
+        return;
+    }
+
     let delta_seconds = time.delta_seconds();
 
     for (mut transform, mut tour, mut state) in camera_query.iter_mut() {

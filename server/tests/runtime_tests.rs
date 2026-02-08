@@ -14,7 +14,7 @@ async fn runtime_endpoints_return_data_when_enabled() {
     )
     .expect("auth tokens");
     let runtime = Arc::new(
-        MuCoreRuntime::bootstrap(RuntimeConfig::default(), auth_tokens).expect("runtime"),
+        MuCoreRuntime::bootstrap(RuntimeConfig::default(), auth_tokens, None).expect("runtime"),
     );
 
     let app = test::init_service(

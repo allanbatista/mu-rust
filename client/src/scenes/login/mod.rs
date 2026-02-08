@@ -101,6 +101,24 @@ impl SceneBuilder for LoginScene {
                     .run_if(in_state(crate::AppState::Mock)),
             )
             .add_systems(OnExit(crate::AppState::Mock), cleanup_login_scene);
+
+        if cfg!(debug_assertions) {
+            app.init_resource::<DebugFreeCameraController>()
+                .add_systems(
+                    OnEnter(crate::AppState::Mock),
+                    (reset_debug_free_camera, spawn_debug_free_camera_hint),
+                )
+                .add_systems(
+                    Update,
+                    (
+                        toggle_debug_free_camera,
+                        control_debug_free_camera,
+                        update_debug_free_camera_hint,
+                    )
+                        .in_set(LoginRenderPipeline::Camera)
+                        .run_if(in_state(crate::AppState::Mock)),
+                );
+        }
     }
 }
 

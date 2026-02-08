@@ -50,6 +50,7 @@ struct CharacterListResponse {
 #[derive(Debug, Deserialize)]
 struct CharacterInfo {
     id: String,
+    protocol_character_id: Option<u64>,
     name: String,
     level: u16,
     class: String,
@@ -184,8 +185,12 @@ async fn run_http_login_flow(cfg: &SimConfig) -> anyhow::Result<(String, String)
 
         for c in payload.characters.iter().take(3) {
             println!(
-                "[sim-client] - {} ({}) lvl {} id={} ",
-                c.name, c.class, c.level, c.id
+                "[sim-client] - {} ({}) lvl {} id={} protocol_id={} ",
+                c.name,
+                c.class,
+                c.level,
+                c.id,
+                c.protocol_character_id.unwrap_or_default()
             );
         }
     }
@@ -235,16 +240,87 @@ async fn run_quic_protocol_flow(cfg: &SimConfig) -> anyhow::Result<()> {
     );
 
     let hello_frames = send_control_request(&connection, &codec, &hello_packet).await?;
-    assert_server_message(&hello_frames, |msg| {
-        matches!(msg, ServerMessage::HelloAck { .. })
-    })?;
+    let hello_ack = hello_frames
+        .iter()
+        .find_map(|packet| match &packet.payload {
+            PacketPayload::Server(ServerMessage::HelloAck {
+                session_id,
+                heartbeat_interval_ms,
+                motd,
+                characters,
+            }) => Some((
+                *session_id,
+                *heartbeat_interval_ms,
+                motd.clone(),
+                characters.clone(),
+            )),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("HelloAck nao recebido"))?;
+    let hello_characters = hello_ack.3;
+    let selected_character_id = hello_characters
+        .first()
+        .map(|entry| entry.character_id)
+        .ok_or_else(|| anyhow!("HelloAck sem personagens; crie personagem na conta"))?;
     println!("[sim-client] protocolo OK: HelloAck recebido");
+    println!(
+        "[sim-client] handshake: session_id={} heartbeat={}ms motd='{}' personagens={} selecionado={}",
+        hello_ack.0,
+        hello_ack.1,
+        hello_ack.2,
+        hello_characters.len(),
+        selected_character_id
+    );
 
-    let keepalive_packet = WirePacket::client(
+    let select_character_packet = WirePacket::client(
         1,
         RouteKey::LOBBY,
         2,
         Some(1),
+        now_ms(),
+        ClientMessage::SelectCharacter {
+            character_id: selected_character_id,
+        },
+    );
+
+    let transfer_frames =
+        send_control_request(&connection, &codec, &select_character_packet).await?;
+    let transfer = transfer_frames
+        .iter()
+        .find_map(|packet| match &packet.payload {
+            PacketPayload::Server(ServerMessage::MapTransfer(directive)) => Some(directive.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("MapTransfer nao recebido apos SelectCharacter"))?;
+
+    println!(
+        "[sim-client] transfer recebido: transfer_id={} route={:?} expires_at_ms={}",
+        transfer.transfer_id, transfer.route, transfer.expires_at_ms
+    );
+
+    let transfer_ack_packet = WirePacket::client(
+        1,
+        RouteKey::LOBBY,
+        3,
+        Some(2),
+        now_ms(),
+        ClientMessage::MapTransferAck {
+            transfer_id: transfer.transfer_id,
+            route_token: transfer.route_token.clone(),
+        },
+    );
+
+    let enter_frames = send_control_request(&connection, &codec, &transfer_ack_packet).await?;
+    assert_server_message(&enter_frames, |msg| {
+        matches!(msg, ServerMessage::EnterMap { .. })
+    })?;
+    println!("[sim-client] protocolo OK: EnterMap recebido");
+
+    let keepalive_packet = WirePacket::client(
+        1,
+        transfer.route,
+        4,
+        Some(3),
         now_ms(),
         ClientMessage::KeepAlive {
             client_time_ms: now_ms(),
@@ -260,14 +336,9 @@ async fn run_quic_protocol_flow(cfg: &SimConfig) -> anyhow::Result<()> {
     if cfg.send_move_datagram {
         let move_packet = WirePacket::client(
             1,
-            RouteKey {
-                world_id: 1,
-                entry_id: 1,
-                map_id: 0,
-                instance_id: 1,
-            },
-            3,
-            Some(2),
+            transfer.route,
+            5,
+            Some(4),
             now_ms(),
             ClientMessage::Move(protocol::MoveInput {
                 client_tick: 1,
@@ -287,6 +358,36 @@ async fn run_quic_protocol_flow(cfg: &SimConfig) -> anyhow::Result<()> {
             .map_err(|e| anyhow!("falha ao enviar datagrama de movimento: {}", e))?;
 
         println!("[sim-client] datagrama de movimento enviado");
+
+        let response_datagram = tokio::time::timeout(
+            Duration::from_millis(cfg.timeout_ms),
+            connection.read_datagram(),
+        )
+        .await
+        .context("timeout aguardando datagrama de resposta do servidor")?
+        .map_err(|e| anyhow!("falha ao ler datagrama de resposta: {}", e))?;
+
+        let decoded = codec
+            .decode_datagram_frame(response_datagram.as_ref())
+            .context("falha ao decodificar datagrama de resposta")?;
+
+        match decoded.packet.payload {
+            PacketPayload::Server(ServerMessage::StateDelta { entities, .. }) => {
+                println!(
+                    "[sim-client] protocolo OK: StateDelta recebido ({} entidades)",
+                    entities.len()
+                );
+            }
+            PacketPayload::Server(other) => {
+                bail!(
+                    "resposta inesperada ao Move: esperado StateDelta, recebido {:?}",
+                    other
+                );
+            }
+            PacketPayload::Client(_) => {
+                bail!("resposta invalida ao Move: payload client");
+            }
+        }
     }
 
     connection.close(0u32.into(), b"sim-client done");

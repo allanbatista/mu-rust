@@ -102,12 +102,14 @@ async fn main() -> std::io::Result<()> {
         })
         .into_bytes();
 
-    let auth_token_service =
-        AuthTokenService::new(auth_token_secret, Duration::from_secs(auth_token_ttl_seconds))
-            .unwrap_or_else(|err| {
-                eprintln!("Failed to initialize auth token service: {}", err);
-                std::process::exit(1);
-            });
+    let auth_token_service = AuthTokenService::new(
+        auth_token_secret,
+        Duration::from_secs(auth_token_ttl_seconds),
+    )
+    .unwrap_or_else(|err| {
+        eprintln!("Failed to initialize auth token service: {}", err);
+        std::process::exit(1);
+    });
 
     // Bootstrap MU core runtime (World/Entry/Map + MessageHub + PersistenceWorker).
     let enable_mu_core = std::env::var("ENABLE_MU_CORE")
@@ -128,7 +130,11 @@ async fn main() -> std::io::Result<()> {
             RuntimeConfig::default()
         });
 
-        match MuCoreRuntime::bootstrap(runtime_config, auth_token_service.clone()) {
+        match MuCoreRuntime::bootstrap(
+            runtime_config,
+            auth_token_service.clone(),
+            Some(session_manager.clone()),
+        ) {
             Ok(runtime) => {
                 log::info!("MU core runtime started");
                 Some(Arc::new(runtime))

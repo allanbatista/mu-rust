@@ -19,8 +19,12 @@ use super::persistence::{
     start_persistence_worker, CriticalEvent, CriticalEventKind, InMemoryPersistenceSink,
     PersistenceHandle,
 };
-use crate::auth_token::{AuthSessionClaims, AuthTokenService};
+use crate::auth_token::{
+    object_id_to_u64, AuthCharacterSummary, AuthSessionClaims, AuthTokenService,
+    MapTransferTokenClaims,
+};
 use crate::protocol_runtime::{IngressPacket, ProtocolRuntime, ProtocolRuntimeError};
+use crate::session::SessionManager;
 
 #[derive(Debug, Clone)]
 struct PendingTransfer {
@@ -34,7 +38,7 @@ struct PendingTransfer {
 struct AuthenticatedSession {
     account_id: u64,
     expires_at_ms: u64,
-    characters: HashMap<u64, CharacterSummary>,
+    characters: HashMap<u64, AuthCharacterSummary>,
 }
 
 impl AuthenticatedSession {
@@ -42,10 +46,7 @@ impl AuthenticatedSession {
         let characters = claims
             .characters
             .into_iter()
-            .map(|entry| {
-                let summary = entry.into_protocol();
-                (summary.character_id, summary)
-            })
+            .map(|entry| (entry.character_id, entry))
             .collect::<HashMap<_, _>>();
 
         Self {
@@ -56,7 +57,12 @@ impl AuthenticatedSession {
     }
 
     fn character_list(&self) -> Vec<CharacterSummary> {
-        let mut list: Vec<CharacterSummary> = self.characters.values().cloned().collect();
+        let mut list: Vec<CharacterSummary> = self
+            .characters
+            .values()
+            .cloned()
+            .map(AuthCharacterSummary::into_protocol)
+            .collect();
         list.sort_by_key(|entry| entry.character_id);
         list
     }
@@ -86,7 +92,9 @@ pub struct MuCoreRuntime {
     map_servers: Arc<DashMap<RouteKey, MapServerHandle>>,
     protocol_runtime: ProtocolRuntime,
     auth_tokens: AuthTokenService,
+    session_manager: Option<SessionManager>,
     authenticated_sessions: Arc<DashMap<u64, AuthenticatedSession>>,
+    active_characters: Arc<DashMap<u64, u64>>,
     transfer_seq: Arc<AtomicU64>,
     pending_transfers: Arc<DashMap<u64, PendingTransfer>>,
     session_routes: Arc<DashMap<u64, (u64, RouteKey)>>,
@@ -94,7 +102,11 @@ pub struct MuCoreRuntime {
 }
 
 impl MuCoreRuntime {
-    pub fn bootstrap(config: RuntimeConfig, auth_tokens: AuthTokenService) -> anyhow::Result<Self> {
+    pub fn bootstrap(
+        config: RuntimeConfig,
+        auth_tokens: AuthTokenService,
+        session_manager: Option<SessionManager>,
+    ) -> anyhow::Result<Self> {
         let directory = WorldDirectory::from_runtime_config(&config);
         let message_hub = MessageHub::default();
 
@@ -147,7 +159,9 @@ impl MuCoreRuntime {
             map_servers,
             protocol_runtime,
             auth_tokens,
+            session_manager,
             authenticated_sessions: Arc::new(DashMap::new()),
+            active_characters: Arc::new(DashMap::new()),
             transfer_seq: Arc::new(AtomicU64::new(1)),
             pending_transfers: Arc::new(DashMap::new()),
             session_routes: Arc::new(DashMap::new()),
@@ -228,14 +242,19 @@ impl MuCoreRuntime {
     ) -> Result<Option<WirePacket>, ProtocolRuntimeError> {
         let client_message = match &packet.payload {
             PacketPayload::Client(message) => message,
-            PacketPayload::Server(_) => return Err(ProtocolRuntimeError::UnexpectedPacketDirection),
+            PacketPayload::Server(_) => {
+                return Err(ProtocolRuntimeError::UnexpectedPacketDirection)
+            }
         };
 
         if let ClientMessage::Hello(hello) = client_message {
             return Ok(Some(self.handle_hello(&packet, hello, server_time_ms)));
         }
 
-        let auth_session = match self.authenticated_session(packet.session_id, server_time_ms) {
+        let auth_session = match self
+            .authenticated_session(packet.session_id, server_time_ms)
+            .await
+        {
             Some(session) => session,
             None => {
                 return Ok(Some(self.error_for_request(
@@ -262,14 +281,33 @@ impl MuCoreRuntime {
                     )));
                 }
 
+                if let Some(existing_owner) = self.active_characters.get(character_id) {
+                    if *existing_owner.value() != packet.session_id {
+                        return Ok(Some(self.error_for_request(
+                            &packet,
+                            server_time_ms,
+                            ServerErrorKind::InvalidAction,
+                            "Character is already active in another session",
+                        )));
+                    }
+                }
+
                 let response = self
                     .handle_select_character(packet.session_id, *character_id, server_time_ms)
                     .await;
                 return Ok(Some(response));
             }
-            ClientMessage::MapTransferAck { transfer_id } => {
+            ClientMessage::MapTransferAck {
+                transfer_id,
+                route_token,
+            } => {
                 let response = self
-                    .handle_transfer_ack(packet.session_id, *transfer_id, server_time_ms)
+                    .handle_transfer_ack(
+                        packet.session_id,
+                        *transfer_id,
+                        route_token,
+                        server_time_ms,
+                    )
                     .await;
                 return Ok(Some(response));
             }
@@ -324,8 +362,7 @@ impl MuCoreRuntime {
                     .map(|entry| entry.value().clone());
 
                 if let Some(map) = map {
-                    let character_id =
-                        self.character_for_session(packet.session_id).unwrap_or(0);
+                    let character_id = self.character_for_session(packet.session_id).unwrap_or(0);
                     let _ = map.use_skill(character_id, input.clone()).await;
 
                     // Critical operations should be persisted immediately.
@@ -352,8 +389,7 @@ impl MuCoreRuntime {
                     .map(|entry| entry.value().clone());
 
                 if let Some(map) = map {
-                    let character_id =
-                        self.character_for_session(packet.session_id).unwrap_or(0);
+                    let character_id = self.character_for_session(packet.session_id).unwrap_or(0);
                     let _ = map
                         .local_chat(packet.session_id, character_id, chat.clone())
                         .await;
@@ -361,6 +397,7 @@ impl MuCoreRuntime {
             }
             ClientMessage::Logout => {
                 self.detach_session_from_map(packet.session_id).await;
+                self.clear_pending_transfers(packet.session_id);
                 self.authenticated_sessions.remove(&packet.session_id);
             }
             ClientMessage::Hello(_) | ClientMessage::KeepAlive { .. } => {}
@@ -426,10 +463,7 @@ impl MuCoreRuntime {
         hello: &ClientHello,
         server_time_ms: u64,
     ) -> WirePacket {
-        let claims = match self
-            .auth_tokens
-            .verify(&hello.auth_token, server_time_ms)
-        {
+        let claims = match self.auth_tokens.verify(&hello.auth_token, server_time_ms) {
             Ok(claims) => claims,
             Err(err) => {
                 log::warn!("Failed QUIC hello authentication: {}", err);
@@ -456,6 +490,40 @@ impl MuCoreRuntime {
             );
         }
 
+        if let Some(session_manager) = &self.session_manager {
+            let http_session = match session_manager.validate_session(&claims.session_id) {
+                Ok(session) => session,
+                Err(err) => {
+                    log::warn!(
+                        "Failed QUIC hello authentication: HTTP session '{}' is invalid ({})",
+                        claims.session_id,
+                        err
+                    );
+                    return self.error_for_request(
+                        packet,
+                        server_time_ms,
+                        ServerErrorKind::InvalidSession,
+                        "HTTP session is invalid or expired",
+                    );
+                }
+            };
+
+            let session_account_id = object_id_to_u64(&http_session.account_id);
+            if session_account_id != claims.account_id {
+                log::warn!(
+                    "Failed QUIC hello authentication: token/session account mismatch (token={} session={})",
+                    claims.account_id,
+                    session_account_id
+                );
+                return self.error_for_request(
+                    packet,
+                    server_time_ms,
+                    ServerErrorKind::InvalidSession,
+                    "Account mismatch in session",
+                );
+            }
+        }
+
         let auth_session = AuthenticatedSession::from_claims(claims);
         let characters = auth_session.character_list();
         self.authenticated_sessions
@@ -480,7 +548,7 @@ impl MuCoreRuntime {
         )
     }
 
-    fn authenticated_session(
+    async fn authenticated_session(
         &self,
         session_id: u64,
         server_time_ms: u64,
@@ -491,6 +559,8 @@ impl MuCoreRuntime {
             .map(|entry| entry.value().clone())?;
 
         if session.is_expired(server_time_ms) {
+            self.detach_session_from_map(session_id).await;
+            self.clear_pending_transfers(session_id);
             self.authenticated_sessions.remove(&session_id);
             return None;
         }
@@ -573,6 +643,33 @@ impl MuCoreRuntime {
         match (entry, map_route) {
             (Some(entry), Some(map)) => {
                 let transfer_id = self.transfer_seq.fetch_add(1, Ordering::Relaxed);
+                let expires_at_ms = server_time_ms.saturating_add(30_000);
+                let route_token_claims = MapTransferTokenClaims {
+                    session_id,
+                    transfer_id,
+                    character_id,
+                    route: map.route,
+                    issued_at_ms: server_time_ms,
+                    expires_at_ms,
+                };
+
+                let route_token = match self.auth_tokens.issue_transfer_token(&route_token_claims) {
+                    Ok(token) => token,
+                    Err(err) => {
+                        return WirePacket::server(
+                            session_id,
+                            RouteKey::LOBBY,
+                            transfer_id as u32,
+                            None,
+                            server_time_ms,
+                            ServerMessage::Error {
+                                kind: ServerErrorKind::Internal,
+                                message: format!("Failed to issue transfer token: {}", err),
+                            },
+                        )
+                    }
+                };
+
                 self.pending_transfers.insert(
                     transfer_id,
                     PendingTransfer {
@@ -594,8 +691,8 @@ impl MuCoreRuntime {
                         route: map.route,
                         host: entry.host,
                         port: entry.port,
-                        route_token: format!("rt-{session_id}-{transfer_id}"),
-                        expires_at_ms: server_time_ms + 30_000,
+                        route_token,
+                        expires_at_ms,
                     }),
                 )
             }
@@ -696,8 +793,37 @@ impl MuCoreRuntime {
         &self,
         session_id: u64,
         transfer_id: u64,
+        route_token: &str,
         server_time_ms: u64,
     ) -> WirePacket {
+        let transfer_token_claims = match self
+            .auth_tokens
+            .verify_transfer_token(route_token, server_time_ms)
+        {
+            Ok(claims) => claims,
+            Err(err) => {
+                return self.error_for_unbound_session(
+                    session_id,
+                    transfer_id as u32,
+                    server_time_ms,
+                    ServerErrorKind::InvalidSession,
+                    &format!("Invalid transfer token: {}", err),
+                );
+            }
+        };
+
+        if transfer_token_claims.session_id != session_id
+            || transfer_token_claims.transfer_id != transfer_id
+        {
+            return self.error_for_unbound_session(
+                session_id,
+                transfer_id as u32,
+                server_time_ms,
+                ServerErrorKind::InvalidSession,
+                "Transfer token/session mismatch",
+            );
+        }
+
         let transfer = self
             .pending_transfers
             .remove(&transfer_id)
@@ -714,15 +840,42 @@ impl MuCoreRuntime {
                     );
                 }
 
+                if transfer_token_claims.character_id != transfer.character_id
+                    || transfer_token_claims.route != transfer.route
+                {
+                    return self.error_for_unbound_session(
+                        session_id,
+                        transfer_id as u32,
+                        server_time_ms,
+                        ServerErrorKind::InvalidSession,
+                        "Transfer token payload does not match transfer route",
+                    );
+                }
+
+                if let Some(existing_owner) = self.active_characters.get(&transfer.character_id) {
+                    if *existing_owner.value() != session_id {
+                        return self.error_for_unbound_session(
+                            session_id,
+                            transfer_id as u32,
+                            server_time_ms,
+                            ServerErrorKind::InvalidAction,
+                            "Character is already active in another session",
+                        );
+                    }
+                }
+
                 let map = self
                     .map_servers
                     .get(&transfer.route)
                     .map(|entry| entry.value().clone());
 
                 if let Some(map) = map {
+                    self.detach_session_from_map(session_id).await;
                     let _ = map.join(session_id, transfer.character_id, 125, 125).await;
                     self.session_routes
                         .insert(session_id, (transfer.character_id, transfer.route));
+                    self.active_characters
+                        .insert(transfer.character_id, session_id);
 
                     WirePacket::server(
                         session_id,
@@ -777,6 +930,26 @@ impl MuCoreRuntime {
             if let Some(map) = map {
                 let _ = map.leave(character_id).await;
             }
+
+            self.active_characters.remove(&character_id);
+        }
+    }
+
+    fn clear_pending_transfers(&self, session_id: u64) {
+        let transfer_ids: Vec<u64> = self
+            .pending_transfers
+            .iter()
+            .filter_map(|entry| {
+                if entry.value().session_id == session_id {
+                    Some(*entry.key())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for transfer_id in transfer_ids {
+            self.pending_transfers.remove(&transfer_id);
         }
     }
 }
@@ -786,7 +959,9 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use crate::auth_token::{AuthCharacterSummary, AuthTokenService};
+    use crate::auth_token::{object_id_to_u64, AuthCharacterSummary, AuthTokenService};
+    use crate::session::SessionManager;
+    use mongodb::bson::oid::ObjectId;
     use protocol::{ClientHello, QuicChannel};
 
     fn build_runtime() -> MuCoreRuntime {
@@ -796,7 +971,7 @@ mod tests {
         )
         .expect("auth tokens");
 
-        MuCoreRuntime::bootstrap(RuntimeConfig::default(), auth_tokens).expect("runtime boot")
+        MuCoreRuntime::bootstrap(RuntimeConfig::default(), auth_tokens, None).expect("runtime boot")
     }
 
     fn build_hello_packet(
@@ -814,6 +989,7 @@ mod tests {
                     .iter()
                     .map(|character_id| AuthCharacterSummary {
                         character_id: *character_id,
+                        db_id: format!("{:024x}", character_id),
                         name: format!("Character-{character_id}"),
                         class_id: 1,
                         level: 150,
@@ -902,10 +1078,12 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let (transfer_id, _map_route) = match transfer.payload {
-            PacketPayload::Server(ServerMessage::MapTransfer(directive)) => {
-                (directive.transfer_id, directive.route)
-            }
+        let (transfer_id, route_token, _map_route) = match transfer.payload {
+            PacketPayload::Server(ServerMessage::MapTransfer(directive)) => (
+                directive.transfer_id,
+                directive.route_token,
+                directive.route,
+            ),
             _ => panic!("expected transfer"),
         };
 
@@ -917,7 +1095,10 @@ mod tests {
                     2,
                     None,
                     110,
-                    ClientMessage::MapTransferAck { transfer_id },
+                    ClientMessage::MapTransferAck {
+                        transfer_id,
+                        route_token,
+                    },
                 ),
                 110,
             )
@@ -928,6 +1109,192 @@ mod tests {
         assert!(matches!(
             enter.payload,
             PacketPayload::Server(ServerMessage::EnterMap { .. })
+        ));
+
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn transfer_ack_with_invalid_route_token_is_rejected() {
+        let runtime = build_runtime();
+
+        let _ = runtime
+            .handle_client_packet(build_hello_packet(&runtime, 12, 11, &[199]), 100)
+            .await
+            .expect("hello packet")
+            .expect("hello response");
+
+        let transfer = runtime
+            .handle_client_packet(
+                WirePacket::client(
+                    12,
+                    RouteKey::LOBBY,
+                    1,
+                    None,
+                    100,
+                    ClientMessage::SelectCharacter { character_id: 199 },
+                ),
+                100,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        let transfer_id = match transfer.payload {
+            PacketPayload::Server(ServerMessage::MapTransfer(directive)) => directive.transfer_id,
+            _ => panic!("expected transfer"),
+        };
+
+        let enter = runtime
+            .handle_client_packet(
+                WirePacket::client(
+                    12,
+                    RouteKey::LOBBY,
+                    2,
+                    None,
+                    110,
+                    ClientMessage::MapTransferAck {
+                        transfer_id,
+                        route_token: "invalid-token".to_string(),
+                    },
+                ),
+                110,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            enter.payload,
+            PacketPayload::Server(ServerMessage::Error {
+                kind: ServerErrorKind::InvalidSession,
+                ..
+            })
+        ));
+
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hello_rejects_invalid_http_session_when_bound_to_session_manager() {
+        let auth_tokens = AuthTokenService::new(
+            b"01234567890123456789012345678901".to_vec(),
+            Duration::from_secs(3600),
+        )
+        .expect("auth tokens");
+        let runtime = MuCoreRuntime::bootstrap(
+            RuntimeConfig::default(),
+            auth_tokens.clone(),
+            Some(SessionManager::new(24)),
+        )
+        .expect("runtime boot");
+
+        let token = auth_tokens
+            .issue_session_token(
+                100,
+                "missing-http-session".to_string(),
+                vec![AuthCharacterSummary {
+                    character_id: 1,
+                    db_id: "000000000000000000000001".to_string(),
+                    name: "Character-1".to_string(),
+                    class_id: 1,
+                    level: 150,
+                }],
+                100,
+            )
+            .expect("issue token");
+
+        let hello = runtime
+            .handle_client_packet(
+                WirePacket::client(
+                    55,
+                    RouteKey::LOBBY,
+                    1,
+                    None,
+                    100,
+                    ClientMessage::Hello(ClientHello {
+                        account_id: 100,
+                        auth_token: token,
+                        client_build: "0.1.0".to_string(),
+                        locale: "pt-BR".to_string(),
+                    }),
+                ),
+                100,
+            )
+            .await
+            .expect("handle hello")
+            .expect("response");
+
+        assert!(matches!(
+            hello.payload,
+            PacketPayload::Server(ServerMessage::Error {
+                kind: ServerErrorKind::InvalidSession,
+                ..
+            })
+        ));
+
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hello_accepts_valid_http_session_when_bound_to_session_manager() {
+        let auth_tokens = AuthTokenService::new(
+            b"01234567890123456789012345678901".to_vec(),
+            Duration::from_secs(3600),
+        )
+        .expect("auth tokens");
+        let session_manager = SessionManager::new(24);
+        let account_id = ObjectId::new();
+        let http_session = session_manager
+            .create_session(account_id)
+            .expect("create http session");
+
+        let runtime = MuCoreRuntime::bootstrap(
+            RuntimeConfig::default(),
+            auth_tokens.clone(),
+            Some(session_manager),
+        )
+        .expect("runtime boot");
+
+        let token = auth_tokens
+            .issue_session_token(
+                object_id_to_u64(&account_id),
+                http_session.session_id,
+                vec![AuthCharacterSummary {
+                    character_id: 1,
+                    db_id: "000000000000000000000001".to_string(),
+                    name: "Character-1".to_string(),
+                    class_id: 1,
+                    level: 150,
+                }],
+                100,
+            )
+            .expect("issue token");
+
+        let hello = runtime
+            .handle_client_packet(
+                WirePacket::client(
+                    56,
+                    RouteKey::LOBBY,
+                    1,
+                    None,
+                    100,
+                    ClientMessage::Hello(ClientHello {
+                        account_id: object_id_to_u64(&account_id),
+                        auth_token: token,
+                        client_build: "0.1.0".to_string(),
+                        locale: "pt-BR".to_string(),
+                    }),
+                ),
+                100,
+            )
+            .await
+            .expect("handle hello")
+            .expect("response");
+
+        assert!(matches!(
+            hello.payload,
+            PacketPayload::Server(ServerMessage::HelloAck { .. })
         ));
 
         runtime.shutdown().await.unwrap();
@@ -983,10 +1350,12 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let (transfer_id, map_route) = match transfer.payload {
-            PacketPayload::Server(ServerMessage::MapTransfer(directive)) => {
-                (directive.transfer_id, directive.route)
-            }
+        let (transfer_id, route_token, map_route) = match transfer.payload {
+            PacketPayload::Server(ServerMessage::MapTransfer(directive)) => (
+                directive.transfer_id,
+                directive.route_token,
+                directive.route,
+            ),
             _ => panic!("expected transfer"),
         };
 
@@ -998,7 +1367,10 @@ mod tests {
                     3,
                     None,
                     105,
-                    ClientMessage::MapTransferAck { transfer_id },
+                    ClientMessage::MapTransferAck {
+                        transfer_id,
+                        route_token,
+                    },
                 ),
                 105,
             )

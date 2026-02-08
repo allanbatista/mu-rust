@@ -2,7 +2,9 @@ use actix_web::{cookie::Cookie, post, web, HttpResponse};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    auth_token::{class_name_to_id, now_ms, object_id_to_u64, AuthCharacterSummary, AuthTokenService},
+    auth_token::{
+        class_name_to_id, now_ms, object_id_to_u64, AuthCharacterSummary, AuthTokenService,
+    },
     db::MongoDbContext,
     error::{ConnectServerError, Result},
     session::SessionManager,
@@ -56,11 +58,15 @@ pub async fn login(
     let token_characters: Vec<AuthCharacterSummary> = characters
         .into_iter()
         .filter_map(|character| {
-            character.id.map(|id| AuthCharacterSummary {
-                character_id: object_id_to_u64(&id),
-                name: character.name,
-                class_id: class_name_to_id(&character.class),
-                level: character.level,
+            character.id.map(|id| {
+                let db_id = id.to_hex();
+                AuthCharacterSummary {
+                    character_id: object_id_to_u64(&id),
+                    db_id,
+                    name: character.name,
+                    class_id: class_name_to_id(&character.class),
+                    level: character.level,
+                }
             })
         })
         .collect();
@@ -72,7 +78,9 @@ pub async fn login(
             token_characters,
             now_ms(),
         )
-        .map_err(|err| ConnectServerError::Internal(format!("Failed to issue auth token: {err}")))?;
+        .map_err(|err| {
+            ConnectServerError::Internal(format!("Failed to issue auth token: {err}"))
+        })?;
 
     log::info!(
         "Successful login for user: {} (session: {})",
