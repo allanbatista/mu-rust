@@ -1,0 +1,15 @@
+# Environment variables
+.env
+
+# Backup files
+*.tar.gz
+*.sql
+*.dump
+
+# Docker volumes (if mounted locally)
+data/
+volumes/
+
+# Logs
+*.log
+logs/

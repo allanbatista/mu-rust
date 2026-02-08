@@ -1,0 +1,20 @@
+[package]
+name = "protocol"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+gameserver_update_ge_602 = []
+gameserver_update_ge_701 = []
+gameserver_extra = []
+
+[dependencies]
+thiserror = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "serialization"
+harness = false

@@ -1,0 +1,44 @@
+[[servers]]
+id = "server-1"
+name = "Alpha Server"
+description = "Main game server - recommended for new players"
+
+[[servers.worlds]]
+id = "world-1-lorencia"
+name = "Lorencia"
+ip = "127.0.0.1"
+port = 55901
+max_players = 100
+
+[[servers.worlds]]
+id = "world-1-noria"
+name = "Noria"
+ip = "127.0.0.1"
+port = 55902
+max_players = 100
+
+[[servers.worlds]]
+id = "world-1-devias"
+name = "Devias"
+ip = "127.0.0.1"
+port = 55903
+max_players = 100
+
+[[servers]]
+id = "server-2"
+name = "Beta Server"
+description = "PvP focused server for experienced players"
+
+[[servers.worlds]]
+id = "world-2-lorencia"
+name = "Lorencia"
+ip = "127.0.0.1"
+port = 55911
+max_players = 50
+
+[[servers.worlds]]
+id = "world-2-arena"
+name = "Arena"
+ip = "127.0.0.1"
+port = 55912
+max_players = 50

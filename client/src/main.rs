@@ -1,0 +1,45 @@
+mod scenes;
+mod world;
+
+use bevy::asset::AssetPlugin;
+use bevy::prelude::*;
+use bevy::state::app::AppExtStates;
+use bevy::window::WindowResolution;
+use scenes::ScenePlugin;
+use scenes::loading::LoadingScene;
+use scenes::login::LoginScene;
+use scenes::mock::MockScene;
+use world::WorldPlugin;
+
+#[derive(bevy::prelude::States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+pub enum AppState {
+    #[default]
+    Loading,
+    Mock,
+}
+
+fn main() {
+    App::new()
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Mu".into(),
+                        resolution: WindowResolution::new(1280.0, 720.0),
+                        resizable: false,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .set(AssetPlugin {
+                    file_path: "../assets".into(),
+                    ..Default::default()
+                }),
+        )
+        .add_plugins(WorldPlugin)
+        .init_state::<AppState>()
+        .add_plugins(ScenePlugin::<LoadingScene>::default())
+        .add_plugins(ScenePlugin::<LoginScene>::default())
+        .add_plugins(ScenePlugin::<MockScene>::default())
+        .run();
+}
