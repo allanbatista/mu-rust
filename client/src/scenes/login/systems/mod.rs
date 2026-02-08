@@ -1,6 +1,7 @@
 mod asset_loaders;
 mod boids;
 mod camera;
+mod debug_stats;
 mod lighting;
 mod objects;
 mod particles;
@@ -9,6 +10,7 @@ mod terrain;
 pub use asset_loaders::*;
 pub use boids::*;
 pub use camera::*;
+pub use debug_stats::*;
 pub use lighting::*;
 pub use objects::*;
 pub use particles::*;

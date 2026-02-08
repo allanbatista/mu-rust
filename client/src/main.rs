@@ -3,6 +3,7 @@ mod world;
 
 use bevy::app::PluginGroupBuilder;
 use bevy::asset::AssetPlugin;
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::state::app::AppExtStates;
 use bevy::window::WindowResolution;
@@ -22,6 +23,7 @@ pub enum AppState {
 fn main() {
     App::new()
         .add_plugins(build_bevy_plugins())
+        .add_plugins(FrameTimeDiagnosticsPlugin)
         .add_plugins(SceneLoaderPlugin)
         .add_plugins(WorldPlugin)
         .init_state::<AppState>()

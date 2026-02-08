@@ -104,9 +104,15 @@ impl SceneBuilder for LoginScene {
 
         if cfg!(debug_assertions) {
             app.init_resource::<DebugFreeCameraController>()
+                .init_resource::<DebugSceneStats>()
                 .add_systems(
                     OnEnter(crate::AppState::Mock),
-                    (reset_debug_free_camera, spawn_debug_free_camera_hint),
+                    (
+                        reset_debug_free_camera,
+                        spawn_debug_free_camera_hint,
+                        reset_debug_scene_stats,
+                        spawn_debug_scene_stats_hud,
+                    ),
                 )
                 .add_systems(
                     Update,
@@ -114,6 +120,7 @@ impl SceneBuilder for LoginScene {
                         toggle_debug_free_camera,
                         control_debug_free_camera,
                         update_debug_free_camera_hint,
+                        update_debug_scene_stats,
                     )
                         .in_set(LoginRenderPipeline::Camera)
                         .run_if(in_state(crate::AppState::Mock)),
