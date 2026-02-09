@@ -39,20 +39,76 @@ from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-def _png_has_alpha(png_bytes: bytes) -> bool:
-    """Check if a PNG payload has meaningful (non-opaque) alpha pixels."""
+
+def _png_alpha_profile(png_bytes: bytes) -> Tuple[bool, bool, float, float]:
+    """Return (has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio)."""
     try:
         import io
         from PIL import Image
-        img = Image.open(io.BytesIO(png_bytes))
-        if img.mode not in ("RGBA", "LA", "PA"):
-            return False
-        alpha = img.getchannel("A")
-        extrema = alpha.getextrema()
-        return extrema[0] < 255
-    except Exception:
-        return False
 
+        img = Image.open(io.BytesIO(png_bytes))
+        img.load()
+
+        if img.mode in ("RGBA", "LA", "PA"):
+            alpha = img.getchannel("A")
+        elif img.mode == "P" and "transparency" in img.info:
+            # Palettized PNG with tRNS transparency.
+            alpha = img.convert("RGBA").getchannel("A")
+        else:
+            return False, False, 0.0, 1.0
+
+        extrema = alpha.getextrema()
+        if extrema is None:
+            return False, False, 0.0, 1.0
+        if extrema[0] >= 255:
+            return False, False, 0.0, 1.0
+
+        histogram = alpha.histogram()
+        total_pixels = sum(histogram)
+        if total_pixels <= 0:
+            return False, False, 0.0, 1.0
+        transparent_ratio = histogram[0] / total_pixels
+        opaque_ratio = histogram[255] / total_pixels
+        has_partial_alpha = any(histogram[value] > 0 for value in range(1, 255))
+        return True, has_partial_alpha, transparent_ratio, opaque_ratio
+    except Exception:
+        return False, False, 0.0, 1.0
+
+
+# Conservative thresholds to avoid turning cutout/opaque materials into full blend.
+ALPHA_BLEND_PARTIAL_MIN_RATIO = 0.35
+ALPHA_BLEND_OPAQUE_MAX_RATIO = 0.20
+ALPHA_BLEND_TRANSPARENT_MIN_RATIO = 0.02
+ALPHA_MASK_PARTIAL_MIN_RATIO = 0.10
+ALPHA_MASK_CUTOFF = 0.35
+FORCE_BLEND_TEXTURE_STEMS = {
+    "u2u3",
+    "light01",
+}
+
+
+def _classify_alpha_mode(
+    has_alpha: bool,
+    has_partial_alpha: bool,
+    transparent_ratio: float,
+    opaque_ratio: float,
+) -> Optional[str]:
+    if not has_alpha:
+        return None
+
+    partial_ratio = max(0.0, 1.0 - transparent_ratio - opaque_ratio)
+    if (
+        has_partial_alpha
+        and transparent_ratio >= ALPHA_BLEND_TRANSPARENT_MIN_RATIO
+        and partial_ratio >= ALPHA_BLEND_PARTIAL_MIN_RATIO
+        and opaque_ratio <= ALPHA_BLEND_OPAQUE_MAX_RATIO
+    ):
+        return "BLEND"
+
+    if transparent_ratio > 0.0 or partial_ratio >= ALPHA_MASK_PARTIAL_MIN_RATIO:
+        return "MASK"
+
+    return None
 
 class BmdParseError(Exception):
     pass
@@ -367,6 +423,10 @@ class ResolvedTexture:
     uri: str
     png_bytes: Optional[bytes]
     found_on_disk: bool
+    has_alpha: bool = False
+    has_partial_alpha: bool = False
+    transparent_ratio: float = 0.0
+    opaque_ratio: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -866,21 +926,53 @@ def _track_values_vary(
     return False
 
 
-def _texture_name_to_png_uri(texture_name: str) -> Optional[str]:
-    """Normalize a BMD texture name to a PNG URI stored beside the converted GLB."""
+def _texture_name_to_candidate_uris(texture_name: str) -> List[str]:
+    """Normalize a BMD texture name to candidate texture URIs in output assets."""
     cleaned = texture_name.strip().replace("\\", "/")
     if not cleaned:
-        return None
+        return []
 
     basename = Path(cleaned).name
     if not basename:
-        return None
+        return []
 
-    stem = Path(basename).stem
+    texture_path = Path(basename)
+    stem = texture_path.stem
     if not stem:
-        return None
+        return []
 
-    return f"{stem}.png"
+    suffix = texture_path.suffix.lower()
+    candidates: List[str] = []
+
+    # Keep OZT/TGA textures as TGA in migrated assets.
+    if suffix in (".tga", ".ozt"):
+        candidates.append(f"{stem}.tga")
+        candidates.append(f"{stem}.png")
+    elif suffix in (".jpg", ".jpeg", ".bmp", ".ozj", ".ozj2", ".ozb", ".ozp", ".png"):
+        candidates.append(f"{stem}.png")
+    else:
+        candidates.append(f"{stem}.png")
+        candidates.append(f"{stem}.tga")
+
+    # De-duplicate while preserving order.
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _mime_type_for_texture_uri(texture_uri: str) -> str:
+    suffix = Path(texture_uri).suffix.lower()
+    if suffix == ".tga":
+        return "image/x-tga"
+    if suffix in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    return "image/png"
 
 
 def _normalize_texture_lookup_key(raw_name: str) -> str:
@@ -890,7 +982,7 @@ def _normalize_texture_lookup_key(raw_name: str) -> str:
 def _build_global_png_index(
     root: Path,
 ) -> Tuple[Dict[str, Path], Dict[str, Path], Dict[str, Path]]:
-    """Build fallback lookup maps for every PNG under *root*."""
+    """Build fallback lookup maps for texture files under *root*."""
     key = str(root.resolve())
     cached = _GLOBAL_PNG_INDEX_CACHE.get(key)
     if cached is not None:
@@ -901,11 +993,15 @@ def _build_global_png_index(
     by_normalized_stem: Dict[str, Path] = {}
 
     if root.exists() and root.is_dir():
-        png_files = sorted(
-            (path for path in root.rglob("*.png") if path.is_file()),
+        texture_files = sorted(
+            (
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.lower() in {".png", ".tga"}
+            ),
             key=lambda path: path.as_posix().lower(),
         )
-        for path in png_files:
+        for path in texture_files:
             lower_name = path.name.lower()
             lower_stem = path.stem.lower()
             normalized_stem = _normalize_texture_lookup_key(path.stem)
@@ -921,7 +1017,7 @@ def _build_global_png_index(
 
 
 class TextureResolver:
-    """Resolve BMD texture names against PNGs in local and fallback output directories."""
+    """Resolve BMD texture names against migrated textures in local/fallback output."""
 
     def __init__(
         self,
@@ -949,15 +1045,15 @@ class TextureResolver:
         if not self.texture_dir.exists() or not self.texture_dir.is_dir():
             return
 
-        png_files = sorted(
+        texture_files = sorted(
             (
                 child for child in self.texture_dir.iterdir()
-                if child.is_file() and child.suffix.lower() == ".png"
+                if child.is_file() and child.suffix.lower() in {".png", ".tga"}
             ),
             key=lambda path: path.name.lower(),
         )
 
-        for path in png_files:
+        for path in texture_files:
             lower_name = path.name.lower()
             lower_stem = path.stem.lower()
             normalized_stem = _normalize_texture_lookup_key(path.stem)
@@ -987,7 +1083,7 @@ class TextureResolver:
             self._fallback_by_normalized_stem,
         ) = _build_global_png_index(self.fallback_root)
 
-    def _resolve_png_path(self, requested_uri: str) -> Optional[Path]:
+    def _resolve_texture_path(self, requested_uri: str) -> Optional[Path]:
         direct = self.texture_dir / requested_uri
         if direct.exists() and direct.is_file():
             return direct
@@ -1043,37 +1139,76 @@ class TextureResolver:
             return path.name
 
     def resolve(self, texture_name: str) -> Optional[ResolvedTexture]:
-        texture_uri = _texture_name_to_png_uri(texture_name)
-        if texture_uri is None:
+        texture_uris = _texture_name_to_candidate_uris(texture_name)
+        if not texture_uris:
             return None
 
-        cache_key = texture_uri.lower()
+        cache_key = "|".join(uri.lower() for uri in texture_uris)
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        resolved_path = self._resolve_png_path(texture_uri)
-        if resolved_path is None:
-            resolved = ResolvedTexture(uri=texture_uri, png_bytes=None, found_on_disk=False)
+        unresolved = ResolvedTexture(
+            uri=texture_uris[0],
+            png_bytes=None,
+            found_on_disk=False,
+        )
+
+        for texture_uri in texture_uris:
+            resolved_path = self._resolve_texture_path(texture_uri)
+            if resolved_path is None:
+                continue
+
+            payload_bytes: Optional[bytes] = None
+            alpha_probe_payload: Optional[bytes] = None
+            if self.embed_textures:
+                try:
+                    payload_bytes = resolved_path.read_bytes()
+                    alpha_probe_payload = payload_bytes
+                except OSError as exc:
+                    logging.warning(
+                        "Failed to read texture '%s' for embedding: %s",
+                        resolved_path,
+                        exc,
+                    )
+                    payload_bytes = None
+            else:
+                try:
+                    alpha_probe_payload = resolved_path.read_bytes()
+                except OSError as exc:
+                    logging.warning(
+                        "Failed to read texture '%s' for alpha analysis: %s",
+                        resolved_path,
+                        exc,
+                    )
+
+            has_alpha = False
+            has_partial_alpha = False
+            transparent_ratio = 0.0
+            opaque_ratio = 1.0
+            if alpha_probe_payload is not None:
+                (
+                    has_alpha,
+                    has_partial_alpha,
+                    transparent_ratio,
+                    opaque_ratio,
+                ) = _png_alpha_profile(alpha_probe_payload)
+
+            resolved_uri = self._uri_for_path(resolved_path)
+            resolved = ResolvedTexture(
+                uri=resolved_uri,
+                png_bytes=payload_bytes,
+                found_on_disk=True,
+                has_alpha=has_alpha,
+                has_partial_alpha=has_partial_alpha,
+                transparent_ratio=transparent_ratio,
+                opaque_ratio=opaque_ratio,
+            )
             self._cache[cache_key] = resolved
             return resolved
 
-        png_bytes: Optional[bytes] = None
-        if self.embed_textures:
-            try:
-                png_bytes = resolved_path.read_bytes()
-            except OSError as exc:
-                logging.warning(
-                    "Failed to read texture '%s' for embedding: %s",
-                    resolved_path,
-                    exc,
-                )
-                png_bytes = None
-
-        resolved_uri = self._uri_for_path(resolved_path)
-        resolved = ResolvedTexture(uri=resolved_uri, png_bytes=png_bytes, found_on_disk=True)
-        self._cache[cache_key] = resolved
-        return resolved
+        self._cache[cache_key] = unresolved
+        return unresolved
 
 
 def _resolve_mesh_texture(
@@ -1093,9 +1228,13 @@ def _resolve_mesh_texture(
     fallback: Optional[ResolvedTexture] = None
     for candidate in candidates:
         if texture_resolver is None:
-            uri = _texture_name_to_png_uri(candidate)
-            if uri:
-                return ResolvedTexture(uri=uri, png_bytes=None, found_on_disk=False)
+            candidate_uris = _texture_name_to_candidate_uris(candidate)
+            if candidate_uris:
+                return ResolvedTexture(
+                    uri=candidate_uris[0],
+                    png_bytes=None,
+                    found_on_disk=False,
+                )
             continue
 
         resolved = texture_resolver.resolve(candidate)
@@ -1144,6 +1283,7 @@ def bmd_to_glb(
     primitives_info: List[Tuple[int, int, int, int, Optional[str]]] = []
     # (vert_offset, vert_count, idx_offset, idx_count, texture_uri)
     embedded_texture_payloads: Dict[str, bytes] = {}
+    texture_alpha_profile_by_uri: Dict[str, Tuple[bool, bool, float, float]] = {}
     missing_textures: set[str] = set()
     warned_vertex_nodes: set[int] = set()
     warned_normal_nodes: set[int] = set()
@@ -1277,6 +1417,12 @@ def bmd_to_glb(
         if resolved_texture is not None:
             if resolved_texture.found_on_disk:
                 texture_uri = resolved_texture.uri
+                texture_alpha_profile_by_uri[texture_uri] = (
+                    resolved_texture.has_alpha,
+                    resolved_texture.has_partial_alpha,
+                    resolved_texture.transparent_ratio,
+                    resolved_texture.opaque_ratio,
+                )
                 if resolved_texture.png_bytes is not None:
                     embedded_texture_payloads.setdefault(texture_uri, resolved_texture.png_bytes)
             else:
@@ -1467,7 +1613,7 @@ def bmd_to_glb(
                 images.append(
                     {
                         "bufferView": image_buffer_view,
-                        "mimeType": "image/png",
+                        "mimeType": _mime_type_for_texture_uri(texture_uri),
                         "name": texture_uri,
                     }
                 )
@@ -1481,9 +1627,25 @@ def bmd_to_glb(
             if isinstance(pbr, dict):
                 pbr["baseColorTexture"] = {"index": texture_index}
 
-            if embedded_payload is not None and _png_has_alpha(embedded_payload):
+            has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio = (
+                texture_alpha_profile_by_uri.get(texture_uri, (False, False, 0.0, 1.0))
+            )
+            texture_stem = Path(texture_uri).stem.lower()
+            if has_alpha and texture_stem in FORCE_BLEND_TEXTURE_STEMS:
+                alpha_mode = "BLEND"
+            else:
+                alpha_mode = _classify_alpha_mode(
+                    has_alpha=has_alpha,
+                    has_partial_alpha=has_partial_alpha,
+                    transparent_ratio=transparent_ratio,
+                    opaque_ratio=opaque_ratio,
+                )
+            if alpha_mode == "BLEND":
+                material["alphaMode"] = "BLEND"
+                material["doubleSided"] = True
+            elif alpha_mode == "MASK":
                 material["alphaMode"] = "MASK"
-                material["alphaCutoff"] = 0.5
+                material["alphaCutoff"] = ALPHA_MASK_CUTOFF
                 material["doubleSided"] = True
 
         material_index = len(materials)

@@ -160,6 +160,14 @@ DEFAULT_TERRAIN_TEXTURE_SLOT_FILES: Dict[int, str] = {
     32: "TileGrass03.png",
 }
 
+# Legacy textures that rely on black-background compositing in the original
+# client. We derive alpha from luminance so black regions can become transparent
+# in glTF/Bevy materials.
+COLOR_KEY_ALPHA_TEXTURE_STEMS = {
+    "u2u3",
+    "light01",
+}
+
 
 @dataclass
 class ConversionStats:
@@ -645,6 +653,19 @@ def convert_image_to_png(data: bytes, mode_hint: str) -> Image.Image:
         image = image.convert("RGBA")
 
     return image
+
+
+def apply_luminance_alpha_key(image: Image.Image) -> Image.Image:
+    """Derive alpha from RGB luminance (max channel), turning black into transparent."""
+    rgba = image.convert("RGBA")
+    pixels = rgba.load()
+    width, height = rgba.size
+    for y in range(height):
+        for x in range(width):
+            r, g, b, _a = pixels[x, y]
+            alpha = max(r, g, b)
+            pixels[x, y] = (r, g, b, alpha)
+    return rgba
 
 
 def is_terrain_height_asset(source: Path) -> bool:
@@ -2586,7 +2607,8 @@ def handle_texture(
     rel = canonicalize_rel_path(source.relative_to(legacy_root))
     canonical_rel = canonicalize_rel_path(rel)
     target_dir = output_root / canonical_rel.parent
-    target = target_dir / f"{source.stem}.png"
+    target_extension = ".tga" if ext == ".ozt" else ".png"
+    target = target_dir / f"{source.stem}{target_extension}"
 
     if target.exists() and not force:
         logging.debug("Texture already converted: %s", target)
@@ -2599,7 +2621,12 @@ def handle_texture(
 
     try:
         payload = load_image_payload(source, spec)
-        image = convert_image_to_png(payload, mode_hint=str(spec.get("inner", "")))
+        image = None if ext == ".ozt" else convert_image_to_png(
+            payload,
+            mode_hint=str(spec.get("inner", "")),
+        )
+        if image is not None and source.stem.lower() in COLOR_KEY_ALPHA_TEXTURE_STEMS:
+            image = apply_luminance_alpha_key(image)
     except Exception as exc:  # noqa: BLE001
         # TerrainHeight files may have corrupted BMP headers but valid pixel data.
         # Skip the PNG conversion silently and let the sidecar path handle them.
@@ -2617,11 +2644,16 @@ def handle_texture(
 
     ensure_dir(target_dir, dry_run=False)
     try:
-        image.save(target, format="PNG")
+        if ext == ".ozt":
+            # Preserve original TGA payload from OZT (header already stripped by load_image_payload).
+            target.write_bytes(payload)
+        else:
+            assert image is not None
+            image.save(target, format="PNG")
     except Exception as exc:  # noqa: BLE001
         stats.textures_failed += 1
         stats.failures.append(f"{source} -> {target}: {exc}")
-        logging.error("Failed to write PNG for %s: %s", source, exc)
+        logging.error("Failed to write texture for %s: %s", source, exc)
         return False
 
     stats.textures_converted += 1
