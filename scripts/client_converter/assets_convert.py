@@ -28,6 +28,7 @@ always converted to PNG as long as Pillow (`pip install Pillow`) is available.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import hashlib
 import io
 import json
@@ -638,10 +639,74 @@ def convert_image_to_png(data: bytes, mode_hint: str) -> Image.Image:
     except UnidentifiedImageError as exc:  # type: ignore[arg-type]
         raise ValueError("Unsupported or corrupted image payload") from exc
 
+    # Legacy TGA/OZT assets commonly encode transparency as a black background.
+    # Preserve authored alpha when present, otherwise key out pure-black pixels
+    # connected to texture borders to avoid opaque black quads.
+    if mode_hint.lower() == "tga":
+        rgba = image.convert("RGBA")
+        if _has_opaque_alpha_only(rgba):
+            rgba = _key_out_black_border_background(rgba)
+        return rgba
+
     if image.mode not in ("RGBA", "RGB", "LA", "L"):
         image = image.convert("RGBA")
     elif image.mode in ("RGB", "L"):
         image = image.convert("RGBA")
+
+    return image
+
+
+def _has_opaque_alpha_only(image: Image.Image) -> bool:
+    alpha = image.getchannel("A")
+    min_alpha, _max_alpha = alpha.getextrema()
+    return min_alpha == 255
+
+
+def _key_out_black_border_background(image: Image.Image) -> Image.Image:
+    width, height = image.size
+    if width == 0 or height == 0:
+        return image
+
+    pixels = image.load()
+    if pixels is None:
+        return image
+
+    visited = bytearray(width * height)
+    queue: deque[Tuple[int, int]] = deque()
+
+    def is_black(x: int, y: int) -> bool:
+        r_val, g_val, b_val, _a_val = pixels[x, y]
+        return r_val == 0 and g_val == 0 and b_val == 0
+
+    def enqueue_if_black(x: int, y: int) -> None:
+        idx = y * width + x
+        if visited[idx]:
+            return
+        visited[idx] = 1
+        if is_black(x, y):
+            queue.append((x, y))
+
+    for x in range(width):
+        enqueue_if_black(x, 0)
+        enqueue_if_black(x, height - 1)
+    for y in range(height):
+        enqueue_if_black(0, y)
+        enqueue_if_black(width - 1, y)
+
+    while queue:
+        x, y = queue.popleft()
+        r_val, g_val, b_val, _a_val = pixels[x, y]
+        if r_val == 0 and g_val == 0 and b_val == 0:
+            pixels[x, y] = (r_val, g_val, b_val, 0)
+
+        if x > 0:
+            enqueue_if_black(x - 1, y)
+        if x + 1 < width:
+            enqueue_if_black(x + 1, y)
+        if y > 0:
+            enqueue_if_black(x, y - 1)
+        if y + 1 < height:
+            enqueue_if_black(x, y + 1)
 
     return image
 
@@ -2587,8 +2652,16 @@ def handle_texture(
     rel = canonicalize_rel_path(source.relative_to(legacy_root))
     canonical_rel = canonicalize_rel_path(rel)
     target_dir = output_root / canonical_rel.parent
-    target_extension = ".tga" if ext == ".ozt" else ".png"
-    target = target_dir / f"{source.stem}{target_extension}"
+    target = target_dir / f"{source.stem}.png"
+    legacy_ozt_target = target_dir / f"{source.stem}.tga"
+
+    if ext == ".ozt" and legacy_ozt_target.exists():
+        try:
+            if not dry_run:
+                legacy_ozt_target.unlink()
+            logging.debug("Removed legacy OZT TGA output: %s", legacy_ozt_target)
+        except OSError as exc:
+            logging.warning("Failed to remove legacy OZT TGA output %s: %s", legacy_ozt_target, exc)
 
     if target.exists() and not force:
         logging.debug("Texture already converted: %s", target)
@@ -2601,7 +2674,7 @@ def handle_texture(
 
     try:
         payload = load_image_payload(source, spec)
-        image = None if ext == ".ozt" else convert_image_to_png(
+        image = convert_image_to_png(
             payload,
             mode_hint=str(spec.get("inner", "")),
         )
@@ -2622,12 +2695,7 @@ def handle_texture(
 
     ensure_dir(target_dir, dry_run=False)
     try:
-        if ext == ".ozt":
-            # Preserve original TGA payload from OZT (header already stripped by load_image_payload).
-            target.write_bytes(payload)
-        else:
-            assert image is not None
-            image.save(target, format="PNG")
+        image.save(target, format="PNG")
     except Exception as exc:  # noqa: BLE001
         stats.textures_failed += 1
         stats.failures.append(f"{source} -> {target}: {exc}")

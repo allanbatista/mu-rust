@@ -954,10 +954,11 @@ def _texture_name_to_candidate_uris(texture_name: str) -> List[str]:
     suffix = texture_path.suffix.lower()
     candidates: List[str] = []
 
-    # Keep OZT/TGA textures as TGA in migrated assets.
+    # Assets are normalized to PNG in conversion output. Keep TGA fallback for
+    # compatibility with stale/mixed outputs from older conversions.
     if suffix in (".tga", ".ozt"):
-        candidates.append(f"{stem}.tga")
         candidates.append(f"{stem}.png")
+        candidates.append(f"{stem}.tga")
     elif suffix in (".jpg", ".jpeg", ".bmp", ".ozj", ".ozj2", ".ozb", ".ozp", ".png"):
         candidates.append(f"{stem}.png")
     else:
