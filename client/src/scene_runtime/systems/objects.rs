@@ -16,7 +16,7 @@ const DEFAULT_SCENE_OBJECT_ANIMATION_SPEED: f32 = 0.16;
 const DEFAULT_NPC_MONSTER_ANIMATION_SPEED: f32 = 0.25;
 const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 180.0;
 const SCENE_OBJECT_YAW_OFFSET_ENV: &str = "MU_SCENE_OBJECT_YAW_OFFSET_DEGREES";
-const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 9_000.0;
+const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 1500.0;
 const SCENE_OBJECT_CULL_DISTANCE_ENV: &str = "MU_SCENE_OBJECT_CULL_DISTANCE";
 
 /// Marker component to track if scene objects have been spawned
@@ -162,10 +162,14 @@ pub fn spawn_scene_objects_when_ready(
 /// Controlled by `MU_SCENE_OBJECT_CULL_DISTANCE` (world units):
 /// - `> 0`: enabled with provided distance
 /// - `<= 0`: disabled
+/// Threshold (squared) below which camera movement is ignored for culling recalc.
+const CULLING_CAMERA_MOVE_THRESHOLD_SQ: f32 = 100.0; // 10 world units
+
 pub fn apply_scene_object_distance_culling(
     config: Res<SceneObjectDistanceCullingConfig>,
     camera_query: Query<&Transform, With<Camera3d>>,
     mut scene_objects: Query<(&Transform, &mut Visibility), With<SceneObject>>,
+    mut last_camera_pos: Local<Option<Vec3>>,
 ) {
     let Ok(camera_transform) = camera_query.get_single() else {
         return;
@@ -178,8 +182,17 @@ pub fn apply_scene_object_distance_culling(
                 *visibility = Visibility::Inherited;
             }
         }
+        *last_camera_pos = Some(camera_position);
         return;
     }
+
+    // Skip recalculation if camera hasn't moved significantly
+    if let Some(prev) = *last_camera_pos {
+        if prev.distance_squared(camera_position) < CULLING_CAMERA_MOVE_THRESHOLD_SQ {
+            return;
+        }
+    }
+    *last_camera_pos = Some(camera_position);
 
     for (object_transform, mut visibility) in &mut scene_objects {
         let distance_squared = object_transform
@@ -283,10 +296,7 @@ fn spawn_scene_object(
         }
         let scene: Handle<Scene> = asset_server.load(scene_path);
         entity_cmd.with_children(|parent| {
-            let mut scene_entity = parent.spawn(SceneBundle { scene, ..default() });
-            if let Some(source) = animation_source.clone() {
-                scene_entity.insert(source);
-            }
+            parent.spawn(SceneBundle { scene, ..default() });
         });
     } else {
         spawn_model_proxy(
@@ -662,6 +672,8 @@ pub fn apply_legacy_gltf_material_overrides(
 
         material.alpha_mode = AlphaMode::Add;
         material.double_sided = true;
+        material.base_color = Color::srgba(0.0, 0.0, 0.0, 1.0);
+        material.base_color_texture = None;
     }
 }
 

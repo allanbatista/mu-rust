@@ -1,9 +1,15 @@
+use crate::scene_runtime::components::{
+    SceneObjectAnimationInitialized, SceneObjectAnimationSource,
+};
 use crate::scene_runtime::pipeline::SceneRenderPipeline;
 use crate::scene_runtime::systems::{
-    DebugFreeCameraController, DebugOverlayState, DebugSceneStats, GrassMaterial,
-    SceneObjectDistanceCullingConfig, apply_debug_overlay_visibility,
-    apply_legacy_gltf_material_overrides, apply_scene_object_distance_culling,
-    control_debug_free_camera, ensure_scene_object_animation_players, load_scene_runtime_assets,
+    DebugFrameLimiter, DebugFreeCameraController, DebugOverlayState, DebugSceneStats,
+    DebugShadowQuality, GrassMaterial, SceneObjectDistanceCullingConfig,
+    apply_debug_overlay_visibility, apply_legacy_gltf_material_overrides,
+    apply_scene_object_distance_culling, toggle_offscreen_scene_animations, control_debug_free_camera,
+    cycle_debug_frame_limit, cycle_debug_shadow_quality,
+    ensure_scene_object_animation_players, handle_window_occlusion,
+    load_scene_runtime_assets,
     reset_debug_free_camera, reset_debug_overlay_state, reset_debug_scene_stats, setup_camera_tour,
     spawn_debug_free_camera_hint, spawn_debug_scene_stats_hud, spawn_dynamic_lights,
     spawn_runtime_sun_light, spawn_scene_objects_when_ready, spawn_skybox_when_ready,
@@ -54,7 +60,11 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
             Update,
             (
                 apply_legacy_gltf_material_overrides,
-                ensure_scene_object_animation_players,
+                ensure_scene_object_animation_players.run_if(
+                    |q: Query<(), (With<SceneObjectAnimationSource>, Without<SceneObjectAnimationInitialized>)>| {
+                        !q.is_empty()
+                    },
+                ),
                 update_boids,
                 update_particle_emitters,
             )
@@ -77,7 +87,11 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
         )
         .add_systems(
             Update,
-            (update_camera_tour, apply_scene_object_distance_culling)
+            (
+                update_camera_tour,
+                apply_scene_object_distance_culling,
+                toggle_offscreen_scene_animations,
+            )
                 .chain()
                 .in_set(SceneRenderPipeline::Camera)
                 .run_if(in_state(active_state)),
@@ -87,14 +101,24 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
             (
                 toggle_debug_overlay_shortcut,
                 apply_debug_overlay_visibility,
-                update_debug_scene_stats,
             )
                 .in_set(SceneRenderPipeline::Camera)
                 .run_if(in_state(active_state)),
+        )
+        .add_systems(
+            Update,
+            update_debug_scene_stats
+                .in_set(SceneRenderPipeline::Camera)
+                .run_if(in_state(active_state))
+                .run_if(|s: Res<DebugOverlayState>| s.visible),
         );
+
+    app.add_systems(Update, handle_window_occlusion);
 
     if cfg!(debug_assertions) {
         app.init_resource::<DebugFreeCameraController>()
+            .init_resource::<DebugFrameLimiter>()
+            .init_resource::<DebugShadowQuality>()
             .add_systems(
                 OnEnter(active_state),
                 (reset_debug_free_camera, spawn_debug_free_camera_hint),
@@ -105,6 +129,8 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
                     toggle_debug_free_camera,
                     control_debug_free_camera,
                     update_debug_free_camera_hint,
+                    cycle_debug_frame_limit,
+                    cycle_debug_shadow_quality,
                 )
                     .in_set(SceneRenderPipeline::Camera)
                     .run_if(in_state(active_state)),

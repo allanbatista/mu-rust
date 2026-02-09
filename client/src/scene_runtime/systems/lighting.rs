@@ -1,6 +1,6 @@
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
-use bevy::pbr::CascadeShadowConfigBuilder;
+use bevy::pbr::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod};
 use bevy::prelude::*;
 
 /// Marker for spawned point lights
@@ -22,6 +22,7 @@ pub fn spawn_runtime_sun_light(
     terrain_configs: Res<Assets<TerrainConfig>>,
     mut ambient_light: ResMut<AmbientLight>,
     query: Query<Entity, With<RuntimeSunLight>>,
+    camera_query: Query<Entity, With<Camera3d>>,
 ) {
     if !assets.loaded || !query.is_empty() {
         return;
@@ -52,10 +53,10 @@ pub fn spawn_runtime_sun_light(
                 ..default()
             },
             cascade_shadow_config: CascadeShadowConfigBuilder {
-                num_cascades: 2,
+                num_cascades: 1,
                 minimum_distance: 10.0,
                 maximum_distance: 8_000.0,
-                first_cascade_far_bound: 1_200.0,
+                first_cascade_far_bound: 8_000.0,
                 overlap_proportion: 0.15,
             }
             .into(),
@@ -83,6 +84,12 @@ pub fn spawn_runtime_sun_light(
     // Lift shadowed areas so terrain/object shadows remain visible but not crushed to black.
     ambient_light.color = Color::srgb(0.96, 0.97, 1.0);
     ambient_light.brightness = 0.55;
+
+    // Set initial shadow quality to Low
+    commands.insert_resource(DirectionalLightShadowMap { size: 1024 });
+    for entity in camera_query.iter() {
+        commands.entity(entity).insert(ShadowFilteringMethod::Hardware2x2);
+    }
 
     info!(
         "Runtime sun spawned for '{}' (center: {:.1}, {:.1})",

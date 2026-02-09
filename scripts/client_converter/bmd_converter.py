@@ -1961,15 +1961,11 @@ def bmd_to_glb(
             )
 
         def apply_legacy_additive_mode(alpha_key_applied: bool = False) -> None:
-            nonlocal uses_khr_materials_unlit
-            material["alphaMode"] = "BLEND"
+            material["alphaMode"] = "OPAQUE"
             material["doubleSided"] = True
-            extensions = material.get("extensions")
-            if not isinstance(extensions, dict):
-                extensions = {}
-            extensions["KHR_materials_unlit"] = {}
-            material["extensions"] = extensions
-            uses_khr_materials_unlit = True
+            pbr_add = material.get("pbrMetallicRoughness")
+            if isinstance(pbr_add, dict):
+                pbr_add["baseColorFactor"] = [0.0, 0.0, 0.0, 1.0]
             extras: Dict[str, object] = {
                 "mu_legacy_blend_mode": "additive",
                 "mu_legacy_blend_mode_reason": "blend_mesh_texture_index",
@@ -1991,21 +1987,10 @@ def bmd_to_glb(
             embedded_payload = embedded_texture_payloads.get(texture_uri)
             if embedded_payload is not None:
                 image_name_uri = texture_uri
-                if (
-                    legacy_blend_mode == "additive"
-                    and additive_alpha_key_threshold is not None
-                ):
-                    embedded_payload, alpha_key_applied = _apply_black_color_key_alpha(
-                        embedded_payload,
-                        additive_alpha_key_threshold,
-                    )
-                    if alpha_key_applied:
-                        image_name_uri = _force_texture_uri_png(texture_uri)
-
                 image_payload_key = (
                     image_name_uri,
                     legacy_blend_mode if legacy_blend_mode == "additive" else None,
-                    additive_alpha_key_threshold if legacy_blend_mode == "additive" else None,
+                    None,
                 )
                 image_buffer_view = image_buffer_view_by_texture.get(image_payload_key)
                 if image_buffer_view is None:
@@ -2025,15 +2010,14 @@ def bmd_to_glb(
             texture_index = len(textures)
             textures.append({"source": image_index})
 
-            pbr = material["pbrMetallicRoughness"]
-            if isinstance(pbr, dict):
-                pbr["baseColorTexture"] = {"index": texture_index}
-
             if legacy_blend_mode == "additive":
                 material["emissiveFactor"] = [1.0, 1.0, 1.0]
                 material["emissiveTexture"] = {"index": texture_index}
-                apply_legacy_additive_mode(alpha_key_applied=alpha_key_applied)
+                apply_legacy_additive_mode(alpha_key_applied=False)
             else:
+                pbr = material["pbrMetallicRoughness"]
+                if isinstance(pbr, dict):
+                    pbr["baseColorTexture"] = {"index": texture_index}
                 has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio = (
                     texture_alpha_profile_by_uri.get(texture_uri, (False, False, 0.0, 1.0))
                 )

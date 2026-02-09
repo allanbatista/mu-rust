@@ -1,12 +1,21 @@
+use super::frame_limiter::DebugFrameLimiter;
 use super::objects::SceneObjectDistanceCullingConfig;
+use super::shadow_quality::DebugShadowQuality;
 use crate::scene_runtime::components::*;
 use bevy::asset::AssetId;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::renderer::RenderAdapterInfo;
 use bevy::render::view::{VisibleEntities, WithMesh};
 use std::collections::{HashMap, HashSet};
+
+#[derive(SystemParam)]
+pub struct DebugHudExtras<'w> {
+    frame_limiter: Option<Res<'w, DebugFrameLimiter>>,
+    shadow_quality: Option<Res<'w, DebugShadowQuality>>,
+}
 
 /// UI marker for performance stats text (fps/frame/object counters).
 #[derive(Component)]
@@ -176,6 +185,7 @@ pub fn update_debug_scene_stats(
             Without<DebugSceneStatsPerformanceText>,
         ),
     >,
+    debug_extras: DebugHudExtras,
 ) {
     if !overlay_state.visible {
         return;
@@ -298,9 +308,21 @@ pub fn update_debug_scene_stats(
         };
     }
 
+    let frame_limit_text = debug_extras
+        .frame_limiter
+        .as_ref()
+        .map(|fl| format!("{}", fl.mode))
+        .unwrap_or_else(|| "n/a".to_string());
+    let shadow_text = debug_extras
+        .shadow_quality
+        .as_ref()
+        .map(|sq| format!("{}", sq.mode))
+        .unwrap_or_else(|| "n/a".to_string());
+
     for mut text in &mut gpu_text_query {
-        text.sections[0].value =
-            format!("GPU: {gpu_name}\nVideo API: {graphics_api}\nVersao: {graphics_version}",);
+        text.sections[0].value = format!(
+            "GPU: {gpu_name}\nVideo API: {graphics_api}\nVersao: {graphics_version}\n[F4] FPS Limit: {frame_limit_text}\n[F5] Sombra: {shadow_text}",
+        );
     }
 }
 

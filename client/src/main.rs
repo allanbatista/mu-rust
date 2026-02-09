@@ -7,7 +7,10 @@ use bevy::asset::AssetPlugin;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::state::app::AppExtStates;
-use bevy::window::WindowResolution;
+use bevy::render::pipelined_rendering::PipelinedRenderingPlugin;
+use bevy::window::{PresentMode, WindowResolution};
+use bevy::winit::{WinitSettings, UpdateMode};
+use std::time::Duration;
 use scene_runtime::scene_loader::SceneLoaderPlugin;
 use scenes::ScenePlugin;
 use scenes::loading::LoadingScene;
@@ -24,6 +27,10 @@ pub enum AppState {
 fn main() {
     App::new()
         .add_plugins(build_bevy_plugins())
+        .insert_resource(WinitSettings {
+            focused_mode: UpdateMode::reactive(Duration::from_secs_f64(1.0 / 60.0)),
+            unfocused_mode: UpdateMode::reactive(Duration::from_secs_f64(1.0 / 60.0)),
+        })
         .add_plugins(FrameTimeDiagnosticsPlugin)
         .add_plugins(SceneLoaderPlugin)
         .add_plugins(WorldPlugin)
@@ -43,6 +50,7 @@ fn build_bevy_plugins() -> PluginGroupBuilder {
             file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../assets").into(),
             ..Default::default()
         })
+        .disable::<PipelinedRenderingPlugin>()
 }
 
 fn create_window_settings() -> Window {
@@ -50,6 +58,7 @@ fn create_window_settings() -> Window {
         title: "Mu".into(),
         resolution: WindowResolution::new(1280.0, 720.0),
         resizable: false,
+        present_mode: PresentMode::AutoVsync,
         ..Default::default()
     }
 }

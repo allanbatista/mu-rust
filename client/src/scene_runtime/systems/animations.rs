@@ -1,8 +1,9 @@
 use crate::scene_runtime::components::{
-    SceneObjectAnimationInitialized, SceneObjectAnimationSource,
+    SceneObject, SceneObjectAnimationInitialized, SceneObjectAnimationSource,
 };
 use bevy::gltf::Gltf;
 use bevy::prelude::*;
+use bevy::render::view::ViewVisibility;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -174,6 +175,82 @@ fn find_all_animation_players_in_subtree(
         }
     }
     result
+}
+
+/// Pauses/resumes animation players based on visibility.
+///
+/// Iterates **SceneObject** entities (the root of each spawned object hierarchy)
+/// so that both the SkinnedMesh (which carries `ViewVisibility`) and the Armature
+/// (which carries `AnimationPlayer`) are found — even though they are siblings,
+/// not parent-child.
+pub fn toggle_offscreen_scene_animations(
+    scene_objects: Query<
+        (Entity, &Visibility),
+        (With<SceneObject>, With<SceneObjectAnimationInitialized>),
+    >,
+    children_query: Query<&Children>,
+    mut players: Query<&mut AnimationPlayer>,
+    view_visibility_query: Query<&ViewVisibility>,
+    time: Res<Time>,
+    mut timer: Local<Option<Timer>>,
+) {
+    let timer = timer.get_or_insert_with(|| Timer::from_seconds(0.2, TimerMode::Repeating));
+    timer.tick(time.delta());
+    if !timer.just_finished() {
+        return;
+    }
+
+    for (scene_entity, visibility) in &scene_objects {
+        let should_animate = if *visibility == Visibility::Hidden {
+            false // distance-culled
+        } else {
+            // Search ALL descendants of the SceneObject for any visible mesh
+            any_descendant_view_visible(scene_entity, &children_query, &view_visibility_query)
+        };
+
+        // Pause/resume ALL AnimationPlayers in the subtree
+        set_subtree_animations(scene_entity, &children_query, &mut players, should_animate);
+    }
+}
+
+fn set_subtree_animations(
+    entity: Entity,
+    children_query: &Query<&Children>,
+    players: &mut Query<&mut AnimationPlayer>,
+    should_animate: bool,
+) {
+    if let Ok(mut player) = players.get_mut(entity) {
+        if should_animate && player.all_paused() {
+            player.resume_all();
+        } else if !should_animate && !player.all_paused() {
+            player.pause_all();
+        }
+    }
+    if let Ok(children) = children_query.get(entity) {
+        for &child in children.iter() {
+            set_subtree_animations(child, children_query, players, should_animate);
+        }
+    }
+}
+
+fn any_descendant_view_visible(
+    entity: Entity,
+    children_query: &Query<&Children>,
+    view_vis: &Query<&ViewVisibility>,
+) -> bool {
+    if let Ok(vv) = view_vis.get(entity) {
+        if vv.get() {
+            return true;
+        }
+    }
+    if let Ok(children) = children_query.get(entity) {
+        for &child in children.iter() {
+            if any_descendant_view_visible(child, children_query, view_vis) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn resolve_scene_object_animation(

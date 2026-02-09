@@ -19,6 +19,7 @@ bevy = { version = "0.14.2", default-features = false, features = [
     "bevy_ui",
     "bevy_winit",
     "bevy_state",
+    "multi_threaded",
     "png",
     "jpeg",
     "tga",
