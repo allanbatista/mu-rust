@@ -146,17 +146,30 @@ NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9]+")
 # Global cache for fallback PNG lookup maps, keyed by absolute root path.
 _GLOBAL_PNG_INDEX_CACHE: Dict[str, Tuple[Dict[str, Path], Dict[str, Path], Dict[str, Path]]] = {}
 
-# Legacy world/object rendering hints from MuClient5.2 source.
+# Legacy world/object rendering hints from MuClient5.2 / muonline-cross source.
 # Key: (object_dir, model_index), where model_index is from ObjectXX.bmd.
 # Value: BlendMesh value used by RenderMesh, which maps to Mesh.Texture index.
 #
-# Reference:
-#   cpp/MuClient5.2/source/ZzzObject.cpp (WD_3NORIA)
-#     type 39 -> BlendMesh = 1 -> Object40
-#     type 41 -> BlendMesh = 0 -> Object42
+# MuClient5.2 references:
+#   cpp/MuClient5.2/source/ZzzObject.cpp
+#     - CreateObject(): WD_3NORIA (types 1, 9, 17, 18, 19, 37)
+#     - MoveObject():   WD_3NORIA (types 39, 41)
+#     - type N maps to Object(N+1).bmd under Object4.
+#
+# muonline-cross reference:
+#   Client.Main/Objects/Worlds/Noria/ClimberObject.cs
+#     - Object4/Object07.bmd uses BlendMesh=1 with additive blend state.
 LEGACY_BLEND_TEXTURE_INDEX_BY_OBJECT_MODEL: Dict[Tuple[int, int], int] = {
-    (4, 40): 1,
-    (4, 42): 0,
+    # Noria (World4 / WD_3NORIA)
+    (4, 2): 1,    # type 1  -> Object02, BlendMesh=1
+    (4, 7): 1,    # type 6  -> Object07, BlendMesh=1 (muonline-cross)
+    (4, 10): 3,   # type 9  -> Object10, BlendMesh=3
+    (4, 18): 0,   # type 17 -> Object18, BlendMesh=0
+    (4, 19): 2,   # type 18 -> Object19, BlendMesh=2
+    (4, 20): 0,   # type 19 -> Object20, BlendMesh=0
+    (4, 38): 0,   # type 37 -> Object38, BlendMesh=0
+    (4, 40): 1,   # type 39 -> Object40, BlendMesh=1
+    (4, 42): 0,   # type 41 -> Object42, BlendMesh=0
 }
 
 # ---------------------------------------------------------------------------
