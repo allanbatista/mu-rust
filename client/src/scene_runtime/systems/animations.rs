@@ -51,10 +51,7 @@ pub fn ensure_scene_object_animation_players(
     mut graphs: ResMut<Assets<AnimationGraph>>,
     children_query: Query<&Children>,
     mut players: Query<&mut AnimationPlayer>,
-    sources: Query<
-        (Entity, &SceneObjectAnimationSource),
-        Without<SceneObjectAnimationInitialized>,
-    >,
+    sources: Query<(Entity, &SceneObjectAnimationSource), Without<SceneObjectAnimationInitialized>>,
     mut cache: Local<SceneObjectAnimationCache>,
     mut diagnostics: Local<AnimationDiagnostics>,
     time: Res<Time>,
@@ -79,12 +76,9 @@ pub fn ensure_scene_object_animation_players(
             diagnostics.pending_sources += 1;
         }
 
-        let Some(resolved) = resolve_scene_object_animation(
-            source,
-            &gltfs,
-            &mut graphs,
-            &mut cache,
-        ) else {
+        let Some(resolved) =
+            resolve_scene_object_animation(source, &gltfs, &mut graphs, &mut cache)
+        else {
             if should_log {
                 diagnostics.gltf_not_loaded += 1;
             }
@@ -103,11 +97,8 @@ pub fn ensure_scene_object_animation_players(
             ResolvedSceneObjectAnimation::Ready { graph, first_clip } => {
                 // Find ALL AnimationPlayers in the subtree (GLBs with multiple root
                 // nodes can have multiple AnimationPlayers — each must be initialized).
-                let player_entities = find_all_animation_players_in_subtree(
-                    source_entity,
-                    &children_query,
-                    &players,
-                );
+                let player_entities =
+                    find_all_animation_players_in_subtree(source_entity, &children_query, &players);
 
                 if player_entities.is_empty() {
                     // Scene not fully instantiated yet. Retry next frame.
@@ -126,10 +117,9 @@ pub fn ensure_scene_object_animation_players(
                             .set_speed(source.playback_speed.max(0.001))
                             .repeat();
 
-                        commands.entity(*player_entity).insert((
-                            graph.clone(),
-                            transitions,
-                        ));
+                        commands
+                            .entity(*player_entity)
+                            .insert((graph.clone(), transitions));
                     }
                 }
 
@@ -145,17 +135,16 @@ pub fn ensure_scene_object_animation_players(
                     diagnostics.first_success_logged = true;
                     info!(
                         "First scene object animation started: '{}' (speed={:.2}, players={})",
-                        source.glb_asset_path, source.playback_speed, player_entities.len()
+                        source.glb_asset_path,
+                        source.playback_speed,
+                        player_entities.len()
                     );
                 }
             }
         }
     }
 
-    if should_log
-        && (diagnostics.pending_sources > 0
-            || diagnostics.animations_started > 0)
-    {
+    if should_log && (diagnostics.pending_sources > 0 || diagnostics.animations_started > 0) {
         info!(
             "Animation diagnostics: pending={}, started={}, no_anim={}, gltf_loading={}, awaiting_player={}, total_started={}",
             diagnostics.pending_sources,
