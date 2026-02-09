@@ -1,6 +1,7 @@
 use super::terrain::TerrainSpawned;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
+use crate::scene_runtime::world_coordinates::{mirror_map_xz_with_axis, world_mirror_axis};
 use bevy::pbr::{
     MaterialMeshBundle, MaterialPipeline, MaterialPipelineKey, NotShadowCaster, NotShadowReceiver,
 };
@@ -154,6 +155,9 @@ pub fn spawn_terrain_grass_when_ready(
 
     let map_width = terrain_map.width().min(heightmap.width as usize);
     let map_height = terrain_map.height().min(heightmap.height as usize);
+    let max_world_x = (map_width.saturating_sub(1) as f32) * scale;
+    let max_world_z = (map_height.saturating_sub(1) as f32) * scale;
+    let mirror_axis = world_mirror_axis();
 
     // Accumulate per-chunk buffers: key is (chunk_x, chunk_z)
     struct ChunkBuffers {
@@ -191,8 +195,13 @@ pub fn spawn_terrain_grass_when_ready(
                 continue;
             }
 
-            let cx = (x as f32 + 0.5) * scale;
-            let cz = (z as f32 + 0.5) * scale;
+            let (cx, cz) = mirror_map_xz_with_axis(
+                (x as f32 + 0.5) * scale,
+                (z as f32 + 0.5) * scale,
+                max_world_x,
+                max_world_z,
+                mirror_axis,
+            );
             let cy = heightmap.get_height(x, z) * vertical_scale;
 
             let variant = ((x * 7 + z * 13) % 4) as f32;

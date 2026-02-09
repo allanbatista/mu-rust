@@ -3,6 +3,9 @@ use crate::scene_runtime::components::*;
 use crate::scene_runtime::scene_loader::{SceneObjectsMetadata, SceneRotationEncoding};
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::transforms::scene_object_rotation_to_quat;
+use crate::scene_runtime::world_coordinates::{
+    WorldMirrorAxis, mirror_map_position_with_axis, world_mirror_axis,
+};
 use bevy::ecs::system::EntityCommands;
 use bevy::gltf::{Gltf, GltfMaterialExtras};
 use bevy::math::primitives::Cuboid;
@@ -15,7 +18,7 @@ use std::time::Instant;
 
 const DEFAULT_SCENE_OBJECT_ANIMATION_SPEED: f32 = 0.16;
 const DEFAULT_NPC_MONSTER_ANIMATION_SPEED: f32 = 0.25;
-const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 90.0;
+const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 180.0;
 const SCENE_OBJECT_YAW_OFFSET_ENV: &str = "MU_SCENE_OBJECT_YAW_OFFSET_DEGREES";
 const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 3000.0;
 const SCENE_OBJECT_CULL_DISTANCE_ENV: &str = "MU_SCENE_OBJECT_CULL_DISTANCE";
@@ -169,6 +172,7 @@ impl Default for SceneObjectDistanceCullingConfig {
 pub fn spawn_scene_objects_when_ready(
     mut commands: Commands,
     assets: Res<RuntimeSceneAssets>,
+    terrain_configs: Res<Assets<TerrainConfig>>,
     scene_objects_data: Res<Assets<SceneObjectsData>>,
     particle_defs: Res<Assets<ParticleDefinitions>>,
     asset_server: Res<AssetServer>,
@@ -196,9 +200,19 @@ pub fn spawn_scene_objects_when_ready(
         return;
     };
 
+    let Some(terrain_config) = terrain_configs.get(&world.terrain_config) else {
+        return;
+    };
+
     let Some(particle_definitions) = particle_defs.get(&assets.particle_defs) else {
         return;
     };
+
+    let mirror_axis = world_mirror_axis();
+    let map_max_x =
+        (terrain_config.size.width.saturating_sub(1) as f32) * terrain_config.size.scale;
+    let map_max_z =
+        (terrain_config.size.depth.saturating_sub(1) as f32) * terrain_config.size.scale;
 
     let (object_defs, rotation_encoding, rotation_yaw_offset_degrees) = if scene_data
         .objects
@@ -246,6 +260,9 @@ pub fn spawn_scene_objects_when_ready(
             particle_definitions,
             rotation_encoding,
             rotation_yaw_offset_degrees,
+            map_max_x,
+            map_max_z,
+            mirror_axis,
         );
     }
 
@@ -323,8 +340,16 @@ fn spawn_scene_object(
     particle_defs: &ParticleDefinitions,
     rotation_encoding: SceneRotationEncoding,
     rotation_yaw_offset_degrees: f32,
+    map_max_x: f32,
+    map_max_z: f32,
+    mirror_axis: WorldMirrorAxis,
 ) {
-    let position = Vec3::from(object_def.position);
+    let position = mirror_map_position_with_axis(
+        Vec3::from(object_def.position),
+        map_max_x,
+        map_max_z,
+        mirror_axis,
+    );
     let rotation = scene_object_rotation_to_quat(
         apply_scene_object_yaw_offset(
             object_def.rotation,
@@ -429,7 +454,7 @@ fn spawn_scene_object(
 
     // Add boid spawner if object type is 62 (eagle spawn point)
     if object_def.object_type == 62 {
-        spawn_boid(commands, object_def);
+        spawn_boid(commands, position, &object_def.properties);
     }
 }
 
@@ -609,9 +634,8 @@ fn add_dynamic_light(
 }
 
 /// Spawn a boid (eagle) at the object location
-fn spawn_boid(commands: &mut Commands, object_def: &SceneObjectDef) {
-    let spawn_point = Vec3::from(object_def.position);
-    let flight_radius = object_def.properties.flight_radius.unwrap_or(30.0);
+fn spawn_boid(commands: &mut Commands, spawn_point: Vec3, properties: &ObjectProperties) {
+    let flight_radius = properties.flight_radius.unwrap_or(30.0);
 
     commands.spawn((
         RuntimeSceneEntity,

@@ -1,5 +1,6 @@
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
+use crate::scene_runtime::world_coordinates::{mirror_map_position_with_axis, world_mirror_axis};
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
@@ -195,6 +196,7 @@ pub fn control_debug_free_camera(
 pub fn setup_camera_tour(
     mut commands: Commands,
     assets: Res<RuntimeSceneAssets>,
+    terrain_configs: Res<Assets<TerrainConfig>>,
     camera_tour_data: Res<Assets<CameraTourData>>,
     mut camera_query: Query<Entity, (With<Camera3d>, Without<CameraTour>)>,
     setup_query: Query<&CameraTourSetup>,
@@ -213,9 +215,19 @@ pub fn setup_camera_tour(
         return;
     };
 
+    let Some(terrain_config) = terrain_configs.get(&world.terrain_config) else {
+        return;
+    };
+
     let Some(tour_data) = camera_tour_data.get(&world.camera_tour) else {
         return;
     };
+
+    let map_max_x =
+        (terrain_config.size.width.saturating_sub(1) as f32) * terrain_config.size.scale;
+    let map_max_z =
+        (terrain_config.size.depth.saturating_sub(1) as f32) * terrain_config.size.scale;
+    let mirror_axis = world_mirror_axis();
 
     info!(
         "Setting up camera tour with {} waypoints",
@@ -227,8 +239,18 @@ pub fn setup_camera_tour(
         .waypoints
         .iter()
         .map(|wp| CameraWaypoint {
-            position: Vec3::from(wp.position),
-            look_at: Vec3::from(wp.look_at),
+            position: mirror_map_position_with_axis(
+                Vec3::from(wp.position),
+                map_max_x,
+                map_max_z,
+                mirror_axis,
+            ),
+            look_at: mirror_map_position_with_axis(
+                Vec3::from(wp.look_at),
+                map_max_x,
+                map_max_z,
+                mirror_axis,
+            ),
             move_acceleration: wp.move_acceleration,
             distance_level: wp.distance_level,
             delay: wp.delay,

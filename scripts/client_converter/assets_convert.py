@@ -731,8 +731,11 @@ def extract_terrain_height_samples(payload: bytes) -> Tuple[List[int], int]:
                        24 if heights are BGR composites (R + G*256 + B*65536)
 
     The C++ client has two loading modes (ZzzLodTerrain.cpp):
-      - OpenTerrainHeight():    8-bit BMP, height = byte * multiplier
-      - OpenTerrainHeightNew(): 24-bit BMP, height = (R + G*256 + B*65536) + g_fMinHeight
+      - OpenTerrainHeight():    8-bit BMP, reads raw bytes from fixed offset 1080
+      - OpenTerrainHeightNew(): 24-bit BMP, reads packed BGR triples from fixed offset 54
+
+    Important: MU loaders do not apply BMP row-order flipping for TerrainHeight.
+    We intentionally mimic that legacy behavior for parity.
     """
     if len(payload) < 54:
         raise ValueError(f"Terrain payload too small for BMP header ({len(payload)} < 54).")
@@ -741,7 +744,6 @@ def extract_terrain_height_samples(payload: bytes) -> Tuple[List[int], int]:
         raise ValueError("TerrainHeight payload does not start with BMP signature 'BM'.")
 
     try:
-        pixel_offset = struct.unpack_from("<I", payload, 10)[0]
         width = struct.unpack_from("<i", payload, 18)[0]
         height = struct.unpack_from("<i", payload, 22)[0]
         bits_per_pixel = struct.unpack_from("<H", payload, 28)[0]
@@ -762,20 +764,42 @@ def extract_terrain_height_samples(payload: bytes) -> Tuple[List[int], int]:
             f"unsupported TerrainHeight BMP compression: {compression} (expected BI_RGB/0)"
         )
 
-    bytes_per_pixel = max(bits_per_pixel, 1) // 8
-    row_stride = ((abs_width * max(bits_per_pixel, 1) + 31) // 32) * 4
-    required = pixel_offset + row_stride * TERRAIN_SIZE
+    # OpenTerrainHeight(): 8-bit mode, fixed offset 1080.
+    if bits_per_pixel <= 8:
+        legacy_required = LEGACY_OZB_TERRAIN_HEADER + LEGACY_OZB_TERRAIN_PIXELS
+        if len(payload) < legacy_required:
+            raise ValueError(
+                "TerrainHeight payload shorter than expected for legacy 8-bit layout "
+                f"({len(payload)} < {legacy_required})."
+            )
+        pixels = payload[
+            LEGACY_OZB_TERRAIN_HEADER:LEGACY_OZB_TERRAIN_HEADER + LEGACY_OZB_TERRAIN_PIXELS
+        ]
+        if len(pixels) != LEGACY_OZB_TERRAIN_PIXELS:
+            raise ValueError("Unexpected terrain sample count while reading 8-bit TerrainHeight.")
+        return list(pixels), 8
 
-    # For 24-bit BMPs that are truncated (e.g. World11 has a 24-bit header
-    # but only 66K of data instead of the ~197K needed), fall back to the
-    # legacy 8-bit reading mode: raw bytes from offset 1080, exactly as the
-    # C++ OpenTerrainHeight() does (it ignores the BMP header entirely).
+    # OpenTerrainHeightNew(): 24-bit mode, fixed offset 54 (BMP header only),
+    # then contiguous BGR triples for a 256x256 grid.
+    bytes_per_pixel = max(bits_per_pixel, 1) // 8
+    if bytes_per_pixel < 3:
+        raise ValueError(
+            f"unsupported TerrainHeight bit depth: {bits_per_pixel} (expected 8 or >=24)"
+        )
+
+    fixed_offset = 54
+    required = fixed_offset + LEGACY_OZB_TERRAIN_PIXELS * bytes_per_pixel
+
+    # For malformed/truncated 24-bit payloads (observed in legacy assets), fall
+    # back to 8-bit mode if enough bytes exist at offset 1080.
     if required > len(payload):
-        if bits_per_pixel == 24:
+        if bits_per_pixel >= 24:
             logging.warning(
-                "TerrainHeight has 24-bit BMP header but truncated data (%d < %d); "
+                "TerrainHeight has %d-bit BMP header but truncated data (%d < %d); "
                 "falling back to legacy 8-bit reading.",
-                len(payload), required,
+                bits_per_pixel,
+                len(payload),
+                required,
             )
         legacy_required = LEGACY_OZB_TERRAIN_HEADER + LEGACY_OZB_TERRAIN_PIXELS
         if len(payload) >= legacy_required:
@@ -785,55 +809,27 @@ def extract_terrain_height_samples(payload: bytes) -> Tuple[List[int], int]:
             if len(pixels) == LEGACY_OZB_TERRAIN_PIXELS:
                 return list(pixels), 8
         raise ValueError(
-            "TerrainHeight payload shorter than expected from BMP metadata "
+            "TerrainHeight payload shorter than expected for fixed 24-bit layout "
             f"({len(payload)} < {required})."
         )
 
     samples: List[int] = []
-    top_down = height < 0
-    for row in range(TERRAIN_SIZE):
-        source_row = row if top_down else (TERRAIN_SIZE - 1 - row)
-        row_start = pixel_offset + source_row * row_stride
-        if bytes_per_pixel <= 1:
-            # 8-bit indexed: one byte per pixel
-            row_end = row_start + TERRAIN_SIZE
-            row_bytes = payload[row_start:row_end]
-            if len(row_bytes) != TERRAIN_SIZE:
-                raise ValueError("Unexpected terrain row width while reading TerrainHeight.")
-            samples.extend(row_bytes)
-        elif bytes_per_pixel == 3:
-            # 24-bit BGR: composite height = R + G*256 + B*65536
-            # Reference: ZzzLodTerrain.cpp OpenTerrainHeightNew() lines 734-746
-            for col in range(TERRAIN_SIZE):
-                px_offset = row_start + col * 3
-                if px_offset + 2 >= len(payload):
-                    raise ValueError(
-                        f"TerrainHeight pixel out of bounds at row={row}, col={col} "
-                        f"(offset {px_offset} >= {len(payload)})."
-                    )
-                b_val = payload[px_offset]
-                g_val = payload[px_offset + 1]
-                r_val = payload[px_offset + 2]
-                samples.append(r_val + g_val * 256 + b_val * 65536)
-        else:
-            # 32-bit BGRA: same composite, ignore alpha
-            for col in range(TERRAIN_SIZE):
-                px_offset = row_start + col * bytes_per_pixel
-                if px_offset + 2 >= len(payload):
-                    raise ValueError(
-                        f"TerrainHeight pixel out of bounds at row={row}, col={col} "
-                        f"(offset {px_offset} >= {len(payload)})."
-                    )
-                b_val = payload[px_offset]
-                g_val = payload[px_offset + 1]
-                r_val = payload[px_offset + 2]
-                samples.append(r_val + g_val * 256 + b_val * 65536)
+    for index in range(LEGACY_OZB_TERRAIN_PIXELS):
+        px_offset = fixed_offset + index * bytes_per_pixel
+        if px_offset + 2 >= len(payload):
+            raise ValueError(
+                f"TerrainHeight pixel out of bounds at index={index} "
+                f"(offset {px_offset} >= {len(payload)})."
+            )
+        b_val = payload[px_offset]
+        g_val = payload[px_offset + 1]
+        r_val = payload[px_offset + 2]
+        samples.append(r_val + g_val * 256 + b_val * 65536)
 
     if len(samples) != LEGACY_OZB_TERRAIN_PIXELS:
-        raise ValueError("Unexpected terrain sample count while reading TerrainHeight.")
+        raise ValueError("Unexpected terrain sample count while reading 24-bit TerrainHeight.")
 
-    effective_bpp = 8 if bytes_per_pixel <= 1 else 24
-    return samples, effective_bpp
+    return samples, 24
 
 
 def emit_terrain_height_json(
@@ -911,6 +907,7 @@ def emit_terrain_height_json(
         "metadata": {
             "source": source.name,
             "source_bits_per_pixel": effective_bpp,
+            "row_order": "legacy_client",
             "height_multiplier": height_multiplier,
             "height_offset": height_offset,
             "legacy_terrain_scale": LEGACY_TERRAIN_SCALE,

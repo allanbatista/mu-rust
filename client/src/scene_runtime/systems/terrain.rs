@@ -1,6 +1,9 @@
 use super::grass::find_grass_slots;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
+use crate::scene_runtime::world_coordinates::{
+    WorldMirrorAxis, mirror_map_xz_with_axis, world_mirror_axis,
+};
 use bevy::prelude::*;
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::Face;
@@ -104,6 +107,7 @@ pub fn spawn_terrain_when_ready(
         terrain_map,
         texture_slots_data,
         &world.world_name,
+        world_mirror_axis(),
         if grass_slots.is_empty() {
             None
         } else {
@@ -208,6 +212,7 @@ fn build_terrain_batches(
     terrain_map: &TerrainMapData,
     texture_slots: Option<&TerrainTextureSlotsData>,
     world_name: &str,
+    mirror_axis: WorldMirrorAxis,
     terrain_grass_slots: Option<&HashSet<u8>>,
 ) -> Vec<PreparedTerrainBatch> {
     let width = heightmap.width as usize;
@@ -217,6 +222,8 @@ fn build_terrain_batches(
     }
 
     let scale = config.size.scale;
+    let max_world_x = (width.saturating_sub(1) as f32) * scale;
+    let max_world_z = (height.saturating_sub(1) as f32) * scale;
     let vertical_scale = config.height_multiplier * (scale / config.legacy_terrain_scale.max(1.0));
     let layer_uv_scale = config
         .texture_layers
@@ -234,12 +241,27 @@ fn build_terrain_batches(
             let h = heightmap.get_height(x, z) * vertical_scale;
             min_height = min_height.min(h);
             max_height = max_height.max(h);
-            positions.push([x as f32 * scale, h, z as f32 * scale]);
+            let (world_x, world_z) = mirror_map_xz_with_axis(
+                x as f32 * scale,
+                z as f32 * scale,
+                max_world_x,
+                max_world_z,
+                mirror_axis,
+            );
+            positions.push([world_x, h, world_z]);
         }
     }
 
     let grid_indices = build_grid_indices(width, height);
-    let normals = calculate_normals(&positions, &grid_indices);
+    let mut normals = calculate_normals(&positions, &grid_indices);
+    let reverse_winding = mirror_axis.flips_handedness();
+    if reverse_winding {
+        for normal in &mut normals {
+            normal[0] = -normal[0];
+            normal[1] = -normal[1];
+            normal[2] = -normal[2];
+        }
+    }
     let vertex_lights = compute_vertex_lights(width, height);
 
     let map_width = terrain_map.width().min(width);
@@ -335,6 +357,7 @@ fn build_terrain_batches(
                     [i1, i2, i3, i4],
                     [255, 255, 255, 255],
                     tile_uvs,
+                    reverse_winding,
                     &positions,
                     &normals,
                     &vertex_lights,
@@ -377,6 +400,7 @@ fn build_terrain_batches(
                     [i1, i2, i3, i4],
                     alphas,
                     tile_uvs,
+                    reverse_winding,
                     &positions,
                     &normals,
                     &vertex_lights,
@@ -490,19 +514,31 @@ fn push_tile(
     indices: [usize; 4],
     alphas: [u8; 4],
     tile_uvs: [[f32; 2]; 4],
+    reverse_winding: bool,
     positions: &[[f32; 3]],
     normals: &[[f32; 3]],
     vertex_lights: &[[f32; 3]],
 ) {
-    // Triangle order matches MU terrain face winding.
-    let triangles = [
-        (indices[0], alphas[0], tile_uvs[0]),
-        (indices[3], alphas[3], tile_uvs[3]),
-        (indices[1], alphas[1], tile_uvs[1]),
-        (indices[1], alphas[1], tile_uvs[1]),
-        (indices[3], alphas[3], tile_uvs[3]),
-        (indices[2], alphas[2], tile_uvs[2]),
-    ];
+    // Reflection on a single axis flips handedness; swap winding to keep front faces.
+    let triangles = if reverse_winding {
+        [
+            (indices[0], alphas[0], tile_uvs[0]),
+            (indices[1], alphas[1], tile_uvs[1]),
+            (indices[3], alphas[3], tile_uvs[3]),
+            (indices[1], alphas[1], tile_uvs[1]),
+            (indices[2], alphas[2], tile_uvs[2]),
+            (indices[3], alphas[3], tile_uvs[3]),
+        ]
+    } else {
+        [
+            (indices[0], alphas[0], tile_uvs[0]),
+            (indices[3], alphas[3], tile_uvs[3]),
+            (indices[1], alphas[1], tile_uvs[1]),
+            (indices[1], alphas[1], tile_uvs[1]),
+            (indices[3], alphas[3], tile_uvs[3]),
+            (indices[2], alphas[2], tile_uvs[2]),
+        ]
+    };
 
     for (vertex_index, alpha, uv) in triangles {
         let light = vertex_lights[vertex_index];
@@ -798,6 +834,7 @@ mod tests {
             &terrain_map,
             Some(&texture_slots),
             world_name,
+            world_mirror_axis(),
             Some(&grass_slots),
         );
 
