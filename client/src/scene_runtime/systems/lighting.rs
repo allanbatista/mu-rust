@@ -11,6 +11,10 @@ pub struct DynamicPointLight;
 #[derive(Component)]
 pub struct RuntimeSunLight;
 
+/// Marker for secondary "fill" light used to soften harsh shadows.
+#[derive(Component)]
+pub struct RuntimeFillLight;
+
 /// Spawn one central sun light for the active runtime world.
 pub fn spawn_runtime_sun_light(
     mut commands: Commands,
@@ -35,6 +39,7 @@ pub fn spawn_runtime_sun_light(
     let center_z = config.size.depth as f32 * config.size.scale * 0.5;
     let target = Vec3::new(center_x, 0.0, center_z);
     let origin = target + Vec3::new(0.0, 14_000.0, 9_000.0);
+    let fill_origin = target + Vec3::new(0.0, 8_000.0, -9_000.0);
 
     commands.spawn((
         RuntimeSceneEntity,
@@ -55,6 +60,22 @@ pub fn spawn_runtime_sun_light(
             }
             .into(),
             transform: Transform::from_translation(origin).looking_at(target, Vec3::Y),
+            ..default()
+        },
+    ));
+
+    // A weaker opposite-side fill light to brighten dark faces without extra shadow cost.
+    commands.spawn((
+        RuntimeSceneEntity,
+        RuntimeFillLight,
+        DirectionalLightBundle {
+            directional_light: DirectionalLight {
+                color: Color::srgb(0.9, 0.94, 1.0),
+                illuminance: 2500.0,
+                shadows_enabled: false,
+                ..default()
+            },
+            transform: Transform::from_translation(fill_origin).looking_at(target, Vec3::Y),
             ..default()
         },
     ));
