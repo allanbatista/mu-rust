@@ -1,7 +1,9 @@
 use super::terrain::TerrainSpawned;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
-use bevy::pbr::{MaterialMeshBundle, MaterialPipeline, MaterialPipelineKey};
+use bevy::pbr::{
+    MaterialMeshBundle, MaterialPipeline, MaterialPipelineKey, NotShadowCaster, NotShadowReceiver,
+};
 use bevy::prelude::*;
 use bevy::render::mesh::{MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::render::render_resource::{
@@ -262,6 +264,8 @@ pub fn spawn_terrain_grass_when_ready(
         parent.spawn((
             RuntimeSceneEntity,
             Terrain,
+            NotShadowCaster,
+            NotShadowReceiver,
             MaterialMeshBundle::<GrassMaterial> {
                 mesh: mesh_handle,
                 material: material_handle,

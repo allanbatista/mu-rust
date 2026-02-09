@@ -75,6 +75,47 @@ def _png_alpha_profile(png_bytes: bytes) -> Tuple[bool, bool, float, float]:
         return False, False, 0.0, 1.0
 
 
+def _apply_black_color_key_alpha(
+    image_bytes: bytes,
+    threshold: int,
+) -> Tuple[bytes, bool]:
+    """Return PNG bytes with near-black pixels keyed to alpha=0.
+
+    This is used only for specific legacy additive meshes where MU relied on
+    black backgrounds behaving as fully transparent in fixed-function blending.
+    """
+    try:
+        import io
+        from PIL import Image
+
+        clamped_threshold = max(0, min(255, int(threshold)))
+
+        image = Image.open(io.BytesIO(image_bytes))
+        image.load()
+        rgba = image.convert("RGBA")
+        pixels = list(rgba.getdata())
+
+        changed = False
+        converted: List[Tuple[int, int, int, int]] = []
+        for r, g, b, a in pixels:
+            if r <= clamped_threshold and g <= clamped_threshold and b <= clamped_threshold:
+                if a != 0:
+                    changed = True
+                converted.append((r, g, b, 0))
+            else:
+                converted.append((r, g, b, a))
+
+        if not changed:
+            return image_bytes, False
+
+        rgba.putdata(converted)
+        output = io.BytesIO()
+        rgba.save(output, format="PNG")
+        return output.getvalue(), True
+    except Exception:
+        return image_bytes, False
+
+
 # Conservative thresholds to avoid turning cutout/opaque materials into full blend.
 ALPHA_BLEND_PARTIAL_MIN_RATIO = 0.35
 ALPHA_BLEND_OPAQUE_MAX_RATIO = 0.20
@@ -170,6 +211,13 @@ LEGACY_BLEND_TEXTURE_INDEX_BY_OBJECT_MODEL: Dict[Tuple[int, int], int] = {
     (4, 38): 0,   # type 37 -> Object38, BlendMesh=0
     (4, 40): 1,   # type 39 -> Object40, BlendMesh=1
     (4, 42): 0,   # type 41 -> Object42, BlendMesh=0
+}
+
+# Some legacy additive effects use near-black backgrounds (typically JPEG-based)
+# that should be fully transparent in modern pipelines. We apply a conservative
+# color-key threshold during GLB embedding for these specific models.
+LEGACY_ADDITIVE_COLOR_KEY_THRESHOLD_BY_OBJECT_MODEL: Dict[Tuple[int, int], int] = {
+    (4, 40): 16,  # Object4/Object40 (Chaos Machine glow mesh)
 }
 
 # ---------------------------------------------------------------------------
