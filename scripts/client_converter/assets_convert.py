@@ -122,9 +122,9 @@ TERRAIN_TILE_COUNT = TERRAIN_SIZE * TERRAIN_SIZE
 ENC_TERRAIN_PATTERN = re.compile(r"^enc_?terrain_?(\d+)$")
 # Matches ANY terrain stem: encrypted (enc_terrain*) and unencrypted (terrain*)
 TERRAIN_STEM_PATTERN = re.compile(r"^(enc_?)?terrain", re.IGNORECASE)
-WORLD_DIR_PATTERN = re.compile(r"^world(\d+)$")
-OBJECT_MODEL_PATTERN = re.compile(r"^object(\d+)$")
-OBJECT_DIR_PATTERN = re.compile(r"^object(\d+)$", re.IGNORECASE)
+WORLD_DIR_PATTERN = re.compile(r"^world_?(\d+)$")
+OBJECT_MODEL_PATTERN = re.compile(r"^object_(\d+)$")
+OBJECT_DIR_PATTERN = re.compile(r"^object_(\d+)$", re.IGNORECASE)
 # Client.Data/OBJS/MapObjectV* (muonline-cross Season20-compatible reader).
 SCENE_OBJECT_BASE_ENTRY_SIZE = 30
 SCENE_OBJECT_ENTRY_SIZE_BY_VERSION: Dict[int, int] = {
@@ -380,7 +380,7 @@ def canonical_world_dir_from_path(path: Path) -> Optional[Path]:
     for part in normalized.parts:
         world_match = WORLD_DIR_PATTERN.fullmatch(part.lower())
         if world_match:
-            return Path(f"world{int(world_match.group(1))}")
+            return Path(f"world_{int(world_match.group(1))}")
     return None
 
 
@@ -399,7 +399,7 @@ def canonicalize_rel_path(path: Path) -> Path:
     for index, part in enumerate(parts):
         world_match = WORLD_DIR_PATTERN.fullmatch(part.lower())
         if world_match:
-            world_part = f"world{int(world_match.group(1))}"
+            world_part = f"world_{int(world_match.group(1))}"
             tail = parts[index + 1 :]
             if not tail:
                 return Path(world_part)
@@ -408,7 +408,7 @@ def canonicalize_rel_path(path: Path) -> Path:
 
 
 def find_world_dir_in_root(root: Path, world_number: int) -> Optional[Path]:
-    world_name = f"world{world_number}"
+    world_name = f"world_{world_number}"
     direct = find_case_insensitive_child_dir(root, world_name)
     if direct is not None:
         return direct
@@ -1092,22 +1092,22 @@ def emit_default_terrain_config(
         "texture_layers": [
             {
                 "id": "grass01",
-                "path": f"data/world{world_number}/tile_grass01.png",
+                "path": f"data/world_{world_number}/tile_grass01.png",
                 "scale": 1.0,
             },
             {
                 "id": "ground01",
-                "path": f"data/world{world_number}/tile_ground01.png",
+                "path": f"data/world_{world_number}/tile_ground01.png",
                 "scale": 1.0,
             },
             {
                 "id": "rock01",
-                "path": f"data/world{world_number}/tile_rock01.png",
+                "path": f"data/world_{world_number}/tile_rock01.png",
                 "scale": 1.0,
             },
         ],
-        "alpha_map": f"data/world{world_number}/alpha_tile01.png",
-        "lightmap": f"data/world{world_number}/terrain_light.png",
+        "alpha_map": f"data/world_{world_number}/alpha_tile01.png",
+        "lightmap": f"data/world_{world_number}/terrain_light.png",
         "metadata": {
             "generated_placeholder": True,
             "reason": "terrain_config.json missing in legacy data",
@@ -1122,6 +1122,7 @@ def emit_default_terrain_config(
     try:
         ensure_dir(target.parent, dry_run=False)
         target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(target)
     except Exception as exc:  # noqa: BLE001
         stats.terrain_config_json_failed += 1
         stats.failures.append(f"{world_dir} -> {target}: {exc}")
@@ -1827,7 +1828,7 @@ def emit_scene_objects_json(
             "decode_score": round(decode_score, 4),
             "rotation_encoding": "mu_angles_degrees",
             "rotation_convention": "mu_anglematrix_zyx_degrees",
-            "rotation_yaw_offset_degrees": 180.0,
+            "rotation_yaw_offset_degrees": 0.0,
         },
     }
 
@@ -1946,10 +1947,13 @@ def _world_texture_candidates(slot_texture_name: str) -> List[str]:
     ext = Path(slot_texture_name).suffix or ".png"
     lower = base.lower()
     snake = _snake_case_name(base)
+    # Match normalize.py pattern: insert underscore before digit sequences
+    snake_digit_sep = re.sub(r'([a-zA-Z])(\d)', r'\1_\2', snake)
     return [
         f"{base}{ext}",
         f"{snake}{ext}",
         f"{lower}{ext}",
+        f"{snake_digit_sep}{ext}",
     ]
 
 
@@ -2079,8 +2083,8 @@ def resolve_model_asset_path(
     world_number: int,
     model_index: int,
 ) -> str:
-    glb_name = f"object{model_index:02d}.glb"
-    bmd_name = f"object{model_index:02d}.bmd"
+    glb_name = f"object_{model_index:02d}.glb"
+    bmd_name = f"object_{model_index:02d}.bmd"
 
     legacy_index = _legacy_object_model_index(legacy_root)
     candidate_dirs: List[int] = [world_number]
@@ -2092,19 +2096,19 @@ def resolve_model_asset_path(
             candidate_dirs.append(object_dir_number)
 
     for object_dir_number in candidate_dirs:
-        object_dir = output_root / f"object{object_dir_number}"
+        object_dir = output_root / f"object_{object_dir_number}"
         if (object_dir / glb_name).exists():
-            return f"data/object{object_dir_number}/{glb_name}"
+            return f"data/object_{object_dir_number}/{glb_name}"
 
     for object_dir_number in candidate_dirs:
-        object_dir = legacy_root / f"object{object_dir_number}"
+        object_dir = legacy_root / f"object_{object_dir_number}"
         if (object_dir / bmd_name).exists():
             # Default to GLB because convert_all_assets.sh emits GLB models.
-            return f"data/object{object_dir_number}/{glb_name}"
+            return f"data/object_{object_dir_number}/{glb_name}"
 
     # No direct match found anywhere: keep deterministic fallback.
     fallback_dir = candidate_dirs[0] if candidate_dirs else world_number
-    return f"data/object{fallback_dir}/{glb_name}"
+    return f"data/object_{fallback_dir}/{glb_name}"
 
 
 def inspect_converted_model(path: Path) -> Tuple[bool, str]:
@@ -2208,7 +2212,7 @@ def discover_object_models(
     output_root: Path,
     world_number: int,
 ) -> List[Tuple[int, str, int, bool, str]]:
-    object_dir = legacy_root / f"object{world_number}"
+    object_dir = legacy_root / f"object_{world_number}"
     if not object_dir.exists() or not object_dir.is_dir():
         return []
 
@@ -2918,7 +2922,7 @@ def copy_other_assets(
             world_dir = find_world_dir_in_root(legacy_root, world_number)
             if world_dir is None:
                 continue
-            world_dirs_seen.add(Path(f"world{world_number}"))
+            world_dirs_seen.add(Path(f"world_{world_number}"))
 
     # --- Phase 3a: Collect eligible files, then process in parallel ---
     eligible_files: List[Path] = []
@@ -3112,7 +3116,7 @@ def main(argv: Sequence[str]) -> int:
     if world_filter:
         logging.info(
             "World filter active: %s",
-            ", ".join(f"world{number}" for number in sorted(world_filter)),
+            ", ".join(f"world_{number}" for number in sorted(world_filter)),
         )
 
     legacy_root = args.legacy_root.resolve()

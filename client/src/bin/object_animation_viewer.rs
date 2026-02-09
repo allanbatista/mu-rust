@@ -32,7 +32,7 @@ struct ViewerState {
 impl Default for ViewerState {
     fn default() -> Self {
         Self {
-            input_path: "data/object4/object40.glb".to_string(),
+            input_path: "data/object_4/object_40.glb".to_string(),
             loaded_scene_path: None,
             loaded_gltf_path: None,
             scene_entity: None,

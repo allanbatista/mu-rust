@@ -649,7 +649,7 @@ impl SceneLoader {
             legacy_terrain_map: world_number.map(|number| {
                 asset_server.load(world_asset_path(
                     world_name,
-                    &format!("enc_terrain{number}.map.json"),
+                    &format!("enc_terrain_{number}.map.json"),
                 ))
             }),
             terrain_texture_slots: Some(
@@ -676,13 +676,13 @@ pub fn normalize_world_name(raw_world_name: &str) -> String {
 
     if let Some(stripped) = trimmed.strip_prefix("World") {
         if let Ok(number) = stripped.parse::<u32>() {
-            return format!("world{}", number);
+            return format!("world_{}", number);
         }
         return trimmed.to_string();
     }
 
     if let Ok(number) = trimmed.parse::<u32>() {
-        return format!("world{}", number);
+        return format!("world_{}", number);
     }
 
     trimmed.to_string()

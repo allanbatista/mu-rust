@@ -31,7 +31,7 @@ use super::SceneBuilder;
 
 // Default login world (can be changed via MU_LOGIN_WORLD environment variable)
 // Valid login worlds are: 55, 73, 77 (LoginScene, NewLoginScene1, NewLoginScene2)
-const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::Noria;
+const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::Dungeon;
 const DEFAULT_FIRE_PARTICLE_TEXTURE: &str = "data/effect/flame_chrom2.png";
 const DEFAULT_CLOUD_PARTICLE_TEXTURE: &str = "data/effect/hart_particle02.png";
 
@@ -40,7 +40,7 @@ const DEFAULT_CLOUD_PARTICLE_TEXTURE: &str = "data/effect/hart_particle02.png";
 /// Accepts:
 /// - `MU_LOGIN_WORLD=55` or `MU_LOGIN_WORLD=LoginScene`
 /// - `MU_LOGIN_WORLD=73` or `MU_LOGIN_WORLD=NewLoginScene1`
-/// - `MU_LOGIN_WORLD=77` or `MU_LOGIN_WORLD=NewLoginScene2`
+/// - `MU_LOGIN_WORLD=77` or `MU_LOGIN_WORLD=NewLoginScene2`s
 fn get_login_world() -> WorldMap {
     match std::env::var("MU_LOGIN_WORLD") {
         Ok(raw_world) => {
@@ -199,7 +199,7 @@ fn setup_login_scene(
     mut world_requests: EventWriter<WorldRequest>,
 ) {
     let login_world = get_login_world();
-    let world_name = format!("world{}", login_world as u8);
+    let world_name = format!("world_{}", login_world as u8);
 
     info!(
         "Setting up login scene: {} (ID: {})",

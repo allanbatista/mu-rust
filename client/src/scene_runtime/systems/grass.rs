@@ -15,6 +15,7 @@ use bevy::render::texture::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::fs;
 
 use super::SceneObjectDistanceCullingConfig;
 
@@ -148,6 +149,21 @@ pub fn spawn_terrain_grass_when_ready(
         commands.spawn((RuntimeSceneEntity, TerrainGrassSpawned));
         return;
     };
+
+    // Verify the texture is billboard-like (wide panoramic strip, not a regular tile)
+    let full_path = Path::new(CLIENT_ASSETS_ROOT).join(&grass_texture_path);
+    let is_billboard = read_png_dimensions(&full_path)
+        .map(|(w, h)| h > 0 && w >= h * 2)
+        .unwrap_or(false);
+
+    if !is_billboard {
+        info!(
+            "Grass texture '{}' is not billboard-like, skipping grass billboards for '{}'",
+            grass_texture_path, world.world_name
+        );
+        commands.spawn((RuntimeSceneEntity, TerrainGrassSpawned));
+        return;
+    }
 
     // Build grass quads grouped by chunk
     let scale = config.size.scale;
@@ -549,6 +565,19 @@ fn default_grass_candidates(world_name: &str, slot: u8) -> Vec<String> {
         .into_iter()
         .map(|n| format!("data/{world_name}/{n}.png"))
         .collect()
+}
+
+fn read_png_dimensions(path: &Path) -> Option<(u32, u32)> {
+    if !path.is_file() {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() < 24 || bytes[0..8] != *b"\x89PNG\r\n\x1a\n" || bytes[12..16] != *b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    Some((width, height))
 }
 
 fn resolve_case_insensitive(rel_path: &str) -> Option<String> {

@@ -18,9 +18,9 @@ use std::time::Instant;
 
 const DEFAULT_SCENE_OBJECT_ANIMATION_SPEED: f32 = 0.16;
 const DEFAULT_NPC_MONSTER_ANIMATION_SPEED: f32 = 0.25;
-const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 180.0;
+const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 0.0;
 const SCENE_OBJECT_YAW_OFFSET_ENV: &str = "MU_SCENE_OBJECT_YAW_OFFSET_DEGREES";
-const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 3000.0;
+const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 25000.0;
 const SCENE_OBJECT_CULL_DISTANCE_ENV: &str = "MU_SCENE_OBJECT_CULL_DISTANCE";
 
 /// Marker component to track if scene objects have been spawned### Iniciativa 1 — Dashboard Gerencial v2.1 (Refactoring, Migration, and Expansion)

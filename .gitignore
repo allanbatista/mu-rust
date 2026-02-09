@@ -1,4 +1,5 @@
 target/
 assets/data/
+assets/data*/
 *.pyc
 assets/reports/
