@@ -27,86 +27,168 @@ enum ResolvedSceneObjectAnimation {
     NoAnimations,
 }
 
-/// Start scene-object GLB animations when animation players become available.
+#[derive(Default)]
+pub(crate) struct AnimationDiagnostics {
+    timer: Option<Timer>,
+    pending_sources: u32,
+    gltf_not_loaded: u32,
+    awaiting_player: u32,
+    animations_started: u32,
+    no_animations: u32,
+    total_started: u32,
+    first_success_logged: bool,
+}
+
+/// Ensure scene objects with animations get their AnimationPlayers initialized.
 ///
-/// This is resilient to async scene loading: players are retried until the
-/// associated `Gltf` metadata is loaded and a graph can be built.
-pub fn start_scene_object_animations(
+/// Takes a **source-to-player** approach: iterates over entities that have
+/// `SceneObjectAnimationSource` but not yet `SceneObjectAnimationInitialized`, searches
+/// their children subtree for ALL `AnimationPlayer` entities (auto-spawned by Bevy's GLTF
+/// scene loader), and initializes each with the animation graph and transitions.
+pub fn ensure_scene_object_animation_players(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     gltfs: Res<Assets<Gltf>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
-    parents: Query<&Parent>,
-    scene_object_animation_sources: Query<&SceneObjectAnimationSource>,
-    mut players: Query<(Entity, &mut AnimationPlayer), Without<SceneObjectAnimationInitialized>>,
+    children_query: Query<&Children>,
+    mut players: Query<&mut AnimationPlayer>,
+    sources: Query<
+        (Entity, &SceneObjectAnimationSource),
+        Without<SceneObjectAnimationInitialized>,
+    >,
     mut cache: Local<SceneObjectAnimationCache>,
+    mut diagnostics: Local<AnimationDiagnostics>,
+    time: Res<Time>,
 ) {
-    for (player_entity, mut player) in &mut players {
-        let Some(owner_entity) = find_ancestor_with_animation_source(
-            player_entity,
-            &parents,
-            &scene_object_animation_sources,
+    if diagnostics.timer.is_none() {
+        diagnostics.timer = Some(Timer::from_seconds(3.0, TimerMode::Repeating));
+    }
+    let timer = diagnostics.timer.as_mut().unwrap();
+    timer.tick(time.delta());
+    let should_log = timer.just_finished();
+
+    if should_log {
+        diagnostics.pending_sources = 0;
+        diagnostics.gltf_not_loaded = 0;
+        diagnostics.awaiting_player = 0;
+        diagnostics.animations_started = 0;
+        diagnostics.no_animations = 0;
+    }
+
+    for (source_entity, source) in &sources {
+        if should_log {
+            diagnostics.pending_sources += 1;
+        }
+
+        let Some(resolved) = resolve_scene_object_animation(
+            source,
+            &gltfs,
+            &mut graphs,
+            &mut cache,
         ) else {
-            // Scene hierarchy can be attached asynchronously; retry on next frames.
-            continue;
-        };
-
-        let Ok(source) = scene_object_animation_sources.get(owner_entity) else {
-            continue;
-        };
-
-        let Some(resolved) =
-            resolve_scene_object_animation(source, &asset_server, &gltfs, &mut graphs, &mut cache)
-        else {
-            // Associated Gltf asset is still loading.
+            if should_log {
+                diagnostics.gltf_not_loaded += 1;
+            }
             continue;
         };
 
         match resolved {
-            ResolvedSceneObjectAnimation::Ready { graph, first_clip } => {
-                let mut transitions = AnimationTransitions::new();
-                transitions
-                    .play(&mut player, first_clip, Duration::ZERO)
-                    .set_speed(source.playback_speed.max(0.001))
-                    .repeat();
-
-                commands.entity(player_entity).insert((
-                    graph,
-                    transitions,
-                    SceneObjectAnimationInitialized,
-                ));
-            }
             ResolvedSceneObjectAnimation::NoAnimations => {
+                if should_log {
+                    diagnostics.no_animations += 1;
+                }
                 commands
-                    .entity(player_entity)
+                    .entity(source_entity)
                     .insert(SceneObjectAnimationInitialized);
             }
+            ResolvedSceneObjectAnimation::Ready { graph, first_clip } => {
+                // Find ALL AnimationPlayers in the subtree (GLBs with multiple root
+                // nodes can have multiple AnimationPlayers — each must be initialized).
+                let player_entities = find_all_animation_players_in_subtree(
+                    source_entity,
+                    &children_query,
+                    &players,
+                );
+
+                if player_entities.is_empty() {
+                    // Scene not fully instantiated yet. Retry next frame.
+                    if should_log {
+                        diagnostics.awaiting_player += 1;
+                    }
+                    continue;
+                }
+
+                // Initialize every AnimationPlayer found.
+                for player_entity in &player_entities {
+                    if let Ok(mut player) = players.get_mut(*player_entity) {
+                        let mut transitions = AnimationTransitions::new();
+                        transitions
+                            .play(&mut player, first_clip, Duration::ZERO)
+                            .set_speed(source.playback_speed.max(0.001))
+                            .repeat();
+
+                        commands.entity(*player_entity).insert((
+                            graph.clone(),
+                            transitions,
+                        ));
+                    }
+                }
+
+                commands
+                    .entity(source_entity)
+                    .insert(SceneObjectAnimationInitialized);
+
+                if should_log {
+                    diagnostics.animations_started += 1;
+                }
+                diagnostics.total_started += 1;
+                if !diagnostics.first_success_logged {
+                    diagnostics.first_success_logged = true;
+                    info!(
+                        "First scene object animation started: '{}' (speed={:.2}, players={})",
+                        source.glb_asset_path, source.playback_speed, player_entities.len()
+                    );
+                }
+            }
         }
+    }
+
+    if should_log
+        && (diagnostics.pending_sources > 0
+            || diagnostics.animations_started > 0)
+    {
+        info!(
+            "Animation diagnostics: pending={}, started={}, no_anim={}, gltf_loading={}, awaiting_player={}, total_started={}",
+            diagnostics.pending_sources,
+            diagnostics.animations_started,
+            diagnostics.no_animations,
+            diagnostics.gltf_not_loaded,
+            diagnostics.awaiting_player,
+            diagnostics.total_started,
+        );
     }
 }
 
-fn find_ancestor_with_animation_source(
-    start: Entity,
-    parents: &Query<&Parent>,
-    animation_sources: &Query<&SceneObjectAnimationSource>,
-) -> Option<Entity> {
-    let mut current = start;
-
-    loop {
-        if animation_sources.get(current).is_ok() {
-            return Some(current);
+/// BFS through the entity subtree to find ALL entities with AnimationPlayer.
+fn find_all_animation_players_in_subtree(
+    root: Entity,
+    children_query: &Query<&Children>,
+    players: &Query<&mut AnimationPlayer>,
+) -> Vec<Entity> {
+    let mut result = Vec::new();
+    let mut queue = vec![root];
+    while let Some(entity) = queue.pop() {
+        if players.contains(entity) {
+            result.push(entity);
         }
-
-        let Ok(parent) = parents.get(current) else {
-            return None;
-        };
-        current = parent.get();
+        if let Ok(children) = children_query.get(entity) {
+            queue.extend(children.iter());
+        }
     }
+    result
 }
 
 fn resolve_scene_object_animation(
     source: &SceneObjectAnimationSource,
-    asset_server: &AssetServer,
     gltfs: &Assets<Gltf>,
     graphs: &mut Assets<AnimationGraph>,
     cache: &mut SceneObjectAnimationCache,
@@ -123,8 +205,7 @@ fn resolve_scene_object_animation(
         });
     }
 
-    let gltf_handle: Handle<Gltf> = asset_server.load(source.glb_asset_path.clone());
-    let gltf = gltfs.get(&gltf_handle)?;
+    let gltf = gltfs.get(&source.gltf_handle)?;
 
     if gltf.animations.is_empty() {
         cache.by_asset_path.insert(

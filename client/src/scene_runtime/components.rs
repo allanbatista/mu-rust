@@ -2,6 +2,7 @@ pub use crate::scene_runtime::scene_loader::{
     CameraTourData, HeightmapData, ObjectProperties, SceneObjectDef, SceneObjectsData,
     TerrainConfig, TerrainMapData, TerrainMapSample, TerrainTextureSlotsData,
 };
+use bevy::gltf::Gltf;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,7 @@ pub struct SceneObject;
 #[derive(Component, Clone)]
 pub struct SceneObjectAnimationSource {
     pub glb_asset_path: String,
+    pub gltf_handle: Handle<Gltf>,
     pub playback_speed: f32,
 }
 

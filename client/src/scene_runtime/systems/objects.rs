@@ -3,6 +3,7 @@ use crate::scene_runtime::scene_loader::SceneRotationEncoding;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::transforms::scene_object_rotation_to_quat;
 use bevy::ecs::system::EntityCommands;
+use bevy::gltf::Gltf;
 use bevy::math::primitives::Cuboid;
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -172,8 +173,10 @@ fn spawn_scene_object(
         let animation_speed =
             scene_object_animation_speed(&object_def.model, object_def.properties.animation_speed);
         let animation_source = glb_asset_path_from_scene_path(&scene_path).map(|glb_asset_path| {
+            let gltf_handle: Handle<Gltf> = asset_server.load(glb_asset_path.clone());
             SceneObjectAnimationSource {
                 glb_asset_path,
+                gltf_handle,
                 playback_speed: animation_speed,
             }
         });
