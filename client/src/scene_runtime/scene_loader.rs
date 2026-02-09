@@ -710,8 +710,8 @@ fn map_vfx_asset_path(world_name: &str) -> Option<String> {
 }
 
 fn disable_map_vfx_from_env() -> bool {
-    return true;
-    
+    // return true;
+
     let Ok(raw_value) = std::env::var(DISABLE_MAP_VFX_ENV) else {
         return false;
     };

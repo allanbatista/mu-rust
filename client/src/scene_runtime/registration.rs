@@ -4,7 +4,7 @@ use crate::scene_runtime::components::{
 use crate::scene_runtime::pipeline::SceneRenderPipeline;
 use crate::scene_runtime::systems::{
     DebugFrameLimiter, DebugFreeCameraController, DebugOverlayState, DebugSceneStats,
-    DebugShadowQuality, GrassMaterial, SceneObjectDistanceCullingConfig,
+    DebugShadowQuality, DynamicLightBudget, GrassMaterial, SceneObjectDistanceCullingConfig,
     apply_debug_overlay_visibility, apply_grass_distance_culling,
     apply_legacy_gltf_material_overrides, apply_map_vfx_profile_to_scene_objects,
     apply_scene_object_distance_culling, control_debug_free_camera, cycle_debug_frame_limit,
@@ -27,6 +27,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
     app.add_plugins(MaterialPlugin::<GrassMaterial>::default())
         .init_resource::<DebugOverlayState>()
         .init_resource::<DebugSceneStats>()
+        .init_resource::<DynamicLightBudget>()
         .init_resource::<SceneObjectDistanceCullingConfig>()
         .configure_sets(
             Update,

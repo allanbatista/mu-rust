@@ -2,10 +2,19 @@ use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::pbr::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod};
 use bevy::prelude::*;
+use std::cmp::Ordering;
+
+const DEFAULT_MAX_DYNAMIC_POINT_LIGHTS: usize = 12;
+const DEFAULT_DYNAMIC_LIGHT_MAX_DISTANCE: f32 = 2400.0;
+const DYNAMIC_LIGHT_POOL_ENV: &str = "MU_DYNAMIC_LIGHT_POOL";
+const DYNAMIC_LIGHT_DISTANCE_ENV: &str = "MU_DYNAMIC_LIGHT_MAX_DISTANCE";
 
 /// Marker for spawned point lights
 #[derive(Component)]
 pub struct DynamicPointLight;
+
+#[derive(Component, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct DynamicPointLightSlot(pub usize);
 
 /// Marker for the runtime directional "sun" light.
 #[derive(Component)]
@@ -14,6 +23,35 @@ pub struct RuntimeSunLight;
 /// Marker for secondary "fill" light used to soften harsh shadows.
 #[derive(Component)]
 pub struct RuntimeFillLight;
+
+#[derive(Resource, Clone, Debug)]
+pub struct DynamicLightBudget {
+    pub max_active_lights: usize,
+    pub max_distance: f32,
+    max_distance_squared: f32,
+}
+
+impl Default for DynamicLightBudget {
+    fn default() -> Self {
+        let max_active_lights = std::env::var(DYNAMIC_LIGHT_POOL_ENV)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .map(|value| value.clamp(0, 64))
+            .unwrap_or(DEFAULT_MAX_DYNAMIC_POINT_LIGHTS);
+
+        let max_distance = std::env::var(DYNAMIC_LIGHT_DISTANCE_ENV)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<f32>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(DEFAULT_DYNAMIC_LIGHT_MAX_DISTANCE);
+
+        Self {
+            max_active_lights,
+            max_distance,
+            max_distance_squared: max_distance * max_distance,
+        }
+    }
+}
 
 /// Spawn one central sun light for the active runtime world.
 pub fn spawn_runtime_sun_light(
@@ -102,50 +140,144 @@ pub fn spawn_runtime_sun_light(
 /// System to spawn point lights for dynamic light components
 pub fn spawn_dynamic_lights(
     mut commands: Commands,
-    objects: Query<(Entity, &DynamicLight, &Transform), Added<DynamicLight>>,
+    budget: Res<DynamicLightBudget>,
+    lights: Query<(Entity, &DynamicPointLightSlot), With<DynamicPointLight>>,
 ) {
-    for (_entity, dynamic_light, transform) in objects.iter() {
-        // Spawn a point light as a child of the object
+    if budget.is_changed() {
+        info!(
+            "Dynamic light pool budget: pool={}, max_distance={:.0}",
+            budget.max_active_lights, budget.max_distance
+        );
+    }
+
+    let mut existing: Vec<(Entity, usize)> = lights
+        .iter()
+        .map(|(entity, slot)| (entity, slot.0))
+        .collect();
+    existing.sort_by_key(|(_, slot)| *slot);
+
+    if existing.len() > budget.max_active_lights {
+        for (entity, _) in existing.iter().skip(budget.max_active_lights) {
+            commands.entity(*entity).despawn_recursive();
+        }
+        existing.truncate(budget.max_active_lights);
+    }
+
+    if existing.len() >= budget.max_active_lights {
+        return;
+    }
+
+    for slot in existing.len()..budget.max_active_lights {
         commands.spawn((
             RuntimeSceneEntity,
             DynamicPointLight,
-            dynamic_light.clone(),
+            DynamicPointLightSlot(slot),
             PointLightBundle {
                 point_light: PointLight {
-                    color: dynamic_light.color,
-                    intensity: dynamic_light.intensity,
-                    range: dynamic_light.range,
-                    shadows_enabled: false, // Performance optimization
+                    intensity: 0.0,
+                    range: 0.0,
+                    shadows_enabled: false,
                     ..default()
                 },
-                transform: *transform,
+                transform: Transform::IDENTITY,
                 ..default()
             },
         ));
-
-        // Note: In a more complex system, you might want to parent the light to the object
-        // For now, we'll just update positions in the update system
     }
 }
 
-/// System to update dynamic lights (flicker effect)
+/// Select the closest and most relevant dynamic lights and project them to a small light pool.
 pub fn update_dynamic_lights(
-    mut lights: Query<(&DynamicLight, &mut PointLight), With<DynamicPointLight>>,
+    budget: Res<DynamicLightBudget>,
+    camera_query: Query<&GlobalTransform, With<Camera3d>>,
+    dynamic_lights: Query<
+        (&DynamicLight, &GlobalTransform, Option<&Visibility>),
+        Without<DynamicPointLight>,
+    >,
+    mut light_pool: Query<
+        (
+            &DynamicPointLightSlot,
+            &mut PointLight,
+            &mut Transform,
+            &mut Visibility,
+        ),
+        With<DynamicPointLight>,
+    >,
     time: Res<Time>,
 ) {
-    for (dynamic_light, mut point_light) in lights.iter_mut() {
-        // Apply base color and range
-        point_light.color = dynamic_light.color;
-        point_light.range = dynamic_light.range;
+    let Ok(camera_transform) = camera_query.get_single() else {
+        return;
+    };
+    let (_, camera_rotation, camera_position) = camera_transform.to_scale_rotation_translation();
+    let camera_forward = camera_rotation * -Vec3::Z;
 
-        // Apply flicker if configured
-        if let Some(flicker) = &dynamic_light.flicker {
-            let flicker_value = ((time.elapsed_seconds() * flicker.speed).sin() + 1.0) / 2.0;
-            let intensity = flicker.min_intensity
-                + (flicker.max_intensity - flicker.min_intensity) * flicker_value;
-            point_light.intensity = dynamic_light.intensity * intensity;
+    let mut candidates: Vec<(f32, Vec3, DynamicLight)> = Vec::new();
+    candidates.reserve(budget.max_active_lights.saturating_mul(8));
+
+    for (dynamic_light, transform, visibility) in &dynamic_lights {
+        if matches!(visibility, Some(Visibility::Hidden)) {
+            continue;
+        }
+
+        let position = transform.translation();
+        let distance_squared = position.distance_squared(camera_position);
+        if distance_squared > budget.max_distance_squared {
+            continue;
+        }
+
+        // Penalize lights behind the camera; still allow some to avoid abrupt popping.
+        let direction = (position - camera_position).normalize_or_zero();
+        let facing = camera_forward.dot(direction);
+        let back_penalty = if facing < -0.2 {
+            budget.max_distance_squared
+        } else if facing < 0.0 {
+            budget.max_distance_squared * 0.25
         } else {
-            point_light.intensity = dynamic_light.intensity;
+            0.0
+        };
+
+        candidates.push((
+            distance_squared + back_penalty,
+            position,
+            dynamic_light.clone(),
+        ));
+    }
+
+    candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+
+    let mut selected = candidates
+        .into_iter()
+        .take(budget.max_active_lights)
+        .map(|(_, position, light)| (position, light));
+
+    let mut pool: Vec<(usize, Mut<PointLight>, Mut<Transform>, Mut<Visibility>)> = light_pool
+        .iter_mut()
+        .map(|(slot, point_light, transform, visibility)| {
+            (slot.0, point_light, transform, visibility)
+        })
+        .collect();
+    pool.sort_by_key(|(slot, _, _, _)| *slot);
+
+    for (_, mut point_light, mut transform, mut visibility) in pool {
+        if let Some((position, dynamic_light)) = selected.next() {
+            point_light.color = dynamic_light.color;
+            point_light.range = dynamic_light.range;
+            point_light.intensity = if let Some(flicker) = &dynamic_light.flicker {
+                let flicker_value = ((time.elapsed_seconds() * flicker.speed).sin() + 1.0) / 2.0;
+                let intensity = flicker.min_intensity
+                    + (flicker.max_intensity - flicker.min_intensity) * flicker_value;
+                dynamic_light.intensity * intensity
+            } else {
+                dynamic_light.intensity
+            };
+
+            transform.translation = position;
+            transform.rotation = Quat::IDENTITY;
+            *visibility = Visibility::Inherited;
+        } else {
+            point_light.intensity = 0.0;
+            point_light.range = 0.0;
+            *visibility = Visibility::Hidden;
         }
     }
 }

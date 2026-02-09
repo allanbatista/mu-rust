@@ -15,12 +15,112 @@ use std::time::Instant;
 
 const DEFAULT_SCENE_OBJECT_ANIMATION_SPEED: f32 = 0.16;
 const DEFAULT_NPC_MONSTER_ANIMATION_SPEED: f32 = 0.25;
-const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 180.0;
+const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 90.0;
 const SCENE_OBJECT_YAW_OFFSET_ENV: &str = "MU_SCENE_OBJECT_YAW_OFFSET_DEGREES";
-const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 2000.0;
+const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 3000.0;
 const SCENE_OBJECT_CULL_DISTANCE_ENV: &str = "MU_SCENE_OBJECT_CULL_DISTANCE";
 
-/// Marker component to track if scene objects have been spawned
+/// Marker component to track if scene objects have been spawned### Iniciativa 1 — Dashboard Gerencial v2.1 (Refactoring, Migration, and Expansion)
+//
+// A iniciativa abrange o desenvolvimento do Dashboard Gerencial e a migração Snowflake→Redshift — trabalhos com timelines distintas. O direcionamento foi recebido sobre o que deveria ser feito, com autonomia para reescrever os relatórios da melhor forma, mas a estratégia da migração não foi definida pelo colaborador. Trabalho colaborativo com outros membros do time; os reports realizados tiveram pouca ou nenhuma ajuda.
+//
+// **Scope & Complexity (Performing at the next level)**
+//
+// Execução de migração com direcionamento recebido do EM. Avaliou-se a complexidade como mediana (muito mais trabalhosa do que complexa) — a dificuldade maior é aprender a nova tecnologia (Redshift) e garantir corretude dos resultados. Escopo de implementador com autonomia em tarefa bem definida. Destaca-se a utilização de IA como principal ferramenta de apoio na tradução ágil dos relatórios de Snowflake para Redshift, o que acelerou significativamente o processo de migração. No peer review, destaca-se "papel crucial na migração do Snowflake para o Redshift, com grande capacidade de execução e resiliência ao reescrever centenas de relatórios"; outro revisor atribui "total crédito ao Victor pela migração e refatoração dos dashboards" com mais de 100 relatórios refatorados.
+//
+// **Impact & Execution (Meets expectations)**
+//
+// Redução de runtime de múltiplos relatórios de >1 minuto para <10 segundos. Os stakeholders já usavam os relatórios no Snowflake; o principal impacto é mudança de tecnologia sem afetar o usuário final no dia a dia. A migração foi concluída preservando consistência de dados. Evidência: planilha de controle de migração ([link](https://docs.google.com/spreadsheets/d/1qoTFODHVfXp_VJxRzM5y6qkgLCAh4gJQEinDpHow82A/edit?gid=0#gid=0)).
+//
+// **Influence & Collaboration (Meets expectations) / Technical Vision & Articulation (Meets expectations)**
+//
+// Observou-se interação contínua com stakeholders (incluindo clientes diretos) para validar prioridades e usabilidade durante a migração. O trabalho de migração foi colaborativo com outros membros do time, com execução autônoma nos relatórios atribuídos. No peer review, atribui-se "total crédito ao Victor pela migração e refatoração dos dashboards" e destaca-se a parceria com os times de negócio. No aspecto técnico, registrou-se padronização de naming, filtros e lógica de segmentação durante a migração, além da tradução de tecnologia Snowflake→Redshift. A contribuição manteve-se no âmbito de seguir a visão técnica do time com autonomia na implementação.
+//
+// ---
+//
+// ### Iniciativa 2 — Black Friday 2025: Forecast & Pacing
+//
+// A complexidade dos relatórios foi muito maior do que se conseguiu absorver no tempo disponível. Demonstrou-se alto nível de compromisso (disponibilidade overnight, engajamento durante toda a madrugada), mas não foi possível implementar os reports. Foi necessário que todos os reports fossem refeitos pelo EM (Allan Batista) para atender aos requisitos e entregar no prazo. Considera-se que, com mais tempo, a entrega teria sido realizada. Este foi o caso de pressão mais extremo do ano.
+//
+// **Scope & Complexity (Meets expectations)**
+//
+// Demanda de urgência que excedeu a capacidade técnica atual sob restrição de tempo. Foi necessário que o EM auxiliasse na finalização dos reports para atender aos requisitos dentro do prazo. Esta iniciativa revela o limite atual de autonomia sob alta complexidade e pressão de tempo.
+//
+// **Impact & Execution (Meets expectations)**
+//
+// O impacto de decisões operacionais em tempo real no BF é real. A entrega técnica foi concluída com apoio significativo do EM. O mérito registrado é o comprometimento e disponibilidade — observou-se engajamento durante toda a madrugada. A proposta de melhoria de sazonalidade pós-BF (same weekday → same day-of-month) é positiva como iteração. Evidência: thread Slack ([link](https://vtex.slack.com/archives/C054BB5GQ05/p1764199108385019)).
+//
+// **Influence & Collaboration (Meets expectations) / Technical Vision & Articulation (Meets expectations)**
+//
+// Observou-se engajamento durante toda a madrugada em contexto de alta pressão, com disponibilidade e comprometimento demonstrados. A colaboração com o EM e suporte on-call foi mantida ao longo da noite. Registrou-se tentativa de implementação de abordagem de forecast com curva histórica horária, e proposta pós-evento de melhoria de sazonalidade (mesma data do mês em vez de mesmo dia da semana). Embora a entrega técnica final tenha sido realizada pelo EM, a iteração pós-BF demonstra capacidade de reflexão técnica e proposição de ajustes dentro do domínio.
+//
+// ---
+//
+// ### Iniciativa 3 — Buscador de Oportunidade (Opportunity Finder)
+//
+// A necessidade e os requisitos do dashboard foram definidos por João Gracioto e Henrique Sato (Casas Bahia). O desenvolvimento foi realizado de forma autônoma. O time de Performance utiliza o dashboard com frequência para tirar insights, conforme confirmação gerencial.
+//
+// **Scope & Complexity (Performing at the next level)**
+//
+// Execução autônoma de dashboard com especificação recebida de stakeholders. Provavelmente a iniciativa onde se demonstrou maior independência técnica. Foram implementados três pilares analíticos com métricas customizadas (ads penetration, market share, ROAS indicators). No peer review, destaca-se que o dashboard "transformou dados de vendas e Ads em uma visão única e acionável, melhorando a tomada de decisão dos times comerciais e de desempenho" e que "elevou a assertividade estratégica".
+//
+// **Impact & Execution (Performing at the next level)**
+//
+// Adoção real confirmada via validação com time de Performance. Documentação de 8 páginas para self-service onboarding. O impacto verificável é: dashboard funcional com adoção ativa que reduz time-to-insight para os times de Commercial e Performance. Evidência: dashboard Metabase ([link](https://metabase.newtail.com.br/dashboard/164-buscador-de-oportunidades?start_date=2025-01-01&end_date=2025-04-28&aggregate=month)), documentação ([link](https://docs.google.com/document/d/10o4XIZH1iaAim0pMVYxwaq9rVuOssGYjMqbPFhFRFs4/edit?tab=t.0)).
+//
+// **Technical Vision & Articulation (Performing at the next level) / Influence & Collaboration (Performing at the next level)**
+//
+// Registrou-se a criação de métricas customizadas (ads penetration por categoria, market share, indicadores derivados de ROAS) e o design de três pilares analíticos integrados, dentro da especificação recebida de stakeholders. A documentação de 8 páginas para onboarding self-service demonstra capacidade de estruturar e comunicar lógica analítica. No aspecto de colaboração, confirmou-se adoção ativa pelo time de Performance para geração de insights. No peer review, destaca-se que o dashboard "transformou dados de vendas e Ads em uma visão única e acionável, melhorando a tomada de decisão dos times comerciais e de desempenho" e que "elevou a assertividade estratégica".
+//
+// ---
+//
+// ### Iniciativa 4 — Mix de Produtos (Portfolio Segmentation with ABC / Pareto)
+//
+// Demanda trazida por João Gracioto, mas as visualizações foram formuladas pelo colaborador — um passo além de pura execução de spec. Complexidade mediana. Execução realizada de forma totalmente autônoma. Identificou-se adoção baixa — relatório utilizado de forma pontual.
+//
+// **Scope & Complexity (Performing at the next level)**
+//
+// Contribuição na formulação das visualizações além da execução de spec recebida. Aplicação de técnica analítica estruturada (ABC/Pareto) ao contexto de negócio, com SQL otimizado para segmentação dinâmica. Avaliou-se a complexidade como mediana. No peer review, destaca-se que o projeto "traz claramente quais produtos realmente geram resultados, substituindo decisões intuitivas por análises orientadas a dados".
+//
+// **Impact & Execution (Meets expectations)**
+//
+// Adoção baixa e uso pontual, conforme avaliação gerencial. Documentação técnica/funcional de 8 páginas. O valor verificável está na execução autônoma, na contribuição ao design das visualizações, e na documentação. Evidência: dashboard Metabase ([link](https://metabase.newtail.com.br/dashboard/180-mix-de-produtos?publisher_id=3b7bcd3a-fde6-42d1-8de4-47a6e41a415a&in%25C3%25ADcio=2025-08-01&fim=2025-08-19&category_level=1&categoria=TV%20E%20VIDEO&segmento=A)), documentação ([link](https://docs.google.com/document/d/1H9PbxXFwPF4e15TY-WxOHBPir0HV_XPqU9itLQ5KZ8U/edit?tab=t.0)).
+//
+// **Technical Vision & Articulation (Performing at the next level) / Influence & Collaboration (Meets expectations)**
+//
+// Registrou-se contribuição na formulação das visualizações além da execução da especificação recebida — avaliou-se como um passo além de pura execução de spec. Aplicou-se técnica analítica estruturada (ABC/Pareto) ao contexto de negócio com SQL otimizado para segmentação dinâmica, acompanhada de documentação técnica/funcional de 8 páginas com racional estatístico. No peer review, destaca-se que o projeto "traz claramente quais produtos realmente geram resultados, substituindo decisões intuitivas por análises orientadas a dados". A interação com o stakeholder (João Gracioto / Casas Bahia) ficou limitada ao escopo da demanda original, e a adoção baixa e pontual restringe a evidência de influência.
+//
+// ---
+//
+// ### Iniciativa 5 — Stakeholder Enablement & Rapid-Response Analytics
+//
+// O trabalho ajudou o time de CS e Performance a argumentar melhor com o cliente. A complexidade foi média para baixa. Todas foram demandas levantadas pelo time de Performance. Trata-se de uma iniciativa "guarda-chuva" que agrupa demandas pontuais sob um título único.
+//
+// **Scope & Complexity (Meets expectations)**
+//
+// Atenderam-se demandas de múltiplos stakeholders (Performance, CS, FP&A) em contextos diversificados — retenção de churn, habilitação de negociação comercial, e consolidação de métricas financeiras. Trata-se de uma iniciativa "guarda-chuva" que agrupa demandas pontuais, todas de complexidade média para baixa conforme avaliação gerencial. A versatilidade de contextos demonstra amplitude de atuação, embora cada demanda individual tenha sido bem-escopada e recebida do time de Performance.
+//
+// **Impact & Execution (Meets expectations)**
+//
+// Capacidade de responder rapidamente a demandas urgentes de múltiplos stakeholders (Performance, CS, FP&A). RFC aprovada para FP&A demonstra capacidade de documentação estruturada ([link](https://docs.google.com/document/d/15eiTvuO2sffWvrB6Vz3MEeU44F0of43YSi8KgPTCi6s/edit?tab=t.0#heading=h.b38oaof1w0iw)). Impacto verificável: reports que serviram como evidência para argumentação de times de negócio em retenção e negociação comercial. No peer review, nota-se a capacidade de "entender o que o cliente realmente precisa, além da demanda imediata" e de buscar "resolver problemas reais dos usuários".
+//
+// **Influence & Collaboration (Meets expectations) / Technical Vision & Articulation (Meets expectations)**
+//
+// Observou-se suporte efetivo a múltiplos stakeholders não-técnicos, com reports utilizados como insumo direto para argumentação em negociações comerciais e retenção de clientes. No peer review, nota-se a capacidade de "entender o que o cliente realmente precisa, além da demanda imediata" e de buscar "resolver problemas reais dos usuários". Registrou-se a autoria de RFC aprovada para FP&A com métricas padronizadas e regras de segmentação auditáveis ([link](https://docs.google.com/document/d/15eiTvuO2sffWvrB6Vz3MEeU44F0of43YSi8KgPTCi6s/edit?tab=t.0#heading=h.b38oaof1w0iw)), demonstrando capacidade de documentação estruturada quando direcionado.
+//
+// ---
+//
+// ### Iniciativa 6 — Analytics Platform Discipline: Governance & Performance Roadmap
+//
+// Trata-se de pedido do EM para melhorar a organização dos relatórios do Metabase. A investigação ficou sob responsabilidade do colaborador, incluindo documentação e proposta de organização. A entrega foi feita com a qualidade esperada de um L2. Propostas não foram implementadas.
+//
+// **Technical Vision & Articulation (Performing at the next level)**
+//
+// Investigação e documentação de qualidade condizente com o esperado para o nível seguinte, conforme avaliação gerencial. Proposta de Governance do Metabase com ownership boundaries e naming conventions ([link](https://docs.google.com/document/d/1Us-EMqnvij_FP2xcGA6tC8Dfvwco8lzKZj9LdueSKY4/edit?tab=t.0#heading=h.tglo77yl0lf5)). Proposta de arquitetura modular de MVs para performance ([link](https://docs.google.com/document/d/14fBlSy6Yn5eT26c5yH0dG3vytnMZTwR3A4ZDS1kADcU/edit?tab=t.0)). Propostas em fase de documentação, sem implementação no ciclo. O valor está na capacidade de investigar, estruturar problema e documentar quando direcionado.
+//
+// **Influence & Collaboration (Meets expectations) / Discipline Contribution (Meets expectations)**
+//
+// Observou-se socialização das propostas com stakeholders e discussão em andamento sobre a reorganização do Metabase. Os artefatos produzidos incluem proposta de ownership boundaries e naming conventions que, se implementados, contribuiriam para práticas do time. Entretanto, nenhuma proposta foi implementada e não se identificou evidência de contribuição para padrões adotados, mentoria, hiring, ou melhoria de práticas em funcionamento — elementos esperados em Discipline Contribution conforme o career ladder. O valor registrado limita-se à investigação e documentação de qualidade condizente com o esperado para o nível seguinte, conforme avaliação gerencial.
 #[derive(Component)]
 pub struct SceneObjectsSpawned;
 
