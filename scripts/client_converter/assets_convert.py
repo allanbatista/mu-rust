@@ -1765,6 +1765,7 @@ def emit_scene_objects_json(
             "decode_score": round(decode_score, 4),
             "rotation_encoding": "mu_angles_degrees",
             "rotation_convention": "mu_anglematrix_zyx_degrees",
+            "rotation_yaw_offset_degrees": 180.0,
         },
     }
 
@@ -2478,6 +2479,7 @@ def emit_empty_scene_objects(
             "non_renderable_reasons": non_renderable_reasons,
             "rotation_encoding": "mu_angles_degrees",
             "rotation_convention": "mu_anglematrix_zyx_degrees",
+            "rotation_yaw_offset_degrees": 0.0,
         },
     }
 

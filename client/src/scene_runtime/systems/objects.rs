@@ -1,5 +1,5 @@
 use crate::scene_runtime::components::*;
-use crate::scene_runtime::scene_loader::SceneRotationEncoding;
+use crate::scene_runtime::scene_loader::{SceneObjectsMetadata, SceneRotationEncoding};
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::transforms::scene_object_rotation_to_quat;
 use bevy::ecs::system::EntityCommands;
@@ -14,6 +14,8 @@ use std::time::Instant;
 
 const DEFAULT_SCENE_OBJECT_ANIMATION_SPEED: f32 = 0.16;
 const DEFAULT_NPC_MONSTER_ANIMATION_SPEED: f32 = 0.25;
+const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 180.0;
+const SCENE_OBJECT_YAW_OFFSET_ENV: &str = "MU_SCENE_OBJECT_YAW_OFFSET_DEGREES";
 
 /// Marker component to track if scene objects have been spawned
 #[derive(Component)]
@@ -66,20 +68,35 @@ pub fn spawn_scene_objects_when_ready(
         return;
     };
 
-    let (object_defs, rotation_encoding) = if scene_data.objects.is_empty() {
+    let (object_defs, rotation_encoding, rotation_yaw_offset_degrees) = if scene_data
+        .objects
+        .is_empty()
+    {
         warn!(
             "Scene object list is empty; falling back to placeholder login objects. For parity with C++ scene, provide EncTerrain<world>.obj and regenerate scene_objects.json"
         );
         (
             fallback_scene_objects(),
             SceneRotationEncoding::LegacySwizzledDegrees,
+            0.0,
         )
     } else {
+        let rotation_encoding = scene_data.metadata.rotation_encoding;
+        let yaw_offset_degrees =
+            scene_object_rotation_yaw_offset(rotation_encoding, &scene_data.metadata);
         (
             scene_data.objects.clone(),
-            scene_data.metadata.rotation_encoding,
+            rotation_encoding,
+            yaw_offset_degrees,
         )
     };
+
+    if rotation_yaw_offset_degrees != 0.0 {
+        info!(
+            "Applying scene-object yaw offset of {:.1}° (encoding={:?})",
+            rotation_yaw_offset_degrees, rotation_encoding
+        );
+    }
 
     info!("Spawning {} scene objects", object_defs.len());
     let spawn_started_at = Instant::now();
@@ -96,6 +113,7 @@ pub fn spawn_scene_objects_when_ready(
             object,
             particle_definitions,
             rotation_encoding,
+            rotation_yaw_offset_degrees,
         );
     }
 
@@ -119,9 +137,17 @@ fn spawn_scene_object(
     object_def: &SceneObjectDef,
     particle_defs: &ParticleDefinitions,
     rotation_encoding: SceneRotationEncoding,
+    rotation_yaw_offset_degrees: f32,
 ) {
     let position = Vec3::from(object_def.position);
-    let rotation = scene_object_rotation_to_quat(object_def.rotation, rotation_encoding);
+    let rotation = scene_object_rotation_to_quat(
+        apply_scene_object_yaw_offset(
+            object_def.rotation,
+            rotation_encoding,
+            rotation_yaw_offset_degrees,
+        ),
+        rotation_encoding,
+    );
     let scale = Vec3::from(object_def.scale);
 
     let mut entity_cmd = commands.spawn((
@@ -222,6 +248,45 @@ fn spawn_scene_object(
     if object_def.object_type == 62 {
         spawn_boid(commands, object_def);
     }
+}
+
+fn scene_object_rotation_yaw_offset(
+    rotation_encoding: SceneRotationEncoding,
+    metadata: &SceneObjectsMetadata,
+) -> f32 {
+    if rotation_encoding != SceneRotationEncoding::MuAnglesDegrees {
+        return 0.0;
+    }
+
+    if let Some(explicit_offset) = metadata.rotation_yaw_offset_degrees {
+        if explicit_offset.is_finite() {
+            return explicit_offset;
+        }
+    }
+
+    if metadata.generated_placeholder || metadata.reason.is_some() {
+        return 0.0;
+    }
+
+    std::env::var(SCENE_OBJECT_YAW_OFFSET_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES)
+}
+
+fn apply_scene_object_yaw_offset(
+    mut rotation: [f32; 3],
+    rotation_encoding: SceneRotationEncoding,
+    yaw_offset_degrees: f32,
+) -> [f32; 3] {
+    if rotation_encoding == SceneRotationEncoding::MuAnglesDegrees
+        && yaw_offset_degrees.is_finite()
+        && yaw_offset_degrees != 0.0
+    {
+        rotation[2] += yaw_offset_degrees;
+    }
+    rotation
 }
 
 fn scene_object_animation_speed(model_path: &str, configured_speed: Option<f32>) -> f32 {

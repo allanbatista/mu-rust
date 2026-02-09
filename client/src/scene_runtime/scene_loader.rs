@@ -149,6 +149,12 @@ pub struct SceneObjectsData {
 pub struct SceneObjectsMetadata {
     #[serde(default)]
     pub rotation_encoding: SceneRotationEncoding,
+    #[serde(default)]
+    pub generated_placeholder: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub rotation_yaw_offset_degrees: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, Eq, PartialEq)]
