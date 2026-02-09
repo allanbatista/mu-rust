@@ -147,15 +147,22 @@ pub fn spawn_terrain_grass_when_ready(
     let mut uvs: Vec<[f32; 2]> = Vec::new();
     let mut grass_count = 0u32;
 
-    for z in 0..map_height {
-        for x in 0..map_width {
-            let sample = terrain_map.sample(x, z).unwrap_or(TerrainMapSample {
+    for z in 0..map_height.saturating_sub(1) {
+        for x in 0..map_width.saturating_sub(1) {
+            let s1 = terrain_map.sample(x, z).unwrap_or(TerrainMapSample {
                 layer1: 0,
                 layer2: 255,
                 alpha: 0,
             });
+            let s2 = terrain_map.sample(x + 1, z).unwrap_or(s1);
+            let s3 = terrain_map.sample(x + 1, z + 1).unwrap_or(s1);
+            let s4 = terrain_map.sample(x, z + 1).unwrap_or(s1);
 
-            if !grass_slots.contains(&sample.layer1) {
+            if !grass_slots.contains(&s1.layer1) {
+                continue;
+            }
+
+            if s1.alpha > 0 || s2.alpha > 0 || s3.alpha > 0 || s4.alpha > 0 {
                 continue;
             }
 
@@ -308,7 +315,7 @@ fn push_quad(
 }
 
 /// Identify which texture slots correspond to grass textures.
-fn find_grass_slots(
+pub(super) fn find_grass_slots(
     texture_slots: Option<&TerrainTextureSlotsData>,
     world_name: &str,
 ) -> HashSet<u8> {

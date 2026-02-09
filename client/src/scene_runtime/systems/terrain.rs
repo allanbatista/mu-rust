@@ -1,3 +1,4 @@
+use super::grass::find_grass_slots;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::prelude::*;
@@ -6,7 +7,7 @@ use bevy::render::render_resource::Face;
 use bevy::render::texture::{
     ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -95,6 +96,7 @@ pub fn spawn_terrain_when_ready(
         .terrain_texture_slots
         .as_ref()
         .and_then(|handle| terrain_texture_slots.get(handle));
+    let grass_slots = find_grass_slots(texture_slots_data, &world.world_name);
 
     let prepared_batches = build_terrain_batches(
         heightmap,
@@ -102,6 +104,11 @@ pub fn spawn_terrain_when_ready(
         terrain_map,
         texture_slots_data,
         &world.world_name,
+        if grass_slots.is_empty() {
+            None
+        } else {
+            Some(&grass_slots)
+        },
     );
 
     if prepared_batches.is_empty() {
@@ -201,6 +208,7 @@ fn build_terrain_batches(
     terrain_map: &TerrainMapData,
     texture_slots: Option<&TerrainTextureSlotsData>,
     world_name: &str,
+    terrain_grass_slots: Option<&HashSet<u8>>,
 ) -> Vec<PreparedTerrainBatch> {
     let width = heightmap.width as usize;
     let height = heightmap.height as usize;
@@ -249,6 +257,9 @@ fn build_terrain_batches(
 
     let mut buckets: HashMap<TerrainBatchKey, TerrainBatch> = HashMap::new();
     let mut slot_uv_steps: HashMap<u8, [f32; 2]> = HashMap::new();
+    let mut grass_billboard_like_cache: HashMap<u8, bool> = HashMap::new();
+    let fallback_ground_slot = find_fallback_ground_slot(world_name, texture_slots);
+    let mut replaced_billboard_grass_bases = 0usize;
 
     for z in 0..(map_height - 1) {
         for x in 0..(map_width - 1) {
@@ -270,53 +281,52 @@ fn build_terrain_batches(
             let i4 = (z + 1) * width + x;
             let i3 = i4 + 1;
 
-            if is_opaque {
-                let slot = if s1.layer2 != TERRAIN_NO_LAYER_SLOT {
+            let mut base_slot = if is_opaque {
+                if s1.layer2 != TERRAIN_NO_LAYER_SLOT {
                     s1.layer2
                 } else {
                     s1.layer1
-                };
-                if slot != TERRAIN_NO_LAYER_SLOT {
-                    let uv_step = *slot_uv_steps.entry(slot).or_insert_with(|| {
-                        resolve_texture_uv_step(
-                            world_name,
-                            texture_slots,
-                            slot,
-                            default_uv_step,
-                            layer_uv_scale,
-                        )
-                    });
-                    let tile_uvs = tile_uvs(x, z, uv_step);
-                    let batch = buckets.entry(TerrainBatchKey {
-                        texture_slot: slot,
-                        pass: TerrainPass::Base,
-                    });
-                    push_tile(
-                        batch.or_default(),
-                        [i1, i2, i3, i4],
-                        [255, 255, 255, 255],
-                        tile_uvs,
-                        &positions,
-                        &normals,
-                        &vertex_lights,
-                    );
                 }
-                continue;
+            } else {
+                s1.layer1
+            };
+
+            if base_slot != TERRAIN_NO_LAYER_SLOT
+                && should_replace_billboard_like_grass_base(
+                    base_slot,
+                    terrain_grass_slots,
+                    world_name,
+                    texture_slots,
+                    &mut grass_billboard_like_cache,
+                )
+            {
+                let original_base_slot = base_slot;
+                let layer2_is_grass = terrain_grass_slots
+                    .map(|grass_slots| grass_slots.contains(&s1.layer2))
+                    .unwrap_or(false);
+                if s1.layer2 != TERRAIN_NO_LAYER_SLOT && !layer2_is_grass {
+                    base_slot = s1.layer2;
+                } else if let Some(fallback_slot) = fallback_ground_slot {
+                    base_slot = fallback_slot;
+                }
+                if base_slot != original_base_slot {
+                    replaced_billboard_grass_bases += 1;
+                }
             }
 
-            if s1.layer1 != TERRAIN_NO_LAYER_SLOT {
-                let uv_step = *slot_uv_steps.entry(s1.layer1).or_insert_with(|| {
+            if base_slot != TERRAIN_NO_LAYER_SLOT {
+                let uv_step = *slot_uv_steps.entry(base_slot).or_insert_with(|| {
                     resolve_texture_uv_step(
                         world_name,
                         texture_slots,
-                        s1.layer1,
+                        base_slot,
                         default_uv_step,
                         layer_uv_scale,
                     )
                 });
                 let tile_uvs = tile_uvs(x, z, uv_step);
                 let batch = buckets.entry(TerrainBatchKey {
-                    texture_slot: s1.layer1,
+                    texture_slot: base_slot,
                     pass: TerrainPass::Base,
                 });
                 push_tile(
@@ -330,7 +340,11 @@ fn build_terrain_batches(
                 );
             }
 
-            if has_alpha && s1.layer2 != TERRAIN_NO_LAYER_SLOT {
+            if !is_opaque
+                && has_alpha
+                && s1.layer2 != TERRAIN_NO_LAYER_SLOT
+                && s1.layer2 != base_slot
+            {
                 let uv_step = *slot_uv_steps.entry(s1.layer2).or_insert_with(|| {
                     resolve_texture_uv_step(
                         world_name,
@@ -393,6 +407,13 @@ fn build_terrain_batches(
 
     prepared.sort_by_key(|batch| (batch.pass, batch.texture_slot));
 
+    if replaced_billboard_grass_bases > 0 {
+        warn!(
+            "Terrain '{}' replaced {} billboard-like grass base tiles with fallback ground slots",
+            world_name, replaced_billboard_grass_bases
+        );
+    }
+
     info!(
         "Terrain mesh build: {}x{} vertices, map {}x{}, height range [{:.2}, {:.2}], batches={}",
         width,
@@ -405,6 +426,44 @@ fn build_terrain_batches(
     );
 
     prepared
+}
+
+fn find_fallback_ground_slot(
+    world_name: &str,
+    texture_slots: Option<&TerrainTextureSlotsData>,
+) -> Option<u8> {
+    for slot in [2_u8, 3_u8, 4_u8] {
+        if resolve_texture_slot_path(world_name, texture_slots, slot).is_some() {
+            return Some(slot);
+        }
+    }
+    None
+}
+
+fn should_replace_billboard_like_grass_base(
+    slot: u8,
+    terrain_grass_slots: Option<&HashSet<u8>>,
+    world_name: &str,
+    texture_slots: Option<&TerrainTextureSlotsData>,
+    cache: &mut HashMap<u8, bool>,
+) -> bool {
+    let Some(grass_slots) = terrain_grass_slots else {
+        return false;
+    };
+    if !grass_slots.contains(&slot) {
+        return false;
+    }
+
+    *cache.entry(slot).or_insert_with(|| {
+        let Some(texture_path) = resolve_texture_slot_path(world_name, texture_slots, slot) else {
+            return false;
+        };
+        let full_path = Path::new(CLIENT_ASSETS_ROOT).join(texture_path);
+        let Some((width, height)) = read_png_dimensions(&full_path) else {
+            return false;
+        };
+        height > 0 && width >= height * 2
+    })
 }
 
 fn push_tile(
