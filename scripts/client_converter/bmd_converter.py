@@ -81,10 +81,6 @@ ALPHA_BLEND_OPAQUE_MAX_RATIO = 0.20
 ALPHA_BLEND_TRANSPARENT_MIN_RATIO = 0.02
 ALPHA_MASK_PARTIAL_MIN_RATIO = 0.10
 ALPHA_MASK_CUTOFF = 0.35
-FORCE_BLEND_TEXTURE_STEMS = {
-    "u2u3",
-    "light01",
-}
 
 
 def _classify_alpha_mode(
@@ -144,10 +140,24 @@ NON_MODEL_STEMS = {
 
 WORLD_DIR_PATTERN = re.compile(r"^world(\d+)$", re.IGNORECASE)
 OBJECT_DIR_PATTERN = re.compile(r"^object(\d+)$", re.IGNORECASE)
+OBJECT_MODEL_PATTERN = re.compile(r"^object(\d+)$", re.IGNORECASE)
 NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9]+")
 
 # Global cache for fallback PNG lookup maps, keyed by absolute root path.
 _GLOBAL_PNG_INDEX_CACHE: Dict[str, Tuple[Dict[str, Path], Dict[str, Path], Dict[str, Path]]] = {}
+
+# Legacy world/object rendering hints from MuClient5.2 source.
+# Key: (object_dir, model_index), where model_index is from ObjectXX.bmd.
+# Value: BlendMesh value used by RenderMesh, which maps to Mesh.Texture index.
+#
+# Reference:
+#   cpp/MuClient5.2/source/ZzzObject.cpp (WD_3NORIA)
+#     type 39 -> BlendMesh = 1 -> Object40
+#     type 41 -> BlendMesh = 0 -> Object42
+LEGACY_BLEND_TEXTURE_INDEX_BY_OBJECT_MODEL: Dict[Tuple[int, int], int] = {
+    (4, 40): 1,
+    (4, 42): 0,
+}
 
 # ---------------------------------------------------------------------------
 # Decryption
@@ -1248,9 +1258,29 @@ def _resolve_mesh_texture(
     return fallback
 
 
+def _legacy_object_identity_from_source_path(
+    source_path: Optional[Path],
+) -> Optional[Tuple[int, int]]:
+    if source_path is None:
+        return None
+
+    stem_match = OBJECT_MODEL_PATTERN.fullmatch(source_path.stem)
+    if not stem_match:
+        return None
+
+    model_index = int(stem_match.group(1))
+    for part in reversed(source_path.parts[:-1]):
+        object_match = OBJECT_DIR_PATTERN.fullmatch(part)
+        if object_match:
+            object_dir = int(object_match.group(1))
+            return object_dir, model_index
+    return None
+
+
 def bmd_to_glb(
     model: BmdModel,
     texture_resolver: Optional[TextureResolver] = None,
+    source_path: Optional[Path] = None,
 ) -> Optional[bytes]:
     """Convert a parsed BMD model to GLB (GLTF Binary) bytes.
 
@@ -1271,6 +1301,20 @@ def bmd_to_glb(
         fixups = []
 
     export_skinning = bool(fixups) and len(fixups) == model.num_bones
+    legacy_object_identity = _legacy_object_identity_from_source_path(source_path)
+    legacy_blend_texture_index = None
+    if legacy_object_identity is not None:
+        legacy_blend_texture_index = LEGACY_BLEND_TEXTURE_INDEX_BY_OBJECT_MODEL.get(
+            legacy_object_identity
+        )
+        if legacy_blend_texture_index is not None:
+            logging.debug(
+                "Applying legacy blend hint for %s: object%d/object%d texture_index=%d",
+                model.name,
+                legacy_object_identity[0],
+                legacy_object_identity[1],
+                legacy_blend_texture_index,
+            )
 
     # Build unified vertex buffer per mesh, then combine into GLTF primitives.
     all_positions: List[Tuple[float, float, float]] = []
@@ -1280,8 +1324,8 @@ def bmd_to_glb(
     all_joint_indices: List[Tuple[int, int, int, int]] = []
     all_joint_weights: List[Tuple[float, float, float, float]] = []
 
-    primitives_info: List[Tuple[int, int, int, int, Optional[str]]] = []
-    # (vert_offset, vert_count, idx_offset, idx_count, texture_uri)
+    primitives_info: List[Tuple[int, int, int, int, Optional[str], Optional[str]]] = []
+    # (vert_offset, vert_count, idx_offset, idx_count, texture_uri, legacy_blend_mode)
     embedded_texture_payloads: Dict[str, bytes] = {}
     texture_alpha_profile_by_uri: Dict[str, Tuple[bool, bool, float, float]] = {}
     missing_textures: set[str] = set()
@@ -1430,12 +1474,21 @@ def bmd_to_glb(
                 if texture_resolver is None or not texture_resolver.embed_textures:
                     texture_uri = resolved_texture.uri
 
+        legacy_blend_mode: Optional[str] = None
+        if (
+            legacy_blend_texture_index is not None
+            and mesh.texture == legacy_blend_texture_index
+        ):
+            # Legacy RenderMesh uses additive blending for BlendMesh surfaces.
+            legacy_blend_mode = "additive"
+
         primitives_info.append((
             vert_offset,
             len(mesh_positions),
             idx_offset,
             len(mesh_indices),
             texture_uri,
+            legacy_blend_mode,
         ))
 
     if not all_positions or not all_indices:
@@ -1568,7 +1621,7 @@ def bmd_to_glb(
     images: List[Dict[str, object]] = []
     textures: List[Dict[str, object]] = []
     materials: List[Dict[str, object]] = []
-    material_index_by_texture: Dict[Optional[str], int] = {}
+    material_index_by_texture: Dict[Tuple[Optional[str], Optional[str]], int] = {}
     image_buffer_view_by_texture: Dict[str, int] = {}
 
     if missing_textures:
@@ -1589,8 +1642,12 @@ def bmd_to_glb(
                 missing_preview,
             )
 
-    def ensure_material(texture_uri: Optional[str]) -> int:
-        cached = material_index_by_texture.get(texture_uri)
+    def ensure_material(
+        texture_uri: Optional[str],
+        legacy_blend_mode: Optional[str],
+    ) -> int:
+        cache_key = (texture_uri, legacy_blend_mode)
+        cached = material_index_by_texture.get(cache_key)
         if cached is not None:
             return cached
 
@@ -1600,6 +1657,19 @@ def bmd_to_glb(
                 "roughnessFactor": 1.0,
             }
         }
+        def apply_legacy_additive_mode() -> None:
+            material["alphaMode"] = "BLEND"
+            material["doubleSided"] = True
+            extras: Dict[str, object] = {
+                "mu_legacy_blend_mode": "additive",
+                "mu_legacy_blend_mode_reason": "blend_mesh_texture_index",
+            }
+            if legacy_blend_texture_index is not None:
+                extras["mu_legacy_blend_texture_index"] = legacy_blend_texture_index
+            if legacy_object_identity is not None:
+                extras["mu_legacy_object_dir"] = legacy_object_identity[0]
+                extras["mu_legacy_object_model"] = legacy_object_identity[1]
+            material["extras"] = extras
 
         if texture_uri:
             image_index = len(images)
@@ -1627,36 +1697,44 @@ def bmd_to_glb(
             if isinstance(pbr, dict):
                 pbr["baseColorTexture"] = {"index": texture_index}
 
-            has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio = (
-                texture_alpha_profile_by_uri.get(texture_uri, (False, False, 0.0, 1.0))
-            )
-            texture_stem = Path(texture_uri).stem.lower()
-            if has_alpha and texture_stem in FORCE_BLEND_TEXTURE_STEMS:
-                alpha_mode = "BLEND"
+            if legacy_blend_mode == "additive":
+                apply_legacy_additive_mode()
             else:
+                has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio = (
+                    texture_alpha_profile_by_uri.get(texture_uri, (False, False, 0.0, 1.0))
+                )
                 alpha_mode = _classify_alpha_mode(
                     has_alpha=has_alpha,
                     has_partial_alpha=has_partial_alpha,
                     transparent_ratio=transparent_ratio,
                     opaque_ratio=opaque_ratio,
                 )
-            if alpha_mode == "BLEND":
-                material["alphaMode"] = "BLEND"
-                material["doubleSided"] = True
-            elif alpha_mode == "MASK":
-                material["alphaMode"] = "MASK"
-                material["alphaCutoff"] = ALPHA_MASK_CUTOFF
-                material["doubleSided"] = True
+                if alpha_mode == "BLEND":
+                    material["alphaMode"] = "BLEND"
+                    material["doubleSided"] = True
+                elif alpha_mode == "MASK":
+                    material["alphaMode"] = "MASK"
+                    material["alphaCutoff"] = ALPHA_MASK_CUTOFF
+                    material["doubleSided"] = True
+        elif legacy_blend_mode == "additive":
+            apply_legacy_additive_mode()
 
         material_index = len(materials)
         materials.append(material)
-        material_index_by_texture[texture_uri] = material_index
+        material_index_by_texture[cache_key] = material_index
         return material_index
 
     mesh_primitives: List[Dict[str, object]] = []
     index_component_type = 5125 if use_uint32 else 5123
     index_component_size = 4 if use_uint32 else 2
-    for (_vert_offset, _vert_count, idx_offset, idx_count, texture_uri) in primitives_info:
+    for (
+        _vert_offset,
+        _vert_count,
+        idx_offset,
+        idx_count,
+        texture_uri,
+        legacy_blend_mode,
+    ) in primitives_info:
         index_accessor: Dict[str, object] = {
             "bufferView": INDEX_BUFFER_VIEW,
             "componentType": index_component_type,
@@ -1688,7 +1766,7 @@ def bmd_to_glb(
             {
                 "attributes": attributes,
                 "indices": index_accessor_index,
-                "material": ensure_material(texture_uri),
+                "material": ensure_material(texture_uri, legacy_blend_mode),
             }
         )
 
@@ -2023,7 +2101,11 @@ def convert_single_bmd(
             embed_textures=embed_textures,
             fallback_root=output_root,
         )
-        glb_bytes = bmd_to_glb(model, texture_resolver=texture_resolver)
+        glb_bytes = bmd_to_glb(
+            model,
+            texture_resolver=texture_resolver,
+            source_path=source,
+        )
     except Exception as exc:
         stats.failed += 1
         stats.failures.append({"source": str(source), "error": str(exc), "type": "convert"})

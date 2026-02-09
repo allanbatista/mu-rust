@@ -3,9 +3,10 @@ use crate::scene_runtime::scene_loader::SceneRotationEncoding;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::transforms::scene_object_rotation_to_quat;
 use bevy::ecs::system::EntityCommands;
-use bevy::gltf::Gltf;
+use bevy::gltf::{Gltf, GltfMaterialExtras};
 use bevy::math::primitives::Cuboid;
 use bevy::prelude::*;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -499,6 +500,33 @@ fn fallback_scene_objects() -> Vec<SceneObjectDef> {
             },
         },
     ]
+}
+
+pub fn apply_legacy_gltf_material_overrides(
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    query: Query<(&Handle<StandardMaterial>, &GltfMaterialExtras), Added<GltfMaterialExtras>>,
+) {
+    for (material_handle, extras) in &query {
+        let parsed = serde_json::from_str::<Value>(&extras.value);
+        let Ok(payload) = parsed else {
+            continue;
+        };
+
+        let Some(blend_mode) = payload.get("mu_legacy_blend_mode").and_then(Value::as_str) else {
+            continue;
+        };
+
+        if blend_mode != "additive" {
+            continue;
+        }
+
+        let Some(material) = materials.get_mut(material_handle) else {
+            continue;
+        };
+
+        material.alpha_mode = AlphaMode::Add;
+        material.double_sided = true;
+    }
 }
 
 fn normalize_scene_path(model_path: &str) -> String {

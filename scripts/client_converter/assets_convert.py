@@ -160,15 +160,6 @@ DEFAULT_TERRAIN_TEXTURE_SLOT_FILES: Dict[int, str] = {
     32: "TileGrass03.png",
 }
 
-# Legacy textures that rely on black-background compositing in the original
-# client. We derive alpha from luminance so black regions can become transparent
-# in glTF/Bevy materials.
-COLOR_KEY_ALPHA_TEXTURE_STEMS = {
-    "u2u3",
-    "light01",
-}
-
-
 @dataclass
 class ConversionStats:
     textures_converted: int = 0
@@ -653,19 +644,6 @@ def convert_image_to_png(data: bytes, mode_hint: str) -> Image.Image:
         image = image.convert("RGBA")
 
     return image
-
-
-def apply_luminance_alpha_key(image: Image.Image) -> Image.Image:
-    """Derive alpha from RGB luminance (max channel), turning black into transparent."""
-    rgba = image.convert("RGBA")
-    pixels = rgba.load()
-    width, height = rgba.size
-    for y in range(height):
-        for x in range(width):
-            r, g, b, _a = pixels[x, y]
-            alpha = max(r, g, b)
-            pixels[x, y] = (r, g, b, alpha)
-    return rgba
 
 
 def is_terrain_height_asset(source: Path) -> bool:
@@ -2625,8 +2603,6 @@ def handle_texture(
             payload,
             mode_hint=str(spec.get("inner", "")),
         )
-        if image is not None and source.stem.lower() in COLOR_KEY_ALPHA_TEXTURE_STEMS:
-            image = apply_luminance_alpha_key(image)
     except Exception as exc:  # noqa: BLE001
         # TerrainHeight files may have corrupted BMP headers but valid pixel data.
         # Skip the PNG conversion silently and let the sidecar path handle them.
