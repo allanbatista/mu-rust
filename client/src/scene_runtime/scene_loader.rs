@@ -7,6 +7,8 @@ use thiserror::Error;
 
 const TERRAIN_CONFIG_FILE: &str = "terrain_config.json";
 const TERRAIN_HEIGHT_FILE: &str = "terrain_height.json";
+const TERRAIN_MAP_FILE: &str = "terrain_map.json";
+const TERRAIN_TEXTURE_SLOTS_FILE: &str = "terrain_texture_slots.json";
 const SCENE_OBJECTS_FILE: &str = "scene_objects.json";
 const CAMERA_TOUR_FILE: &str = "camera_tour.json";
 
@@ -17,6 +19,8 @@ pub struct TerrainConfig {
     pub height_multiplier: f32,
     #[serde(default = "default_legacy_terrain_scale")]
     pub legacy_terrain_scale: f32,
+    #[serde(default = "default_terrain_ambient_light")]
+    pub ambient_light: f32,
     pub texture_layers: Vec<TextureLayer>,
     pub alpha_map: String,
     pub lightmap: String,
@@ -28,6 +32,10 @@ fn default_height_multiplier() -> f32 {
 
 fn default_legacy_terrain_scale() -> f32 {
     100.0
+}
+
+fn default_terrain_ambient_light() -> f32 {
+    0.25
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -58,6 +66,74 @@ impl HeightmapData {
         } else {
             0.0
         }
+    }
+}
+
+#[derive(Asset, TypePath, Serialize, Deserialize, Clone, Debug)]
+pub struct TerrainMapData {
+    #[serde(default)]
+    pub header: TerrainMapHeader,
+    #[serde(default = "default_terrain_size")]
+    pub terrain_size: u32,
+    pub layer1: Vec<Vec<u8>>,
+    pub layer2: Vec<Vec<u8>>,
+    pub alpha: Vec<Vec<u8>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct TerrainMapHeader {
+    #[serde(default)]
+    pub version: u8,
+    #[serde(default)]
+    pub map_number: u8,
+}
+
+fn default_terrain_size() -> u32 {
+    256
+}
+
+impl TerrainMapData {
+    pub fn width(&self) -> usize {
+        self.layer1.first().map(Vec::len).unwrap_or(0)
+    }
+
+    pub fn height(&self) -> usize {
+        self.layer1.len()
+    }
+
+    pub fn sample(&self, x: usize, z: usize) -> Option<TerrainMapSample> {
+        let layer1 = self.layer1.get(z)?.get(x).copied()?;
+        let layer2 = self.layer2.get(z)?.get(x).copied()?;
+        let alpha = self.alpha.get(z)?.get(x).copied()?;
+        Some(TerrainMapSample {
+            layer1,
+            layer2,
+            alpha,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TerrainMapSample {
+    pub layer1: u8,
+    pub layer2: u8,
+    pub alpha: u8,
+}
+
+#[derive(Asset, TypePath, Serialize, Deserialize, Clone, Debug, Default)]
+pub struct TerrainTextureSlotsData {
+    #[serde(default)]
+    pub world: Option<u32>,
+    #[serde(default)]
+    pub slots: HashMap<u16, String>,
+}
+
+impl TerrainTextureSlotsData {
+    pub fn path_for_slot(&self, slot: u8) -> Option<&str> {
+        self.slots
+            .get(&(slot as u16))
+            .map(String::as_str)
+            .filter(|path| !path.trim().is_empty())
     }
 }
 
@@ -201,6 +277,72 @@ impl AssetLoader for HeightmapLoader {
 }
 
 #[derive(Default)]
+pub struct TerrainMapLoader;
+
+#[derive(Debug, Error)]
+pub enum TerrainMapLoaderError {
+    #[error("Could not load terrain map: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Could not parse JSON: {0}")]
+    JsonError(#[from] serde_json::Error),
+}
+
+impl AssetLoader for TerrainMapLoader {
+    type Asset = TerrainMapData;
+    type Settings = ();
+    type Error = TerrainMapLoaderError;
+
+    async fn load<'a>(
+        &'a self,
+        reader: &'a mut Reader<'_>,
+        _settings: &'a (),
+        _load_context: &'a mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        let terrain_map = serde_json::from_slice::<TerrainMapData>(&bytes)?;
+        Ok(terrain_map)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &[TERRAIN_MAP_FILE, "map.json"]
+    }
+}
+
+#[derive(Default)]
+pub struct TerrainTextureSlotsLoader;
+
+#[derive(Debug, Error)]
+pub enum TerrainTextureSlotsLoaderError {
+    #[error("Could not load terrain texture slots: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Could not parse JSON: {0}")]
+    JsonError(#[from] serde_json::Error),
+}
+
+impl AssetLoader for TerrainTextureSlotsLoader {
+    type Asset = TerrainTextureSlotsData;
+    type Settings = ();
+    type Error = TerrainTextureSlotsLoaderError;
+
+    async fn load<'a>(
+        &'a self,
+        reader: &'a mut Reader<'_>,
+        _settings: &'a (),
+        _load_context: &'a mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        let slots = serde_json::from_slice::<TerrainTextureSlotsData>(&bytes)?;
+        Ok(slots)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &[TERRAIN_TEXTURE_SLOTS_FILE]
+    }
+}
+
+#[derive(Default)]
 pub struct SceneObjectsLoader;
 
 #[derive(Debug, Error)]
@@ -271,6 +413,9 @@ pub struct LoadedSceneWorld {
     pub world_name: String,
     pub terrain_config: Handle<TerrainConfig>,
     pub heightmap: Handle<HeightmapData>,
+    pub terrain_map: Handle<TerrainMapData>,
+    pub legacy_terrain_map: Option<Handle<TerrainMapData>>,
+    pub terrain_texture_slots: Option<Handle<TerrainTextureSlotsData>>,
     pub scene_objects: Handle<SceneObjectsData>,
     pub camera_tour: Handle<CameraTourData>,
 }
@@ -300,14 +445,23 @@ impl SceneLoader {
         asset_server: &AssetServer,
         terrain_configs: &Assets<TerrainConfig>,
         heightmaps: &Assets<HeightmapData>,
+        terrain_maps: &Assets<TerrainMapData>,
         scene_objects: &Assets<SceneObjectsData>,
         camera_tours: &Assets<CameraTourData>,
     ) -> Option<LoadedSceneWorld> {
         let world_name = normalize_world_name(world_name);
         let world = self.ensure_requested(&world_name, asset_server);
 
+        let terrain_map_ready = terrain_maps.get(&world.terrain_map).is_some()
+            || world
+                .legacy_terrain_map
+                .as_ref()
+                .and_then(|fallback| terrain_maps.get(fallback))
+                .is_some();
+
         let is_ready = terrain_configs.get(&world.terrain_config).is_some()
             && heightmaps.get(&world.heightmap).is_some()
+            && terrain_map_ready
             && scene_objects.get(&world.scene_objects).is_some()
             && camera_tours.get(&world.camera_tour).is_some();
 
@@ -329,10 +483,24 @@ impl SceneLoader {
             return existing.world().clone();
         }
 
+        let world_number = world_name
+            .strip_prefix("world")
+            .and_then(|value| value.parse::<u32>().ok());
+
         let world = LoadedSceneWorld {
             world_name: world_name.to_string(),
             terrain_config: asset_server.load(world_asset_path(world_name, TERRAIN_CONFIG_FILE)),
             heightmap: asset_server.load(world_asset_path(world_name, TERRAIN_HEIGHT_FILE)),
+            terrain_map: asset_server.load(world_asset_path(world_name, TERRAIN_MAP_FILE)),
+            legacy_terrain_map: world_number.map(|number| {
+                asset_server.load(world_asset_path(
+                    world_name,
+                    &format!("enc_terrain{number}.map.json"),
+                ))
+            }),
+            terrain_texture_slots: Some(
+                asset_server.load(world_asset_path(world_name, TERRAIN_TEXTURE_SLOTS_FILE)),
+            ),
             scene_objects: asset_server.load(world_asset_path(world_name, SCENE_OBJECTS_FILE)),
             camera_tour: asset_server.load(world_asset_path(world_name, CAMERA_TOUR_FILE)),
         };
@@ -376,10 +544,14 @@ impl Plugin for SceneLoaderPlugin {
         app.init_resource::<SceneLoader>()
             .init_asset::<TerrainConfig>()
             .init_asset::<HeightmapData>()
+            .init_asset::<TerrainMapData>()
+            .init_asset::<TerrainTextureSlotsData>()
             .init_asset::<SceneObjectsData>()
             .init_asset::<CameraTourData>()
             .init_asset_loader::<TerrainConfigLoader>()
             .init_asset_loader::<HeightmapLoader>()
+            .init_asset_loader::<TerrainMapLoader>()
+            .init_asset_loader::<TerrainTextureSlotsLoader>()
             .init_asset_loader::<SceneObjectsLoader>()
             .init_asset_loader::<CameraTourLoader>();
     }

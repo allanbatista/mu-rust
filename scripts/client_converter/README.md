@@ -799,13 +799,16 @@ references, alpha map, and lightmap paths.
 
 ## Known Issues and Limitations
 
-1. **No animation export**: The BMD converter extracts only the rest-pose (action 0,
-   key 0). Skeletal animations, action sequences, and blend shapes are not exported.
-   The GLB files contain static meshes only.
+1. **Animation export is skeletal-only and normalized**: The converter now exports
+   BMD actions as glTF animation clips with skin/joints. Current limitations:
+   keyframe timestamps are normalized at 30 FPS, action `PlaySpeed`/`Loop` tuning
+   from runtime code is not serialized, and vertices are emitted with single-joint
+   weights (`WEIGHTS_0 = [1,0,0,0]`).
 
-2. **No material/texture binding in GLB**: The converter does not embed texture
-   references in the GLB files. The Rust client must resolve textures separately
-   using naming conventions.
+2. **Material conversion is simplified**: The converter emits basic glTF PBR
+   materials (`metallicFactor=0`, `roughnessFactor=1`) with texture binding and
+   embedded PNG payloads when available. Legacy engine-specific material flags
+   (blend modes, UV animation, special shaders) are not preserved.
 
 3. **Season20 OBJ encryption unsolved**: The 82 `.obj` scene object files in the
    Season20 build use an unknown encryption scheme. All known methods

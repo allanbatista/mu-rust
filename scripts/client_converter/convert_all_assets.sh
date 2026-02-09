@@ -32,6 +32,15 @@ REPO_ROOT="$(cd "$RUST_ROOT/.." && pwd)"
 LEGACY_ROOT="${LEGACY_ROOT:-/home/allanbatista/Workspaces/Mu/MU_Red_1_20_61_Full/DataNorm}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$RUST_ROOT/assets}"
 BMD_CONVERTER="${BMD_CONVERTER:-$SCRIPT_DIR/bmd_converter.py}"
+PYTHON_BIN="${PYTHON_BIN:-}"
+
+if [[ -z "$PYTHON_BIN" ]]; then
+    if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+        PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
+    else
+        PYTHON_BIN="$(command -v python3 || command -v python)"
+    fi
+fi
 
 if [[ "$LEGACY_ROOT" != /* ]]; then
     LEGACY_ROOT="$REPO_ROOT/$LEGACY_ROOT"
@@ -41,6 +50,19 @@ if [[ "$OUTPUT_ROOT" != /* ]]; then
 fi
 if [[ "$BMD_CONVERTER" != /* ]]; then
     BMD_CONVERTER="$SCRIPT_DIR/$BMD_CONVERTER"
+fi
+if [[ "$PYTHON_BIN" != /* ]]; then
+    PYTHON_BIN="$REPO_ROOT/$PYTHON_BIN"
+fi
+if [ ! -x "$PYTHON_BIN" ]; then
+    log_error "Python interpreter not found or not executable: $PYTHON_BIN"
+    exit 1
+fi
+
+# Normalize data output path to avoid .../data/data when OUTPUT_ROOT already ends with data.
+DATA_OUTPUT_ROOT="$OUTPUT_ROOT"
+if [[ "${DATA_OUTPUT_ROOT##*/}" != "data" ]]; then
+    DATA_OUTPUT_ROOT="$DATA_OUTPUT_ROOT/data"
 fi
 
 # Flags
@@ -158,6 +180,8 @@ fi
 log_info "Starting asset conversion pipeline"
 log_info "Legacy root: $LEGACY_ROOT"
 log_info "Output root: $OUTPUT_ROOT"
+log_info "Data output root: $DATA_OUTPUT_ROOT"
+log_info "Python runtime: $PYTHON_BIN"
 if [ ${#WORLD_FILTER_ARGS[@]} -gt 0 ]; then
     log_info "World filter args: ${WORLD_FILTER_ARGS[*]}"
 fi
@@ -171,9 +195,9 @@ START_TIME=$(date +%s)
 if [ "$CONVERT_TEXTURES" = true ]; then
     log_info "Converting textures and auxiliary assets..."
 
-    python3 "$SCRIPT_DIR/assets_convert.py" \
+    "$PYTHON_BIN" "$SCRIPT_DIR/assets_convert.py" \
         --legacy-root "$LEGACY_ROOT" \
-        --output-root "$OUTPUT_ROOT/data" \
+        --output-root "$DATA_OUTPUT_ROOT" \
         --skip-models \
         "${WORLD_FILTER_ARGS[@]}" \
         $DRY_RUN \
@@ -195,9 +219,9 @@ fi
 if [ "$CONVERT_MODELS" = true ]; then
     log_info "Converting 3D models (BMD → GLB)..."
 
-    python3 "$BMD_CONVERTER" \
+    "$PYTHON_BIN" "$BMD_CONVERTER" \
         --bmd-root "$LEGACY_ROOT" \
-        --output-root "$OUTPUT_ROOT/data" \
+        --output-root "$DATA_OUTPUT_ROOT" \
         --format glb \
         "${WORLD_FILTER_ARGS[@]}" \
         "${MODEL_TEXTURE_ARGS[@]}" \

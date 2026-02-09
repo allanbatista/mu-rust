@@ -75,6 +75,9 @@ WORLD_DIR_PATTERN = re.compile(r"^world(\d+)$", re.IGNORECASE)
 OBJECT_DIR_PATTERN = re.compile(r"^object(\d+)$", re.IGNORECASE)
 NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9]+")
 
+# Global cache for fallback PNG lookup maps, keyed by absolute root path.
+_GLOBAL_PNG_INDEX_CACHE: Dict[str, Tuple[Dict[str, Path], Dict[str, Path], Dict[str, Path]]] = {}
+
 # ---------------------------------------------------------------------------
 # Decryption
 # ---------------------------------------------------------------------------
@@ -672,6 +675,182 @@ def _swizzle_mu_to_gltf(v: Tuple[float, float, float]) -> Tuple[float, float, fl
     return (v[0], v[2], v[1])
 
 
+def _swizzle_mu_to_gltf_matrix3(matrix: List[List[float]]) -> List[List[float]]:
+    """Convert a MU-space rotation matrix to glTF basis by swapping Y/Z rows and columns."""
+    perm = (0, 2, 1)
+    return [
+        [matrix[perm[row]][perm[col]] for col in range(3)]
+        for row in range(3)
+    ]
+
+
+def _rotation_matrix3_from_mu_radians(
+    radians_xyz: Tuple[float, float, float],
+) -> List[List[float]]:
+    """Build a MU-space 3x3 rotation matrix from Euler radians stored in BMD."""
+    angle_deg = (
+        radians_xyz[0] * (180.0 / Q_PI),
+        radians_xyz[1] * (180.0 / Q_PI),
+        radians_xyz[2] * (180.0 / Q_PI),
+    )
+    matrix_3x4 = angle_matrix(angle_deg)
+    return [
+        [matrix_3x4[0][0], matrix_3x4[0][1], matrix_3x4[0][2]],
+        [matrix_3x4[1][0], matrix_3x4[1][1], matrix_3x4[1][2]],
+        [matrix_3x4[2][0], matrix_3x4[2][1], matrix_3x4[2][2]],
+    ]
+
+
+def _matrix3_to_quaternion(matrix: List[List[float]]) -> Tuple[float, float, float, float]:
+    """Convert a row-major 3x3 rotation matrix into an (x, y, z, w) quaternion."""
+    m00, m01, m02 = matrix[0]
+    m10, m11, m12 = matrix[1]
+    m20, m21, m22 = matrix[2]
+
+    trace = m00 + m11 + m22
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (m21 - m12) / s
+        y = (m02 - m20) / s
+        z = (m10 - m01) / s
+    elif m00 > m11 and m00 > m22:
+        s = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+        w = (m21 - m12) / s
+        x = 0.25 * s
+        y = (m01 + m10) / s
+        z = (m02 + m20) / s
+    elif m11 > m22:
+        s = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+        w = (m02 - m20) / s
+        x = (m01 + m10) / s
+        y = 0.25 * s
+        z = (m12 + m21) / s
+    else:
+        s = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+        w = (m10 - m01) / s
+        x = (m02 + m20) / s
+        y = (m12 + m21) / s
+        z = 0.25 * s
+
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if norm == 0.0:
+        return (0.0, 0.0, 0.0, 1.0)
+    return (x / norm, y / norm, z / norm, w / norm)
+
+
+def _inverse_rigid_matrix4(matrix: List[List[float]]) -> List[List[float]]:
+    """Invert a rigid 4x4 transform matrix (rotation + translation, no scale/shear)."""
+    r00, r01, r02 = matrix[0][0], matrix[0][1], matrix[0][2]
+    r10, r11, r12 = matrix[1][0], matrix[1][1], matrix[1][2]
+    r20, r21, r22 = matrix[2][0], matrix[2][1], matrix[2][2]
+    tx, ty, tz = matrix[0][3], matrix[1][3], matrix[2][3]
+
+    # Inverse rotation = transpose for orthonormal rigid transforms.
+    ir00, ir01, ir02 = r00, r10, r20
+    ir10, ir11, ir12 = r01, r11, r21
+    ir20, ir21, ir22 = r02, r12, r22
+
+    itx = -(ir00 * tx + ir01 * ty + ir02 * tz)
+    ity = -(ir10 * tx + ir11 * ty + ir12 * tz)
+    itz = -(ir20 * tx + ir21 * ty + ir22 * tz)
+
+    return [
+        [ir00, ir01, ir02, itx],
+        [ir10, ir11, ir12, ity],
+        [ir20, ir21, ir22, itz],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def _matrix4_to_column_major_values(matrix: List[List[float]]) -> List[float]:
+    """Serialize a row-major 4x4 matrix into glTF column-major value order."""
+    out: List[float] = []
+    for col in range(4):
+        for row in range(4):
+            out.append(float(matrix[row][col]))
+    return out
+
+
+def _bone_local_pose(
+    model: BmdModel,
+    bone_index: int,
+    action_index: int,
+    key_index: int,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """Return local bone position/rotation (MU space) for an action/key, with safe fallbacks."""
+    if bone_index < 0 or bone_index >= len(model.bones):
+        return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+
+    bone = model.bones[bone_index]
+    if bone.dummy or not bone.matrices:
+        return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+
+    matrix_track_index = action_index if action_index < len(bone.matrices) else 0
+    positions, rotations = bone.matrices[matrix_track_index]
+
+    if positions:
+        pos = positions[min(max(key_index, 0), len(positions) - 1)]
+    else:
+        pos = (0.0, 0.0, 0.0)
+
+    if rotations:
+        rot = rotations[min(max(key_index, 0), len(rotations) - 1)]
+    else:
+        rot = (0.0, 0.0, 0.0)
+
+    return pos, rot
+
+
+def _mu_local_pose_to_gltf_trs(
+    position_mu: Tuple[float, float, float],
+    rotation_mu_radians: Tuple[float, float, float],
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float, float]]:
+    """Convert MU local pose (position + Euler radians) to glTF translation + quaternion."""
+    rotation_mu = _rotation_matrix3_from_mu_radians(rotation_mu_radians)
+    rotation_gltf = _swizzle_mu_to_gltf_matrix3(rotation_mu)
+    quaternion = _matrix3_to_quaternion(rotation_gltf)
+    translation = _swizzle_mu_to_gltf(position_mu)
+    return translation, quaternion
+
+
+def _fixup_to_gltf_global_matrix(fixup: BoneFixup) -> List[List[float]]:
+    """Convert a MU-space bone global bind transform into a glTF-space 4x4 matrix."""
+    rotation_gltf = _swizzle_mu_to_gltf_matrix3(
+        [
+            [fixup.m[0][0], fixup.m[0][1], fixup.m[0][2]],
+            [fixup.m[1][0], fixup.m[1][1], fixup.m[1][2]],
+            [fixup.m[2][0], fixup.m[2][1], fixup.m[2][2]],
+        ]
+    )
+    tx, ty, tz = _swizzle_mu_to_gltf(fixup.world_org)
+    return [
+        [rotation_gltf[0][0], rotation_gltf[0][1], rotation_gltf[0][2], tx],
+        [rotation_gltf[1][0], rotation_gltf[1][1], rotation_gltf[1][2], ty],
+        [rotation_gltf[2][0], rotation_gltf[2][1], rotation_gltf[2][2], tz],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def _track_values_vary(
+    values: Sequence[Sequence[float]],
+    epsilon: float = 1e-6,
+) -> bool:
+    """Return True when any key differs from the first key beyond *epsilon*."""
+    if len(values) < 2:
+        return False
+
+    first = values[0]
+    first_len = len(first)
+    for value in values[1:]:
+        if len(value) != first_len:
+            return True
+        for index in range(first_len):
+            if abs(value[index] - first[index]) > epsilon:
+                return True
+    return False
+
+
 def _texture_name_to_png_uri(texture_name: str) -> Optional[str]:
     """Normalize a BMD texture name to a PNG URI stored beside the converted GLB."""
     cleaned = texture_name.strip().replace("\\", "/")
@@ -693,16 +872,58 @@ def _normalize_texture_lookup_key(raw_name: str) -> str:
     return NON_ALNUM_PATTERN.sub("", raw_name.lower())
 
 
-class TextureResolver:
-    """Resolve BMD texture names against converted PNGs in a model output directory."""
+def _build_global_png_index(
+    root: Path,
+) -> Tuple[Dict[str, Path], Dict[str, Path], Dict[str, Path]]:
+    """Build fallback lookup maps for every PNG under *root*."""
+    key = str(root.resolve())
+    cached = _GLOBAL_PNG_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
 
-    def __init__(self, texture_dir: Path, embed_textures: bool) -> None:
-        self.texture_dir = texture_dir
+    by_lower_name: Dict[str, Path] = {}
+    by_lower_stem: Dict[str, Path] = {}
+    by_normalized_stem: Dict[str, Path] = {}
+
+    if root.exists() and root.is_dir():
+        png_files = sorted(
+            (path for path in root.rglob("*.png") if path.is_file()),
+            key=lambda path: path.as_posix().lower(),
+        )
+        for path in png_files:
+            lower_name = path.name.lower()
+            lower_stem = path.stem.lower()
+            normalized_stem = _normalize_texture_lookup_key(path.stem)
+
+            by_lower_name.setdefault(lower_name, path)
+            by_lower_stem.setdefault(lower_stem, path)
+            if normalized_stem:
+                by_normalized_stem.setdefault(normalized_stem, path)
+
+    cached_maps = (by_lower_name, by_lower_stem, by_normalized_stem)
+    _GLOBAL_PNG_INDEX_CACHE[key] = cached_maps
+    return cached_maps
+
+
+class TextureResolver:
+    """Resolve BMD texture names against PNGs in local and fallback output directories."""
+
+    def __init__(
+        self,
+        texture_dir: Path,
+        embed_textures: bool,
+        fallback_root: Optional[Path] = None,
+    ) -> None:
+        self.texture_dir = texture_dir.resolve()
         self.embed_textures = embed_textures
+        self.fallback_root = fallback_root.resolve() if fallback_root else None
         self._index_built = False
-        self._by_lower_name: Dict[str, str] = {}
-        self._by_lower_stem: Dict[str, str] = {}
-        self._by_normalized_stem: Dict[str, str] = {}
+        self._by_lower_name: Dict[str, Path] = {}
+        self._by_lower_stem: Dict[str, Path] = {}
+        self._by_normalized_stem: Dict[str, Path] = {}
+        self._fallback_by_lower_name: Optional[Dict[str, Path]] = None
+        self._fallback_by_lower_stem: Optional[Dict[str, Path]] = None
+        self._fallback_by_normalized_stem: Optional[Dict[str, Path]] = None
         self._cache: Dict[str, ResolvedTexture] = {}
 
     def _build_index(self) -> None:
@@ -722,20 +943,39 @@ class TextureResolver:
         )
 
         for path in png_files:
-            file_name = path.name
-            lower_name = file_name.lower()
+            lower_name = path.name.lower()
             lower_stem = path.stem.lower()
             normalized_stem = _normalize_texture_lookup_key(path.stem)
 
-            self._by_lower_name.setdefault(lower_name, file_name)
-            self._by_lower_stem.setdefault(lower_stem, file_name)
+            self._by_lower_name.setdefault(lower_name, path)
+            self._by_lower_stem.setdefault(lower_stem, path)
             if normalized_stem:
-                self._by_normalized_stem.setdefault(normalized_stem, file_name)
+                self._by_normalized_stem.setdefault(normalized_stem, path)
 
-    def _resolve_png_name(self, requested_uri: str) -> Optional[str]:
+    def _build_fallback_index(self) -> None:
+        if (
+            self._fallback_by_lower_name is not None
+            and self._fallback_by_lower_stem is not None
+            and self._fallback_by_normalized_stem is not None
+        ):
+            return
+
+        if self.fallback_root is None:
+            self._fallback_by_lower_name = {}
+            self._fallback_by_lower_stem = {}
+            self._fallback_by_normalized_stem = {}
+            return
+
+        (
+            self._fallback_by_lower_name,
+            self._fallback_by_lower_stem,
+            self._fallback_by_normalized_stem,
+        ) = _build_global_png_index(self.fallback_root)
+
+    def _resolve_png_path(self, requested_uri: str) -> Optional[Path]:
         direct = self.texture_dir / requested_uri
         if direct.exists() and direct.is_file():
-            return direct.name
+            return direct
 
         self._build_index()
 
@@ -752,7 +992,40 @@ class TextureResolver:
         if normalized_stem and normalized_stem in self._by_normalized_stem:
             return self._by_normalized_stem[normalized_stem]
 
+        if self.fallback_root is not None:
+            fallback_direct = self.fallback_root / requested_uri
+            if fallback_direct.exists() and fallback_direct.is_file():
+                return fallback_direct
+
+            self._build_fallback_index()
+            assert self._fallback_by_lower_name is not None
+            assert self._fallback_by_lower_stem is not None
+            assert self._fallback_by_normalized_stem is not None
+
+            if lower_name in self._fallback_by_lower_name:
+                return self._fallback_by_lower_name[lower_name]
+            if lower_stem in self._fallback_by_lower_stem:
+                return self._fallback_by_lower_stem[lower_stem]
+            if (
+                normalized_stem
+                and normalized_stem in self._fallback_by_normalized_stem
+            ):
+                return self._fallback_by_normalized_stem[normalized_stem]
+
         return None
+
+    def _uri_for_path(self, path: Path) -> str:
+        if self.embed_textures:
+            if path.is_relative_to(self.texture_dir):
+                return path.relative_to(self.texture_dir).as_posix()
+            if self.fallback_root and path.is_relative_to(self.fallback_root):
+                return path.relative_to(self.fallback_root).as_posix()
+            return path.name
+
+        try:
+            return Path(os.path.relpath(path, self.texture_dir)).as_posix()
+        except ValueError:
+            return path.name
 
     def resolve(self, texture_name: str) -> Optional[ResolvedTexture]:
         texture_uri = _texture_name_to_png_uri(texture_name)
@@ -764,26 +1037,26 @@ class TextureResolver:
         if cached is not None:
             return cached
 
-        resolved_name = self._resolve_png_name(texture_uri)
-        if resolved_name is None:
+        resolved_path = self._resolve_png_path(texture_uri)
+        if resolved_path is None:
             resolved = ResolvedTexture(uri=texture_uri, png_bytes=None, found_on_disk=False)
             self._cache[cache_key] = resolved
             return resolved
 
         png_bytes: Optional[bytes] = None
         if self.embed_textures:
-            texture_path = self.texture_dir / resolved_name
             try:
-                png_bytes = texture_path.read_bytes()
+                png_bytes = resolved_path.read_bytes()
             except OSError as exc:
                 logging.warning(
                     "Failed to read texture '%s' for embedding: %s",
-                    texture_path,
+                    resolved_path,
                     exc,
                 )
                 png_bytes = None
 
-        resolved = ResolvedTexture(uri=resolved_name, png_bytes=png_bytes, found_on_disk=True)
+        resolved_uri = self._uri_for_path(resolved_path)
+        resolved = ResolvedTexture(uri=resolved_uri, png_bytes=png_bytes, found_on_disk=True)
         self._cache[cache_key] = resolved
         return resolved
 
@@ -837,45 +1110,52 @@ def bmd_to_glb(
     if total_tris == 0:
         return None
 
-    # Compute bone fixups for world-space transform
+    # Compute bone fixups for world-space transform.
     if model.num_bones > 0 and model.num_actions > 0:
         fixups = compute_bone_fixups(model)
     else:
         fixups = []
 
-    # Build unified vertex buffer per mesh, then combine into GLTF primitives
+    export_skinning = bool(fixups) and len(fixups) == model.num_bones
+
+    # Build unified vertex buffer per mesh, then combine into GLTF primitives.
     all_positions: List[Tuple[float, float, float]] = []
     all_normals: List[Tuple[float, float, float]] = []
     all_texcoords: List[Tuple[float, float]] = []
     all_indices: List[int] = []
+    all_joint_indices: List[Tuple[int, int, int, int]] = []
+    all_joint_weights: List[Tuple[float, float, float, float]] = []
 
     primitives_info: List[Tuple[int, int, int, int, Optional[str]]] = []
     # (vert_offset, vert_count, idx_offset, idx_count, texture_uri)
     embedded_texture_payloads: Dict[str, bytes] = {}
     missing_textures: set[str] = set()
+    warned_vertex_nodes: set[int] = set()
+    warned_normal_nodes: set[int] = set()
 
     for mesh_index, mesh in enumerate(model.meshs):
         if mesh.num_triangles == 0:
             continue
 
-        # De-index: build combined vertices
+        # De-index: build combined vertices.
         vert_map: Dict[Tuple[int, int, int], int] = {}
         mesh_positions: List[Tuple[float, float, float]] = []
         mesh_normals: List[Tuple[float, float, float]] = []
         mesh_texcoords: List[Tuple[float, float]] = []
         mesh_indices: List[int] = []
+        mesh_joint_indices: List[Tuple[int, int, int, int]] = []
+        mesh_joint_weights: List[Tuple[float, float, float, float]] = []
 
         for tri in mesh.triangles:
             n_corners = min(tri.polygon, 4) if tri.polygon >= 3 else 3
 
-            # Collect corner data
             corners: List[int] = []
             for k in range(n_corners):
                 vi = tri.vertex_index[k]
                 ni = tri.normal_index[k]
                 ti = tri.texcoord_index[k]
 
-                # Bounds check
+                # Bounds check.
                 if vi < 0 or vi >= mesh.num_vertices:
                     continue
                 if ni < 0 or ni >= mesh.num_normals:
@@ -886,56 +1166,72 @@ def bmd_to_glb(
                 key = (vi, ni, ti)
                 if key in vert_map:
                     corners.append(vert_map[key])
+                    continue
+
+                idx = len(mesh_positions)
+                vert_map[key] = idx
+
+                vert = mesh.vertices[vi]
+                norm = mesh.normals[ni]
+                tc = mesh.texcoords[ti]
+                vnode = vert.node
+                nnode = norm.node
+
+                if fixups:
+                    if 0 <= vnode < len(fixups):
+                        vertex_fixup = fixups[vnode]
+                    else:
+                        if vnode not in warned_vertex_nodes:
+                            logging.warning(
+                                "Vertex node %d out of range [0,%d) in %s, clamping to 0",
+                                vnode,
+                                len(fixups),
+                                model.name,
+                            )
+                            warned_vertex_nodes.add(vnode)
+                        vertex_fixup = fixups[0]
+
+                    wp = vector_transform(vert.position, vertex_fixup.m)
+                    world_pos = (
+                        wp[0] + vertex_fixup.world_org[0],
+                        wp[1] + vertex_fixup.world_org[1],
+                        wp[2] + vertex_fixup.world_org[2],
+                    )
                 else:
-                    idx = len(mesh_positions)
-                    vert_map[key] = idx
+                    world_pos = vert.position
 
-                    vert = mesh.vertices[vi]
-                    norm = mesh.normals[ni]
-                    tc = mesh.texcoords[ti]
-
-                    # Transform vertex to world space using bone fixup
-                    vnode = vert.node
-                    nnode = norm.node
-
-                    if fixups and 0 <= vnode < len(fixups):
-                        wp = vector_transform(vert.position, fixups[vnode].m)
-                        world_pos = (
-                            wp[0] + fixups[vnode].world_org[0],
-                            wp[1] + fixups[vnode].world_org[1],
-                            wp[2] + fixups[vnode].world_org[2],
-                        )
-                    elif fixups and vnode >= len(fixups):
-                        # Clamp to bone 0
-                        logging.warning(
-                            "Vertex node %d >= num_bones %d in %s, clamping to 0",
-                            vnode, len(fixups), model.name,
-                        )
-                        wp = vector_transform(vert.position, fixups[0].m)
-                        world_pos = (
-                            wp[0] + fixups[0].world_org[0],
-                            wp[1] + fixups[0].world_org[1],
-                            wp[2] + fixups[0].world_org[2],
-                        )
+                if fixups:
+                    if 0 <= nnode < len(fixups):
+                        normal_fixup = fixups[nnode]
                     else:
-                        world_pos = vert.position
+                        if nnode not in warned_normal_nodes:
+                            logging.warning(
+                                "Normal node %d out of range [0,%d) in %s, clamping to 0",
+                                nnode,
+                                len(fixups),
+                                model.name,
+                            )
+                            warned_normal_nodes.add(nnode)
+                        normal_fixup = fixups[0]
 
-                    if fixups and 0 <= nnode < len(fixups):
-                        wn = vector_rotate(norm.normal, fixups[nnode].m)
-                        world_norm = vector_normalize(wn)
-                    elif fixups and nnode >= len(fixups):
-                        wn = vector_rotate(norm.normal, fixups[0].m)
-                        world_norm = vector_normalize(wn)
-                    else:
-                        world_norm = vector_normalize(norm.normal)
+                    wn = vector_rotate(norm.normal, normal_fixup.m)
+                    world_norm = vector_normalize(wn)
+                else:
+                    world_norm = vector_normalize(norm.normal)
 
-                    mesh_positions.append(_swizzle_mu_to_gltf(world_pos))
-                    mesh_normals.append(vector_normalize(_swizzle_mu_to_gltf(world_norm)))
-                    # UV flip: v_gltf = 1.0 - v_bmd (reference: BMD_SMD.cpp:755)
-                    mesh_texcoords.append((tc.u, 1.0 - tc.v))
-                    corners.append(idx)
+                mesh_positions.append(_swizzle_mu_to_gltf(world_pos))
+                mesh_normals.append(vector_normalize(_swizzle_mu_to_gltf(world_norm)))
+                # UV flip: v_gltf = 1.0 - v_bmd (reference: BMD_SMD.cpp:755).
+                mesh_texcoords.append((tc.u, 1.0 - tc.v))
 
-            # Triangulate
+                if export_skinning:
+                    joint_index = vnode if 0 <= vnode < model.num_bones else 0
+                    mesh_joint_indices.append((joint_index, 0, 0, 0))
+                    mesh_joint_weights.append((1.0, 0.0, 0.0, 0.0))
+
+                corners.append(idx)
+
+            # Triangulate.
             if len(corners) >= 3:
                 # Axis swizzle flips handedness, so we reverse winding for correct front faces.
                 mesh_indices.extend([corners[0], corners[2], corners[1]])
@@ -952,8 +1248,10 @@ def bmd_to_glb(
         all_positions.extend(mesh_positions)
         all_normals.extend(mesh_normals)
         all_texcoords.extend(mesh_texcoords)
-        # Offset indices
         all_indices.extend(i + vert_offset for i in mesh_indices)
+        if export_skinning:
+            all_joint_indices.extend(mesh_joint_indices)
+            all_joint_weights.extend(mesh_joint_weights)
 
         resolved_texture = _resolve_mesh_texture(
             model.meshs,
@@ -986,7 +1284,7 @@ def bmd_to_glb(
     num_verts = len(all_positions)
     use_uint32 = num_verts > 65535
 
-    # Compute bounding box for POSITION accessor
+    # Compute bounding box for POSITION accessor.
     min_pos = [float('inf')] * 3
     max_pos = [float('-inf')] * 3
     for p in all_positions:
@@ -996,7 +1294,7 @@ def bmd_to_glb(
             if p[c] > max_pos[c]:
                 max_pos[c] = p[c]
 
-    # Build binary buffer
+    # Build binary payloads.
     pos_data = b''.join(struct.pack('<3f', *p) for p in all_positions)
     norm_data = b''.join(struct.pack('<3f', *n) for n in all_normals)
     tc_data = b''.join(struct.pack('<2f', *t) for t in all_texcoords)
@@ -1004,6 +1302,12 @@ def bmd_to_glb(
         idx_data = b''.join(struct.pack('<I', i) for i in all_indices)
     else:
         idx_data = b''.join(struct.pack('<H', i) for i in all_indices)
+
+    joint_data = b''
+    weight_data = b''
+    if export_skinning:
+        joint_data = b''.join(struct.pack('<4H', *values) for values in all_joint_indices)
+        weight_data = b''.join(struct.pack('<4f', *values) for values in all_joint_weights)
 
     pos_offset = 0
     pos_size = len(pos_data)
@@ -1015,6 +1319,9 @@ def bmd_to_glb(
     idx_size = len(idx_data)
 
     binary_buffer = bytearray(pos_data + norm_data + tc_data + idx_data)
+    base_padding = (4 - len(binary_buffer) % 4) % 4
+    if base_padding:
+        binary_buffer.extend(b"\x00" * base_padding)
 
     POSITION_BUFFER_VIEW = 0
     NORMAL_BUFFER_VIEW = 1
@@ -1022,33 +1329,81 @@ def bmd_to_glb(
     INDEX_BUFFER_VIEW = 3
 
     buffer_views: List[Dict[str, object]] = [
-        # 0: positions
         {"buffer": 0, "byteOffset": pos_offset, "byteLength": pos_size, "target": 34962},
-        # 1: normals
         {"buffer": 0, "byteOffset": norm_offset, "byteLength": norm_size, "target": 34962},
-        # 2: texcoords
         {"buffer": 0, "byteOffset": tc_offset, "byteLength": tc_size, "target": 34962},
-        # 3: indices
         {"buffer": 0, "byteOffset": idx_offset_buf, "byteLength": idx_size, "target": 34963},
     ]
 
     accessors: List[Dict[str, object]] = [
-        # 0: POSITION
         {
-            "bufferView": POSITION_BUFFER_VIEW, "componentType": 5126, "count": num_verts,
-            "type": "VEC3", "max": max_pos, "min": min_pos,
+            "bufferView": POSITION_BUFFER_VIEW,
+            "componentType": 5126,
+            "count": num_verts,
+            "type": "VEC3",
+            "max": max_pos,
+            "min": min_pos,
         },
-        # 1: NORMAL
         {
-            "bufferView": NORMAL_BUFFER_VIEW, "componentType": 5126, "count": num_verts,
+            "bufferView": NORMAL_BUFFER_VIEW,
+            "componentType": 5126,
+            "count": num_verts,
             "type": "VEC3",
         },
-        # 2: TEXCOORD_0
         {
-            "bufferView": TEXCOORD_BUFFER_VIEW, "componentType": 5126, "count": num_verts,
+            "bufferView": TEXCOORD_BUFFER_VIEW,
+            "componentType": 5126,
+            "count": num_verts,
             "type": "VEC2",
         },
     ]
+
+    def append_binary_buffer_view(
+        payload: bytes,
+        target: Optional[int] = None,
+    ) -> int:
+        byte_offset = len(binary_buffer)
+        binary_buffer.extend(payload)
+        payload_padding = (4 - len(binary_buffer) % 4) % 4
+        if payload_padding:
+            binary_buffer.extend(b"\x00" * payload_padding)
+
+        view: Dict[str, object] = {
+            "buffer": 0,
+            "byteOffset": byte_offset,
+            "byteLength": len(payload),
+        }
+        if target is not None:
+            view["target"] = target
+
+        buffer_view_index = len(buffer_views)
+        buffer_views.append(view)
+        return buffer_view_index
+
+    joint_accessor_index: Optional[int] = None
+    weight_accessor_index: Optional[int] = None
+    if export_skinning:
+        joint_buffer_view = append_binary_buffer_view(joint_data, target=34962)
+        joint_accessor_index = len(accessors)
+        accessors.append(
+            {
+                "bufferView": joint_buffer_view,
+                "componentType": 5123,  # UNSIGNED_SHORT
+                "count": num_verts,
+                "type": "VEC4",
+            }
+        )
+
+        weight_buffer_view = append_binary_buffer_view(weight_data, target=34962)
+        weight_accessor_index = len(accessors)
+        accessors.append(
+            {
+                "bufferView": weight_buffer_view,
+                "componentType": 5126,
+                "count": num_verts,
+                "type": "VEC4",
+            }
+        )
 
     images: List[Dict[str, object]] = []
     textures: List[Dict[str, object]] = []
@@ -1092,20 +1447,7 @@ def bmd_to_glb(
             if embedded_payload is not None:
                 image_buffer_view = image_buffer_view_by_texture.get(texture_uri)
                 if image_buffer_view is None:
-                    image_offset = len(binary_buffer)
-                    binary_buffer.extend(embedded_payload)
-                    image_padding = (4 - len(binary_buffer) % 4) % 4
-                    if image_padding:
-                        binary_buffer.extend(b"\x00" * image_padding)
-
-                    image_buffer_view = len(buffer_views)
-                    buffer_views.append(
-                        {
-                            "buffer": 0,
-                            "byteOffset": image_offset,
-                            "byteLength": len(embedded_payload),
-                        }
-                    )
+                    image_buffer_view = append_binary_buffer_view(embedded_payload)
                     image_buffer_view_by_texture[texture_uri] = image_buffer_view
 
                 images.append(
@@ -1134,7 +1476,7 @@ def bmd_to_glb(
     index_component_type = 5125 if use_uint32 else 5123
     index_component_size = 4 if use_uint32 else 2
     for (_vert_offset, _vert_count, idx_offset, idx_count, texture_uri) in primitives_info:
-        accessor: Dict[str, object] = {
+        index_accessor: Dict[str, object] = {
             "bufferView": INDEX_BUFFER_VIEW,
             "componentType": index_component_type,
             "count": idx_count,
@@ -1143,27 +1485,236 @@ def bmd_to_glb(
 
         byte_offset = idx_offset * index_component_size
         if byte_offset:
-            accessor["byteOffset"] = byte_offset
+            index_accessor["byteOffset"] = byte_offset
 
-        index_accessor = len(accessors)
-        accessors.append(accessor)
+        index_accessor_index = len(accessors)
+        accessors.append(index_accessor)
 
-        mesh_primitives.append({
-            "attributes": {
-                "POSITION": 0,
-                "NORMAL": 1,
-                "TEXCOORD_0": 2,
-            },
-            "indices": index_accessor,
-            "material": ensure_material(texture_uri),
-        })
+        attributes: Dict[str, int] = {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2,
+        }
+        if (
+            export_skinning
+            and joint_accessor_index is not None
+            and weight_accessor_index is not None
+        ):
+            attributes["JOINTS_0"] = joint_accessor_index
+            attributes["WEIGHTS_0"] = weight_accessor_index
 
-    # Build GLTF JSON
+        mesh_primitives.append(
+            {
+                "attributes": attributes,
+                "indices": index_accessor_index,
+                "material": ensure_material(texture_uri),
+            }
+        )
+
+    nodes: List[Dict[str, object]] = [{"mesh": 0, "name": model.name}]
+    scene_nodes: List[int] = [0]
+    skins: List[Dict[str, object]] = []
+    animations: List[Dict[str, object]] = []
+
+    if export_skinning:
+        bone_node_offset = len(nodes)
+        bone_nodes: List[Dict[str, object]] = []
+
+        for bone_index, bone in enumerate(model.bones):
+            bind_pos, bind_rot = _bone_local_pose(model, bone_index, action_index=0, key_index=0)
+            translation, quaternion = _mu_local_pose_to_gltf_trs(bind_pos, bind_rot)
+
+            bone_name = bone.name.strip() if bone.name else ""
+            if not bone_name:
+                bone_name = f"Bone_{bone_index:03d}"
+
+            bone_nodes.append(
+                {
+                    "name": bone_name,
+                    "translation": [translation[0], translation[1], translation[2]],
+                    "rotation": [quaternion[0], quaternion[1], quaternion[2], quaternion[3]],
+                }
+            )
+
+        root_bones: List[int] = []
+        for child_index, bone in enumerate(model.bones):
+            parent_index = bone.parent
+            if 0 <= parent_index < model.num_bones and parent_index != child_index:
+                children = bone_nodes[parent_index].setdefault("children", [])
+                if isinstance(children, list):
+                    children.append(bone_node_offset + child_index)
+            else:
+                root_bones.append(child_index)
+
+        if not root_bones and model.num_bones > 0:
+            root_bones.append(0)
+
+        nodes.extend(bone_nodes)
+        scene_nodes.extend(bone_node_offset + root_index for root_index in root_bones)
+
+        joint_nodes = [bone_node_offset + bone_index for bone_index in range(model.num_bones)]
+
+        inverse_bind_values: List[float] = []
+        for fixup in fixups:
+            bind_global = _fixup_to_gltf_global_matrix(fixup)
+            inverse_bind = _inverse_rigid_matrix4(bind_global)
+            inverse_bind_values.extend(_matrix4_to_column_major_values(inverse_bind))
+
+        inverse_bind_data = b''.join(struct.pack('<f', value) for value in inverse_bind_values)
+        inverse_bind_view = append_binary_buffer_view(inverse_bind_data)
+        inverse_bind_accessor = len(accessors)
+        accessors.append(
+            {
+                "bufferView": inverse_bind_view,
+                "componentType": 5126,
+                "count": model.num_bones,
+                "type": "MAT4",
+            }
+        )
+
+        skin: Dict[str, object] = {
+            "joints": joint_nodes,
+            "inverseBindMatrices": inverse_bind_accessor,
+        }
+        if root_bones:
+            skin["skeleton"] = bone_node_offset + root_bones[0]
+
+        skins.append(skin)
+        nodes[0]["skin"] = 0
+
+        # Export one glTF animation per BMD action.
+        for action_index, action in enumerate(model.actions):
+            key_count = action.num_animation_keys
+            if key_count <= 0:
+                continue
+
+            time_values = [float(key) / 30.0 for key in range(key_count)]
+            time_accessor: Optional[int] = None
+
+            samplers: List[Dict[str, object]] = []
+            channels: List[Dict[str, object]] = []
+
+            for bone_index in range(model.num_bones):
+                translation_values: List[Tuple[float, float, float]] = []
+                rotation_values: List[Tuple[float, float, float, float]] = []
+
+                for key_index in range(key_count):
+                    pos_mu, rot_mu = _bone_local_pose(
+                        model,
+                        bone_index=bone_index,
+                        action_index=action_index,
+                        key_index=key_index,
+                    )
+                    translation, quaternion = _mu_local_pose_to_gltf_trs(pos_mu, rot_mu)
+                    translation_values.append(translation)
+                    rotation_values.append(quaternion)
+
+                translation_varies = _track_values_vary(translation_values)
+                rotation_varies = _track_values_vary(rotation_values)
+                if not translation_varies and not rotation_varies:
+                    continue
+
+                if time_accessor is None:
+                    time_data = b''.join(struct.pack('<f', value) for value in time_values)
+                    time_view = append_binary_buffer_view(time_data)
+                    time_accessor = len(accessors)
+                    accessors.append(
+                        {
+                            "bufferView": time_view,
+                            "componentType": 5126,
+                            "count": key_count,
+                            "type": "SCALAR",
+                            "min": [time_values[0]],
+                            "max": [time_values[-1]],
+                        }
+                    )
+
+                if translation_varies:
+                    translation_data = b''.join(
+                        struct.pack('<3f', value[0], value[1], value[2])
+                        for value in translation_values
+                    )
+                    translation_view = append_binary_buffer_view(translation_data)
+                    translation_accessor = len(accessors)
+                    accessors.append(
+                        {
+                            "bufferView": translation_view,
+                            "componentType": 5126,
+                            "count": key_count,
+                            "type": "VEC3",
+                        }
+                    )
+
+                    translation_sampler = len(samplers)
+                    samplers.append(
+                        {
+                            "input": time_accessor,
+                            "output": translation_accessor,
+                            "interpolation": "LINEAR",
+                        }
+                    )
+                    channels.append(
+                        {
+                            "sampler": translation_sampler,
+                            "target": {
+                                "node": bone_node_offset + bone_index,
+                                "path": "translation",
+                            },
+                        }
+                    )
+
+                if rotation_varies:
+                    rotation_data = b''.join(
+                        struct.pack('<4f', value[0], value[1], value[2], value[3])
+                        for value in rotation_values
+                    )
+                    rotation_view = append_binary_buffer_view(rotation_data)
+                    rotation_accessor = len(accessors)
+                    accessors.append(
+                        {
+                            "bufferView": rotation_view,
+                            "componentType": 5126,
+                            "count": key_count,
+                            "type": "VEC4",
+                        }
+                    )
+
+                    rotation_sampler = len(samplers)
+                    samplers.append(
+                        {
+                            "input": time_accessor,
+                            "output": rotation_accessor,
+                            "interpolation": "LINEAR",
+                        }
+                    )
+                    channels.append(
+                        {
+                            "sampler": rotation_sampler,
+                            "target": {
+                                "node": bone_node_offset + bone_index,
+                                "path": "rotation",
+                            },
+                        }
+                    )
+
+            if not channels:
+                continue
+
+            animation: Dict[str, object] = {
+                "name": f"Action{action_index:02d}",
+                "samplers": samplers,
+                "channels": channels,
+            }
+            if action.lock_positions:
+                animation["extras"] = {"lock_positions": True}
+            animations.append(animation)
+
+    # Build GLTF JSON.
     gltf = {
         "asset": {"version": "2.0", "generator": "mu-rust bmd_converter.py"},
         "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"mesh": 0, "name": model.name}],
+        "scenes": [{"nodes": scene_nodes}],
+        "nodes": nodes,
         "buffers": [{"byteLength": len(binary_buffer)}],
         "bufferViews": buffer_views,
         "accessors": accessors,
@@ -1173,6 +1724,10 @@ def bmd_to_glb(
         }],
     }
 
+    if skins:
+        gltf["skins"] = skins
+    if animations:
+        gltf["animations"] = animations
     if images:
         gltf["images"] = images
     if textures:
@@ -1180,26 +1735,20 @@ def bmd_to_glb(
     if materials:
         gltf["materials"] = materials
 
-    # Encode GLB
+    # Encode GLB.
     json_bytes = json.dumps(gltf, indent=2).encode('ascii')
-    # Pad JSON to 4-byte alignment with spaces
     json_pad = (4 - len(json_bytes) % 4) % 4
     json_bytes += b' ' * json_pad
 
-    # Pad binary buffer to 4-byte alignment with zeros
     bin_pad = (4 - len(binary_buffer) % 4) % 4
     binary_buffer += b'\x00' * bin_pad
 
-    # GLB header
     total_length = 12 + 8 + len(json_bytes) + 8 + len(binary_buffer)
     glb = bytearray()
-    # Header: magic + version + length
-    glb += struct.pack('<III', 0x46546C67, 2, total_length)  # "glTF", version 2
-    # JSON chunk
-    glb += struct.pack('<II', len(json_bytes), 0x4E4F534A)  # "JSON"
+    glb += struct.pack('<III', 0x46546C67, 2, total_length)
+    glb += struct.pack('<II', len(json_bytes), 0x4E4F534A)
     glb += json_bytes
-    # BIN chunk
-    glb += struct.pack('<II', len(binary_buffer), 0x004E4942)  # "BIN\0"
+    glb += struct.pack('<II', len(binary_buffer), 0x004E4942)
     glb += binary_buffer
 
     return bytes(glb)
@@ -1242,6 +1791,7 @@ def is_non_model_bmd(file_path: Path) -> bool:
 def convert_single_bmd(
     source: Path,
     output_path: Path,
+    output_root: Path,
     force: bool,
     embed_textures: bool,
     stats: ConversionStats,
@@ -1290,6 +1840,7 @@ def convert_single_bmd(
         texture_resolver = TextureResolver(
             texture_dir=output_path.parent,
             embed_textures=embed_textures,
+            fallback_root=output_root,
         )
         glb_bytes = bmd_to_glb(model, texture_resolver=texture_resolver)
     except Exception as exc:
@@ -1321,13 +1872,21 @@ def convert_single_bmd(
 def _bmd_convert_worker(
     source: Path,
     output_path: Path,
+    output_root: Path,
     force: bool,
     embed_textures: bool,
 ) -> ConversionStats:
     """Worker function for parallel BMD conversion. Returns local stats."""
     stats = ConversionStats()
     try:
-        convert_single_bmd(source, output_path, force, embed_textures, stats)
+        convert_single_bmd(
+            source,
+            output_path,
+            output_root,
+            force,
+            embed_textures,
+            stats,
+        )
     except Exception as exc:  # noqa: BLE001
         stats.failed += 1
         stats.failures.append({"source": str(source), "error": str(exc), "type": "worker"})
@@ -1384,6 +1943,28 @@ def path_matches_world_filter(path: Path, world_filter: Optional[set[int]]) -> b
     return False
 
 
+def canonicalize_output_rel_path(path: Path) -> Path:
+    parts = list(path.parts)
+    if parts and parts[0].lower() == "data":
+        parts = parts[1:]
+    if not parts:
+        return Path()
+
+    normalized: List[str] = []
+    for part in parts:
+        world_match = WORLD_DIR_PATTERN.fullmatch(part)
+        if world_match:
+            normalized.append(f"world{int(world_match.group(1))}")
+            continue
+        object_match = OBJECT_DIR_PATTERN.fullmatch(part)
+        if object_match:
+            normalized.append(f"object{int(object_match.group(1))}")
+            continue
+        normalized.append(part)
+
+    return Path(*normalized)
+
+
 def discover_bmd_files(root: Path, world_filter: Optional[set[int]] = None) -> List[Path]:
     """Discover all .bmd files under root, case-insensitive."""
     result = []
@@ -1391,7 +1972,7 @@ def discover_bmd_files(root: Path, world_filter: Optional[set[int]] = None) -> L
         for fname in filenames:
             if fname.lower().endswith('.bmd'):
                 candidate = Path(dirpath) / fname
-                rel = candidate.relative_to(root)
+                rel = canonicalize_output_rel_path(candidate.relative_to(root))
                 if not path_matches_world_filter(rel, world_filter):
                     continue
                 result.append(candidate)
@@ -1519,7 +2100,7 @@ def convert_all(
 
     if dry_run:
         for f in bmd_files:
-            rel = f.relative_to(bmd_root)
+            rel = canonicalize_output_rel_path(f.relative_to(bmd_root))
             out = output_root / rel.with_suffix('.glb')
             logging.info("[DRY-RUN] Would convert %s -> %s", f, out)
         stats.total_found = total
@@ -1528,7 +2109,7 @@ def convert_all(
     # Pre-compute (source, output) pairs
     jobs: List[Tuple[Path, Path]] = []
     for bmd_path in bmd_files:
-        rel = bmd_path.relative_to(bmd_root)
+        rel = canonicalize_output_rel_path(bmd_path.relative_to(bmd_root))
         out_path = output_root / rel.with_suffix('.glb')
         jobs.append((bmd_path, out_path))
 
@@ -1536,7 +2117,14 @@ def convert_all(
 
     if workers <= 1:
         for idx, (bmd_path, out_path) in enumerate(jobs):
-            convert_single_bmd(bmd_path, out_path, force, embed_textures, stats)
+            convert_single_bmd(
+                bmd_path,
+                out_path,
+                output_root,
+                force,
+                embed_textures,
+                stats,
+            )
 
             if (idx + 1) % 500 == 0 or (idx + 1) == total:
                 elapsed = time.time() - start_time
@@ -1556,6 +2144,7 @@ def convert_all(
                 _bmd_convert_worker,
                 [src for src, _ in jobs],
                 [dst for _, dst in jobs],
+                [output_root] * total,
                 [force] * total,
                 [embed_textures] * total,
                 chunksize=chunksize,

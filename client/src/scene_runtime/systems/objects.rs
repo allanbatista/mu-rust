@@ -166,9 +166,17 @@ fn spawn_scene_object(
         || is_renderable_model(&object_def.model, model_validation_cache)
     {
         let scene_path = normalize_scene_path(&object_def.model);
+        let animation_source = glb_asset_path_from_scene_path(&scene_path)
+            .map(|glb_asset_path| SceneObjectAnimationSource { glb_asset_path });
+        if let Some(source) = animation_source.clone() {
+            entity_cmd.insert(source);
+        }
         let scene: Handle<Scene> = asset_server.load(scene_path);
         entity_cmd.with_children(|parent| {
-            parent.spawn(SceneBundle { scene, ..default() });
+            let mut scene_entity = parent.spawn(SceneBundle { scene, ..default() });
+            if let Some(source) = animation_source.clone() {
+                scene_entity.insert(source);
+            }
         });
     } else {
         spawn_model_proxy(
@@ -475,5 +483,14 @@ fn normalize_scene_path(model_path: &str) -> String {
         format!("{model_path}#Scene0")
     } else {
         model_path.to_string()
+    }
+}
+
+fn glb_asset_path_from_scene_path(scene_path: &str) -> Option<String> {
+    let base_path = scene_path.split('#').next().unwrap_or(scene_path).trim();
+    if base_path.to_ascii_lowercase().ends_with(".glb") {
+        Some(base_path.to_string())
+    } else {
+        None
     }
 }

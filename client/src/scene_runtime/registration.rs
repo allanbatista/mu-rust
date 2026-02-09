@@ -3,9 +3,10 @@ use crate::scene_runtime::systems::{
     DebugFreeCameraController, DebugSceneStats, control_debug_free_camera,
     load_scene_runtime_assets, reset_debug_free_camera, reset_debug_scene_stats, setup_camera_tour,
     spawn_debug_free_camera_hint, spawn_debug_scene_stats_hud, spawn_dynamic_lights,
-    spawn_scene_objects_when_ready, spawn_terrain_when_ready, toggle_debug_free_camera,
-    update_boids, update_camera_tour, update_debug_free_camera_hint, update_debug_scene_stats,
-    update_dynamic_lights, update_particle_emitters,
+    spawn_runtime_sun_light, spawn_scene_objects_when_ready, spawn_terrain_when_ready,
+    start_scene_object_animations, toggle_debug_free_camera, update_boids, update_camera_tour,
+    update_debug_free_camera_hint, update_debug_scene_stats, update_dynamic_lights,
+    update_particle_emitters,
 };
 use bevy::prelude::*;
 use bevy::state::prelude::{OnEnter, States, in_state};
@@ -33,6 +34,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
         (
             spawn_terrain_when_ready,
             spawn_scene_objects_when_ready,
+            spawn_runtime_sun_light,
             setup_camera_tour,
         )
             .in_set(SceneRenderPipeline::Spawn)
@@ -40,7 +42,11 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
     )
     .add_systems(
         Update,
-        (update_boids, update_particle_emitters)
+        (
+            start_scene_object_animations,
+            update_boids,
+            update_particle_emitters,
+        )
             .in_set(SceneRenderPipeline::Simulate)
             .run_if(in_state(active_state)),
     )

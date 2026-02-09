@@ -1,3 +1,4 @@
+mod animations;
 mod asset_loaders;
 mod boids;
 mod camera;
@@ -7,6 +8,7 @@ mod objects;
 mod particles;
 mod terrain;
 
+pub use animations::*;
 pub use asset_loaders::*;
 pub use boids::*;
 pub use camera::*;

@@ -7,6 +7,7 @@ edition = "2024"
 protocol = { workspace = true }
 common = { workspace = true }
 bevy = { version = "0.14.2", default-features = false, features = [
+    "animation",
     "bevy_asset",
     "bevy_core_pipeline",
     "bevy_render",

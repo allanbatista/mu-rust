@@ -1,6 +1,6 @@
 pub use crate::scene_runtime::scene_loader::{
     CameraTourData, HeightmapData, ObjectProperties, SceneObjectDef, SceneObjectsData,
-    TerrainConfig,
+    TerrainConfig, TerrainMapData, TerrainMapSample, TerrainTextureSlotsData,
 };
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,16 @@ pub struct Terrain;
 /// Component marking a scene object
 #[derive(Component)]
 pub struct SceneObject;
+
+/// Animation metadata for scene objects spawned from GLB scenes.
+#[derive(Component, Clone)]
+pub struct SceneObjectAnimationSource {
+    pub glb_asset_path: String,
+}
+
+/// Marker to avoid re-initializing the same animation player repeatedly.
+#[derive(Component)]
+pub struct SceneObjectAnimationInitialized;
 
 // ============================================================================
 // PARTICLE COMPONENTS

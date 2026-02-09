@@ -1,5 +1,5 @@
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::pbr::{AmbientLight, DirectionalLight, DirectionalLightBundle};
+use bevy::pbr::AmbientLight;
 use bevy::prelude::*;
 use bevy::render::camera::{ClearColorConfig, PerspectiveProjection, Projection};
 use common::WorldMap;
@@ -111,18 +111,6 @@ fn setup_world_camera(mut commands: Commands) {
             ..Default::default()
         },
         tonemapping: Tonemapping::None,
-        ..Default::default()
-    });
-
-    // Directional light (sun)
-    commands.spawn(DirectionalLightBundle {
-        directional_light: DirectionalLight {
-            illuminance: 10000.0,
-            shadows_enabled: false,
-            ..Default::default()
-        },
-        transform: Transform::from_xyz(20_000.0, 6_000.0, 2_000.0)
-            .looking_at(Vec3::new(22_000.0, 170.0, 2_500.0), Vec3::Y),
         ..Default::default()
     });
 }

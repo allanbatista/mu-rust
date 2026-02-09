@@ -1,9 +1,73 @@
 use crate::scene_runtime::components::*;
+use crate::scene_runtime::state::RuntimeSceneAssets;
+use bevy::pbr::CascadeShadowConfigBuilder;
 use bevy::prelude::*;
 
 /// Marker for spawned point lights
 #[derive(Component)]
 pub struct DynamicPointLight;
+
+/// Marker for the runtime directional "sun" light.
+#[derive(Component)]
+pub struct RuntimeSunLight;
+
+/// Spawn one central sun light for the active runtime world.
+pub fn spawn_runtime_sun_light(
+    mut commands: Commands,
+    assets: Res<RuntimeSceneAssets>,
+    terrain_configs: Res<Assets<TerrainConfig>>,
+    mut ambient_light: ResMut<AmbientLight>,
+    query: Query<Entity, With<RuntimeSunLight>>,
+) {
+    if !assets.loaded || !query.is_empty() {
+        return;
+    }
+
+    let Some(world) = assets.world.as_ref() else {
+        return;
+    };
+
+    let Some(config) = terrain_configs.get(&world.terrain_config) else {
+        return;
+    };
+
+    let center_x = config.size.width as f32 * config.size.scale * 0.5;
+    let center_z = config.size.depth as f32 * config.size.scale * 0.5;
+    let target = Vec3::new(center_x, 0.0, center_z);
+    let origin = target + Vec3::new(0.0, 14_000.0, 9_000.0);
+
+    commands.spawn((
+        RuntimeSceneEntity,
+        RuntimeSunLight,
+        DirectionalLightBundle {
+            directional_light: DirectionalLight {
+                color: Color::srgb(1.0, 0.98, 0.94),
+                illuminance: 9000.0,
+                shadows_enabled: true,
+                ..default()
+            },
+            cascade_shadow_config: CascadeShadowConfigBuilder {
+                num_cascades: 2,
+                minimum_distance: 10.0,
+                maximum_distance: 8_000.0,
+                first_cascade_far_bound: 1_200.0,
+                overlap_proportion: 0.15,
+            }
+            .into(),
+            transform: Transform::from_translation(origin).looking_at(target, Vec3::Y),
+            ..default()
+        },
+    ));
+
+    // Lift shadowed areas so terrain/object shadows remain visible but not crushed to black.
+    ambient_light.color = Color::srgb(0.96, 0.97, 1.0);
+    ambient_light.brightness = 0.55;
+
+    info!(
+        "Runtime sun spawned for '{}' (center: {:.1}, {:.1})",
+        world.world_name, center_x, center_z
+    );
+}
 
 /// System to spawn point lights for dynamic light components
 pub fn spawn_dynamic_lights(

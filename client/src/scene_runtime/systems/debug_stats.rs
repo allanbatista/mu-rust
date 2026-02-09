@@ -16,15 +16,19 @@ pub struct DebugSceneStats {
     pub object_count: usize,
     pub mesh_count: usize,
     pub polygon_count: u64,
+    pub last_runtime_entity_count: usize,
+    pub last_mesh_asset_count: usize,
 }
 
 impl Default for DebugSceneStats {
     fn default() -> Self {
         Self {
-            refresh_timer: Timer::from_seconds(0.25, TimerMode::Repeating),
+            refresh_timer: Timer::from_seconds(0.75, TimerMode::Repeating),
             object_count: 0,
             mesh_count: 0,
             polygon_count: 0,
+            last_runtime_entity_count: 0,
+            last_mesh_asset_count: 0,
         }
     }
 }
@@ -68,38 +72,47 @@ pub fn update_debug_scene_stats(
 ) {
     debug_stats.refresh_timer.tick(time.delta());
     if debug_stats.refresh_timer.just_finished() {
-        let mut visited_entities = HashSet::<Entity>::new();
-        let mut stack: Vec<Entity> = login_entities.iter().collect();
-        let mut mesh_triangles_by_id = HashMap::<AssetId<Mesh>, u64>::new();
-        let mut mesh_count = 0usize;
-        let mut polygon_count = 0u64;
+        let runtime_entity_count = login_entities.iter().count();
+        let mesh_asset_count = meshes.len();
 
-        while let Some(entity) = stack.pop() {
-            if !visited_entities.insert(entity) {
-                continue;
-            }
+        if runtime_entity_count != debug_stats.last_runtime_entity_count
+            || mesh_asset_count != debug_stats.last_mesh_asset_count
+        {
+            let mut visited_entities = HashSet::<Entity>::new();
+            let mut stack: Vec<Entity> = login_entities.iter().collect();
+            let mut mesh_triangles_by_id = HashMap::<AssetId<Mesh>, u64>::new();
+            let mut mesh_count = 0usize;
+            let mut polygon_count = 0u64;
 
-            if let Ok(mesh_handle) = mesh_handles.get(entity) {
-                mesh_count += 1;
-                if let Some(mesh) = meshes.get(mesh_handle) {
-                    let mesh_id = mesh_handle.id();
-                    let triangle_count = *mesh_triangles_by_id
-                        .entry(mesh_id)
-                        .or_insert_with(|| triangles_for_mesh(mesh));
-                    polygon_count = polygon_count.saturating_add(triangle_count);
+            while let Some(entity) = stack.pop() {
+                if !visited_entities.insert(entity) {
+                    continue;
+                }
+
+                if let Ok(mesh_handle) = mesh_handles.get(entity) {
+                    mesh_count += 1;
+                    if let Some(mesh) = meshes.get(mesh_handle) {
+                        let mesh_id = mesh_handle.id();
+                        let triangle_count = *mesh_triangles_by_id
+                            .entry(mesh_id)
+                            .or_insert_with(|| triangles_for_mesh(mesh));
+                        polygon_count = polygon_count.saturating_add(triangle_count);
+                    }
+                }
+
+                if let Ok(children) = children_query.get(entity) {
+                    for child in children.iter() {
+                        stack.push(*child);
+                    }
                 }
             }
 
-            if let Ok(children) = children_query.get(entity) {
-                for child in children.iter() {
-                    stack.push(*child);
-                }
-            }
+            debug_stats.object_count = scene_objects.iter().count();
+            debug_stats.mesh_count = mesh_count;
+            debug_stats.polygon_count = polygon_count;
+            debug_stats.last_runtime_entity_count = runtime_entity_count;
+            debug_stats.last_mesh_asset_count = mesh_asset_count;
         }
-
-        debug_stats.object_count = scene_objects.iter().count();
-        debug_stats.mesh_count = mesh_count;
-        debug_stats.polygon_count = polygon_count;
     }
 
     let fps = diagnostics

@@ -19,6 +19,7 @@ pub fn load_scene_runtime_assets(
     asset_server: Res<AssetServer>,
     terrain_configs: Res<Assets<TerrainConfig>>,
     heightmaps: Res<Assets<HeightmapData>>,
+    terrain_maps: Res<Assets<TerrainMapData>>,
     scene_objects: Res<Assets<SceneObjectsData>>,
     camera_tours: Res<Assets<CameraTourData>>,
     particle_defs: Res<Assets<ParticleDefinitions>>,
@@ -32,6 +33,7 @@ pub fn load_scene_runtime_assets(
         &asset_server,
         &terrain_configs,
         &heightmaps,
+        &terrain_maps,
         &scene_objects,
         &camera_tours,
     ) else {

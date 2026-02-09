@@ -140,6 +140,25 @@ SCENE_OBJECT_FALLBACK_ENTRY_SIZES: Tuple[int, ...] = tuple(
 
 _LEGACY_OBJECT_MODEL_INDEX_CACHE: Dict[str, Dict[int, Tuple[int, ...]]] = {}
 _LEGACY_OBJECT_DIR_INDEX_CACHE: Dict[str, Tuple[int, ...]] = {}
+DEFAULT_TERRAIN_TEXTURE_SLOT_FILES: Dict[int, str] = {
+    0: "TileGrass01.png",
+    1: "TileGrass02.png",
+    2: "TileGround01.png",
+    3: "TileGround02.png",
+    4: "TileGround03.png",
+    5: "TileWater01.png",
+    6: "TileWood01.png",
+    7: "TileRock01.png",
+    8: "TileRock02.png",
+    9: "TileRock03.png",
+    10: "TileRock04.png",
+    11: "TileRock05.png",
+    12: "TileRock06.png",
+    13: "TileRock07.png",
+    30: "TileGrass01.png",
+    31: "TileGrass02.png",
+    32: "TileGrass03.png",
+}
 
 
 @dataclass
@@ -151,10 +170,14 @@ class ConversionStats:
     terrain_height_json_failed: int = 0
     terrain_map_json_emitted: int = 0
     terrain_map_json_failed: int = 0
+    terrain_map_canonical_emitted: int = 0
+    terrain_map_canonical_failed: int = 0
     terrain_att_json_emitted: int = 0
     terrain_att_json_failed: int = 0
     terrain_config_json_emitted: int = 0
     terrain_config_json_failed: int = 0
+    terrain_texture_slots_json_emitted: int = 0
+    terrain_texture_slots_json_failed: int = 0
     camera_tour_json_emitted: int = 0
     camera_tour_json_failed: int = 0
     scene_objects_json_emitted: int = 0
@@ -352,6 +375,53 @@ def path_matches_world_filter(path: Path, world_filter: Optional[set[int]]) -> b
     return False
 
 
+def canonical_world_dir_from_path(path: Path) -> Optional[Path]:
+    normalized = normalize_legacy_rel_path(path)
+    for part in normalized.parts:
+        world_match = WORLD_DIR_PATTERN.fullmatch(part.lower())
+        if world_match:
+            return Path(f"world{int(world_match.group(1))}")
+    return None
+
+
+def normalize_legacy_rel_path(path: Path) -> Path:
+    parts = list(path.parts)
+    if parts and parts[0].lower() == "data":
+        parts = parts[1:]
+    if not parts:
+        return Path()
+    return Path(*parts)
+
+
+def canonicalize_rel_path(path: Path) -> Path:
+    normalized = normalize_legacy_rel_path(path)
+    parts = list(normalized.parts)
+    for index, part in enumerate(parts):
+        world_match = WORLD_DIR_PATTERN.fullmatch(part.lower())
+        if world_match:
+            world_part = f"world{int(world_match.group(1))}"
+            tail = parts[index + 1 :]
+            if not tail:
+                return Path(world_part)
+            return Path(world_part).joinpath(*tail)
+    return normalized
+
+
+def find_world_dir_in_root(root: Path, world_number: int) -> Optional[Path]:
+    world_name = f"world{world_number}"
+    direct = find_case_insensitive_child_dir(root, world_name)
+    if direct is not None:
+        return direct
+
+    nested_data = find_case_insensitive_child_dir(root, "data")
+    if nested_data is not None:
+        nested = find_case_insensitive_child_dir(nested_data, world_name)
+        if nested is not None:
+            return nested
+
+    return None
+
+
 def ensure_dir(path: Path, dry_run: bool) -> None:
     if dry_run:
         return
@@ -366,7 +436,7 @@ def prepare_model_jobs(
     for src in legacy_root.rglob("*.bmd"):
         if not src.is_file():
             continue
-        rel = src.relative_to(legacy_root)
+        rel = canonicalize_rel_path(src.relative_to(legacy_root))
         if not path_matches_world_filter(rel, world_filter):
             continue
         dst = output_root / "models" / rel
@@ -482,7 +552,7 @@ def discover_textures(
     for path in legacy_root.rglob("*"):
         if not path.is_file():
             continue
-        rel = path.relative_to(legacy_root)
+        rel = canonicalize_rel_path(path.relative_to(legacy_root))
         if not path_matches_world_filter(rel, world_filter):
             continue
         ext = path.suffix.lower()
@@ -503,8 +573,9 @@ def select_texture_sources(legacy_root: Path, textures: Iterable[Path]) -> List[
     skipped_duplicates = 0
 
     for texture in textures:
-        rel = texture.relative_to(legacy_root)
-        key = (rel.parent, texture.stem.lower())
+        rel = canonicalize_rel_path(texture.relative_to(legacy_root))
+        canonical_rel = canonicalize_rel_path(rel)
+        key = (canonical_rel.parent, texture.stem.lower())
         current = selected.get(key)
         if current is None:
             selected[key] = texture
@@ -525,7 +596,7 @@ def select_texture_sources(legacy_root: Path, textures: Iterable[Path]) -> List[
     return sorted(
         selected.values(),
         key=lambda path: (
-            str(path.relative_to(legacy_root).parent).lower(),
+            str(canonicalize_rel_path(path.relative_to(legacy_root)).parent).lower(),
             path.stem.lower(),
             texture_priority(path),
             path.name.lower(),
@@ -709,8 +780,10 @@ def emit_terrain_height_json(
     dry_run: bool,
     stats: ConversionStats,
 ) -> None:
-    rel = source.relative_to(legacy_root)
-    target = output_root / rel.parent / "terrain_height.json"
+    rel = canonicalize_rel_path(source.relative_to(legacy_root))
+    world_dir = canonical_world_dir_from_path(rel)
+    target_parent = world_dir if world_dir is not None else rel.parent
+    target = output_root / target_parent / "terrain_height.json"
     height_multiplier = infer_height_multiplier(source)
 
     effective_bpp = 8
@@ -1102,8 +1175,10 @@ def emit_terrain_map_json(
     force: bool,
     stats: ConversionStats,
 ) -> None:
-    rel = source.relative_to(legacy_root)
-    target = output_root / rel.parent / f"{source.name}.json"
+    rel = canonicalize_rel_path(source.relative_to(legacy_root))
+    world_dir = canonical_world_dir_from_path(rel)
+    target_parent = world_dir if world_dir is not None else rel.parent
+    target = output_root / target_parent / f"{source.name}.json"
 
     if target.exists() and not force:
         return
@@ -1178,8 +1253,10 @@ def emit_terrain_attribute_json(
     force: bool,
     stats: ConversionStats,
 ) -> None:
-    rel = source.relative_to(legacy_root)
-    target = output_root / rel.parent / f"{source.stem}.json"
+    rel = canonicalize_rel_path(source.relative_to(legacy_root))
+    world_dir = canonical_world_dir_from_path(rel)
+    target_parent = world_dir if world_dir is not None else rel.parent
+    target = output_root / target_parent / f"{source.stem}.json"
 
     if target.exists() and not force:
         return
@@ -1329,9 +1406,11 @@ def emit_camera_tour_json(
     force: bool,
     stats: ConversionStats,
 ) -> None:
-    rel = source.relative_to(legacy_root)
-    raw_target = output_root / rel.parent / f"{source.name}.json"
-    normalized_target = output_root / rel.parent / "camera_tour.json"
+    rel = canonicalize_rel_path(source.relative_to(legacy_root))
+    world_dir = canonical_world_dir_from_path(rel)
+    target_parent = world_dir if world_dir is not None else rel.parent
+    raw_target = output_root / target_parent / f"{source.name}.json"
+    normalized_target = output_root / target_parent / "camera_tour.json"
 
     if (
         raw_target.exists()
@@ -1585,8 +1664,10 @@ def emit_scene_objects_json(
     stats: ConversionStats,
     optional: bool = False,
 ) -> None:
-    rel = source.relative_to(legacy_root)
-    target = output_root / rel.parent / "scene_objects.json"
+    rel = canonicalize_rel_path(source.relative_to(legacy_root))
+    world_dir = canonical_world_dir_from_path(rel)
+    target_parent = world_dir if world_dir is not None else rel.parent
+    target = output_root / target_parent / "scene_objects.json"
 
     if target.exists() and not force:
         return
@@ -1710,6 +1791,174 @@ def parse_world_number(world_dir: Path) -> Optional[int]:
     if not match:
         return None
     return int(match.group(1))
+
+
+def _snake_case_name(stem: str) -> str:
+    out: List[str] = []
+    for index, ch in enumerate(stem):
+        if ch.isupper():
+            if index != 0:
+                out.append("_")
+            out.append(ch.lower())
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _terrain_map_candidate_score(file_name: str, world_number: int) -> int:
+    name = file_name.lower()
+    if name in {
+        f"enc_terrain{world_number}.map.json",
+        f"encterrain{world_number}.map.json",
+    }:
+        return 300
+    if name == f"terrain{world_number}.map.json":
+        return 250
+    if name == "terrain.map.json":
+        return 200
+    if name.endswith(".map.json"):
+        return 100
+    return -1
+
+
+def emit_canonical_terrain_map(
+    world_dir: Path,
+    output_root: Path,
+    dry_run: bool,
+    force: bool,
+    stats: ConversionStats,
+) -> None:
+    world_number = parse_world_number(world_dir)
+    if world_number is None:
+        return
+
+    world_output_dir = output_root / world_dir
+    if not world_output_dir.exists():
+        return
+
+    target = world_output_dir / "terrain_map.json"
+    if target.exists() and not force:
+        return
+
+    candidates: List[Tuple[int, str, Path]] = []
+    try:
+        for child in world_output_dir.iterdir():
+            if not child.is_file():
+                continue
+            score = _terrain_map_candidate_score(child.name, world_number)
+            if score < 0 or child.name.lower() == "terrain_map.json":
+                continue
+            candidates.append((score, child.name.lower(), child))
+    except Exception as exc:  # noqa: BLE001
+        stats.terrain_map_canonical_failed += 1
+        stats.failures.append(f"{world_output_dir} -> terrain_map.json: {exc}")
+        logging.error("Failed to scan terrain map candidates for %s: %s", world_dir, exc)
+        return
+
+    if not candidates:
+        logging.warning("No terrain map source found for %s; terrain_map.json not emitted.", world_dir)
+        return
+
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    source = candidates[0][2]
+
+    if dry_run:
+        logging.info("[dry-run][terrain-map-canonical] %s -> %s", source, target)
+        return
+
+    try:
+        ensure_dir(target.parent, dry_run=False)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        stats.terrain_map_canonical_failed += 1
+        stats.failures.append(f"{source} -> {target}: {exc}")
+        logging.error("Failed to emit canonical terrain map for %s: %s", world_dir, exc)
+        return
+
+    stats.terrain_map_canonical_emitted += 1
+    logging.debug("Emitted canonical terrain map %s -> %s", source, target)
+
+
+def _world_texture_candidates(slot_texture_name: str) -> List[str]:
+    base = Path(slot_texture_name).stem
+    ext = Path(slot_texture_name).suffix or ".png"
+    lower = base.lower()
+    snake = _snake_case_name(base)
+    return [
+        f"{base}{ext}",
+        f"{snake}{ext}",
+        f"{lower}{ext}",
+    ]
+
+
+def emit_terrain_texture_slots_json(
+    world_dir: Path,
+    output_root: Path,
+    dry_run: bool,
+    force: bool,
+    stats: ConversionStats,
+) -> None:
+    world_number = parse_world_number(world_dir)
+    if world_number is None:
+        return
+
+    world_output_dir = output_root / world_dir
+    if not world_output_dir.exists():
+        return
+
+    target = world_output_dir / "terrain_texture_slots.json"
+    if target.exists() and not force:
+        return
+
+    slots: Dict[int, str] = {}
+
+    for slot_index, slot_file in DEFAULT_TERRAIN_TEXTURE_SLOT_FILES.items():
+        for candidate in _world_texture_candidates(slot_file):
+            found = find_case_insensitive_file(world_output_dir, candidate)
+            if found is None:
+                continue
+            slots[slot_index] = f"data/{world_dir.name}/{found.name}"
+            break
+
+    for ext_index in range(1, 17):
+        slot_index = 13 + ext_index
+        ext_candidates = [
+            f"ExtTile{ext_index:02}.png",
+            f"ext_tile{ext_index:02}.png",
+            f"exttile{ext_index:02}.png",
+        ]
+        for candidate in ext_candidates:
+            found = find_case_insensitive_file(world_output_dir, candidate)
+            if found is None:
+                continue
+            slots[slot_index] = f"data/{world_dir.name}/{found.name}"
+            break
+
+    payload = {
+        "world": world_number,
+        "slots": slots,
+        "metadata": {
+            "generated": True,
+            "generator": "assets_convert.py",
+            "source": "muclient5.2_tile_slot_defaults",
+        },
+    }
+
+    if dry_run:
+        logging.info("[dry-run][terrain-slots] %s -> %s", world_dir, target)
+        return
+
+    try:
+        ensure_dir(target.parent, dry_run=False)
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        stats.terrain_texture_slots_json_failed += 1
+        stats.failures.append(f"{world_dir} -> {target}: {exc}")
+        logging.error("Failed to emit terrain texture slots for %s: %s", world_dir, exc)
+        return
+
+    stats.terrain_texture_slots_json_emitted += 1
+    logging.debug("Emitted terrain texture slots %s", target)
 
 
 def object_model_index(model_path: str) -> Optional[int]:
@@ -1935,7 +2184,12 @@ def estimate_world_anchor(
     world_dir: Path,
     world_number: int,
 ) -> Tuple[float, float, float]:
-    camera_script = legacy_root / world_dir / f"cw_script{world_number}.cws"
+    world_root = legacy_root / world_dir
+    if not world_root.exists():
+        fallback_root = find_world_dir_in_root(legacy_root, world_number)
+        if fallback_root is not None:
+            world_root = fallback_root
+    camera_script = world_root / f"cw_script{world_number}.cws"
     if camera_script.exists():
         try:
             waypoints = parse_camera_script(camera_script.read_bytes())
@@ -2329,8 +2583,9 @@ def handle_texture(
     ext = source.suffix.lower()
     spec = IMAGE_SPECS[ext]
 
-    rel = source.relative_to(legacy_root)
-    target_dir = output_root / rel.parent
+    rel = canonicalize_rel_path(source.relative_to(legacy_root))
+    canonical_rel = canonicalize_rel_path(rel)
+    target_dir = output_root / canonical_rel.parent
     target = target_dir / f"{source.stem}.png"
 
     if target.exists() and not force:
@@ -2484,11 +2739,11 @@ def _other_asset_worker(
     stats = ConversionStats()
     result = OtherAssetResult(stats=stats)
     ext = path.suffix.lower()
-    rel = path.relative_to(legacy_root)
-
-    world_match = WORLD_DIR_PATTERN.match(rel.parent.name.lower())
-    if world_match:
-        result.world_dir = rel.parent
+    rel = canonicalize_rel_path(path.relative_to(legacy_root))
+    canonical_world_dir = canonical_world_dir_from_path(rel)
+    if canonical_world_dir is not None:
+        result.world_dir = canonical_world_dir
+    sidecar_parent = result.world_dir if result.world_dir is not None else rel.parent
 
     try:
         if ext in sidecar_only_extensions:
@@ -2501,11 +2756,11 @@ def _other_asset_worker(
                 stats=stats,
             )
             if is_scene_objects_asset(path):
-                scene_sidecar = output_root / rel.parent / "scene_objects.json"
+                scene_sidecar = output_root / sidecar_parent / "scene_objects.json"
                 if scene_sidecar.exists() and not sidecar_is_generated_placeholder(scene_sidecar):
                     result.has_scene_objects = True
             if is_camera_script_asset(path):
-                camera_sidecar = output_root / rel.parent / "camera_tour.json"
+                camera_sidecar = output_root / sidecar_parent / "camera_tour.json"
                 if camera_sidecar.exists() and not sidecar_is_generated_placeholder(camera_sidecar):
                     result.has_camera_tour = True
             return result
@@ -2513,7 +2768,7 @@ def _other_asset_worker(
         if ext not in allow_copy_extensions:
             return result
 
-        target = output_root / rel
+        target = output_root / canonicalize_rel_path(rel)
 
         if target.exists() and not force and not dry_run:
             stats.others_skipped += 1
@@ -2535,11 +2790,11 @@ def _other_asset_worker(
             stats=stats,
         )
         if is_scene_objects_asset(path):
-            scene_sidecar = output_root / rel.parent / "scene_objects.json"
+            scene_sidecar = output_root / sidecar_parent / "scene_objects.json"
             if scene_sidecar.exists() and not sidecar_is_generated_placeholder(scene_sidecar):
                 result.has_scene_objects = True
         if is_camera_script_asset(path):
-            camera_sidecar = output_root / rel.parent / "camera_tour.json"
+            camera_sidecar = output_root / sidecar_parent / "camera_tour.json"
             if camera_sidecar.exists() and not sidecar_is_generated_placeholder(camera_sidecar):
                 result.has_camera_tour = True
     except Exception as exc:  # noqa: BLE001
@@ -2585,13 +2840,10 @@ def copy_other_assets(
 
     if world_filter:
         for world_number in sorted(world_filter):
-            world_dir = find_case_insensitive_child_dir(legacy_root, f"world{world_number}")
+            world_dir = find_world_dir_in_root(legacy_root, world_number)
             if world_dir is None:
                 continue
-            try:
-                world_dirs_seen.add(world_dir.relative_to(legacy_root))
-            except ValueError:
-                continue
+            world_dirs_seen.add(Path(f"world{world_number}"))
 
     # --- Phase 3a: Collect eligible files, then process in parallel ---
     eligible_files: List[Path] = []
@@ -2605,13 +2857,13 @@ def copy_other_assets(
         if resolved in processed_set:
             continue
 
-        rel = path.relative_to(legacy_root)
+        rel = canonicalize_rel_path(path.relative_to(legacy_root))
         if not path_matches_world_filter(rel, world_filter):
             continue
 
-        world_match = WORLD_DIR_PATTERN.match(rel.parent.name.lower())
-        if world_match:
-            world_dirs_seen.add(rel.parent)
+        world_dir = canonical_world_dir_from_path(rel)
+        if world_dir is not None:
+            world_dirs_seen.add(world_dir)
 
         if ext in SIDECAR_ONLY_EXTENSIONS or ext in ALLOW_COPY_EXTENSIONS:
             eligible_files.append(path)
@@ -2662,7 +2914,7 @@ def copy_other_assets(
             continue
 
         for fallback_root in fallback_roots:
-            fallback_world_dir = find_case_insensitive_child_dir(fallback_root, world_dir.name)
+            fallback_world_dir = find_world_dir_in_root(fallback_root, world_number)
             if fallback_world_dir is None:
                 continue
 
@@ -2735,12 +2987,26 @@ def copy_other_assets(
                 stats=stats,
             )
 
-        if world_dir in world_dirs_with_scene_objects:
-            continue
-        emit_empty_scene_objects(
+        if world_dir not in world_dirs_with_scene_objects:
+            emit_empty_scene_objects(
+                world_dir=world_dir,
+                output_root=output_root,
+                legacy_root=legacy_root,
+                dry_run=dry_run,
+                force=force,
+                stats=stats,
+            )
+
+        emit_canonical_terrain_map(
             world_dir=world_dir,
             output_root=output_root,
-            legacy_root=legacy_root,
+            dry_run=dry_run,
+            force=force,
+            stats=stats,
+        )
+        emit_terrain_texture_slots_json(
+            world_dir=world_dir,
+            output_root=output_root,
             dry_run=dry_run,
             force=force,
             stats=stats,
@@ -2925,10 +3191,14 @@ def main(argv: Sequence[str]) -> int:
                 "terrain_height_json_failed": stats.terrain_height_json_failed,
                 "terrain_map_json_emitted": stats.terrain_map_json_emitted,
                 "terrain_map_json_failed": stats.terrain_map_json_failed,
+                "terrain_map_canonical_emitted": stats.terrain_map_canonical_emitted,
+                "terrain_map_canonical_failed": stats.terrain_map_canonical_failed,
                 "terrain_att_json_emitted": stats.terrain_att_json_emitted,
                 "terrain_att_json_failed": stats.terrain_att_json_failed,
                 "terrain_config_json_emitted": stats.terrain_config_json_emitted,
                 "terrain_config_json_failed": stats.terrain_config_json_failed,
+                "terrain_texture_slots_json_emitted": stats.terrain_texture_slots_json_emitted,
+                "terrain_texture_slots_json_failed": stats.terrain_texture_slots_json_failed,
                 "camera_tour_json_emitted": stats.camera_tour_json_emitted,
                 "camera_tour_json_failed": stats.camera_tour_json_failed,
                 "scene_objects_json_emitted": stats.scene_objects_json_emitted,
@@ -2962,8 +3232,10 @@ def main(argv: Sequence[str]) -> int:
         "Textures: %d ok / %d skipped / %d failed | "
         "TerrainHeight JSON: %d emitted / %d failed | "
         "TerrainMap JSON: %d emitted / %d failed | "
+        "TerrainMap Canonical: %d emitted / %d failed | "
         "TerrainAtt JSON: %d emitted / %d failed | "
         "TerrainConfig JSON: %d emitted / %d failed | "
+        "TerrainSlots JSON: %d emitted / %d failed | "
         "CameraTour JSON: %d emitted / %d failed | "
         "SceneObjects JSON: %d emitted / %d failed | "
         "Others: %d copied / %d skipped / %d failed",
@@ -2977,10 +3249,14 @@ def main(argv: Sequence[str]) -> int:
         stats.terrain_height_json_failed,
         stats.terrain_map_json_emitted,
         stats.terrain_map_json_failed,
+        stats.terrain_map_canonical_emitted,
+        stats.terrain_map_canonical_failed,
         stats.terrain_att_json_emitted,
         stats.terrain_att_json_failed,
         stats.terrain_config_json_emitted,
         stats.terrain_config_json_failed,
+        stats.terrain_texture_slots_json_emitted,
+        stats.terrain_texture_slots_json_failed,
         stats.camera_tour_json_emitted,
         stats.camera_tour_json_failed,
         stats.scene_objects_json_emitted,
