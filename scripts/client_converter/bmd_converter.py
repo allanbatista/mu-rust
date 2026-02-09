@@ -39,6 +39,21 @@ from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+def _png_has_alpha(png_bytes: bytes) -> bool:
+    """Check if a PNG payload has meaningful (non-opaque) alpha pixels."""
+    try:
+        import io
+        from PIL import Image
+        img = Image.open(io.BytesIO(png_bytes))
+        if img.mode not in ("RGBA", "LA", "PA"):
+            return False
+        alpha = img.getchannel("A")
+        extrema = alpha.getextrema()
+        return extrema[0] < 255
+    except Exception:
+        return False
+
+
 class BmdParseError(Exception):
     pass
 
@@ -1221,8 +1236,7 @@ def bmd_to_glb(
 
                 mesh_positions.append(_swizzle_mu_to_gltf(world_pos))
                 mesh_normals.append(vector_normalize(_swizzle_mu_to_gltf(world_norm)))
-                # UV flip: v_gltf = 1.0 - v_bmd (reference: BMD_SMD.cpp:755).
-                mesh_texcoords.append((tc.u, 1.0 - tc.v))
+                mesh_texcoords.append((tc.u, tc.v))
 
                 if export_skinning:
                     joint_index = vnode if 0 <= vnode < model.num_bones else 0
@@ -1466,6 +1480,11 @@ def bmd_to_glb(
             pbr = material["pbrMetallicRoughness"]
             if isinstance(pbr, dict):
                 pbr["baseColorTexture"] = {"index": texture_index}
+
+            if embedded_payload is not None and _png_has_alpha(embedded_payload):
+                material["alphaMode"] = "MASK"
+                material["alphaCutoff"] = 0.5
+                material["doubleSided"] = True
 
         material_index = len(materials)
         materials.append(material)
@@ -1767,7 +1786,7 @@ class ConversionStats:
     skipped_existing: int = 0
     skipped_corrupt: int = 0
     pruned_embedded_pngs: int = 0
-    kept_pngs_with_external_refs: int = 0
+    kept_pngs_not_embedded: int = 0
     failed: int = 0
     failures: List[Dict] = field(default_factory=list)
 
@@ -2026,29 +2045,45 @@ def _external_png_uris_from_glb(path: Path) -> set[str]:
     return uris
 
 
+def _embedded_png_names_from_glb(path: Path) -> set[str]:
+    """Extract names of embedded (non-external) PNG images from a GLB."""
+    payload = _read_glb_json_chunk(path)
+    images = payload.get("images")
+    if not isinstance(images, list):
+        return set()
+    names: set[str] = set()
+    for image in images:
+        if not isinstance(image, dict):
+            continue
+        if "bufferView" not in image:
+            continue
+        name = image.get("name")
+        if isinstance(name, str) and name:
+            names.add(Path(name).name.lower())
+    return names
+
+
 def prune_embedded_texture_pngs(
     model_dirs: List[Path],
     dry_run: bool,
 ) -> Tuple[int, int]:
-    """Remove redundant PNGs in object dirs when GLBs are self-contained."""
+    """Remove PNGs that are confirmed embedded in GLBs."""
     pruned = 0
-    kept_external = 0
+    kept = 0
 
     for model_dir in sorted(set(model_dirs)):
         if not model_dir.exists() or not model_dir.is_dir():
-            continue
-        if OBJECT_DIR_PATTERN.fullmatch(model_dir.name) is None:
             continue
 
         glb_files = sorted(model_dir.glob("*.glb"))
         if not glb_files:
             continue
 
-        external_refs: set[str] = set()
+        embedded_refs: set[str] = set()
         parse_failed = False
         for glb_path in glb_files:
             try:
-                external_refs.update(_external_png_uris_from_glb(glb_path))
+                embedded_refs.update(_embedded_png_names_from_glb(glb_path))
             except Exception as exc:  # noqa: BLE001
                 logging.warning(
                     "Skipping PNG prune in %s due to unreadable GLB %s (%s)",
@@ -2062,8 +2097,8 @@ def prune_embedded_texture_pngs(
             continue
 
         for png_path in sorted(model_dir.glob("*.png")):
-            if png_path.name.lower() in external_refs:
-                kept_external += 1
+            if png_path.name.lower() not in embedded_refs:
+                kept += 1
                 continue
             if dry_run:
                 logging.info("[DRY-RUN] Would prune embedded texture PNG: %s", png_path)
@@ -2075,7 +2110,7 @@ def prune_embedded_texture_pngs(
             except OSError as exc:
                 logging.warning("Failed to prune PNG %s: %s", png_path, exc)
 
-    return pruned, kept_external
+    return pruned, kept
 
 
 def convert_all(
@@ -2174,16 +2209,16 @@ def convert_all(
 
     if embed_textures and prune_embedded_textures:
         touched_dirs = [out.parent for _, out in jobs]
-        pruned, kept_external = prune_embedded_texture_pngs(
+        pruned, kept = prune_embedded_texture_pngs(
             model_dirs=touched_dirs,
             dry_run=dry_run,
         )
         stats.pruned_embedded_pngs += pruned
-        stats.kept_pngs_with_external_refs += kept_external
+        stats.kept_pngs_not_embedded += kept
         logging.info(
-            "Embedded-texture cleanup: %d PNGs pruned, %d kept (still externally referenced)",
+            "Embedded-texture cleanup: %d PNGs pruned, %d kept (not embedded in any GLB)",
             pruned,
-            kept_external,
+            kept,
         )
 
     if report_path:
@@ -2199,7 +2234,7 @@ def convert_all(
             "skipped_existing": stats.skipped_existing,
             "skipped_corrupt": stats.skipped_corrupt,
             "pruned_embedded_pngs": stats.pruned_embedded_pngs,
-            "kept_pngs_with_external_refs": stats.kept_pngs_with_external_refs,
+            "kept_pngs_not_embedded": stats.kept_pngs_not_embedded,
             "failed": stats.failed,
             "failures": stats.failures,
         }

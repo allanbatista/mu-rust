@@ -11,6 +11,7 @@ const TERRAIN_MAP_FILE: &str = "terrain_map.json";
 const TERRAIN_TEXTURE_SLOTS_FILE: &str = "terrain_texture_slots.json";
 const SCENE_OBJECTS_FILE: &str = "scene_objects.json";
 const CAMERA_TOUR_FILE: &str = "camera_tour.json";
+const SCENE_OBJECTS_FILE_OVERRIDE_ENV: &str = "MU_SCENE_OBJECTS_FILE";
 
 #[derive(Asset, TypePath, Serialize, Deserialize, Clone, Debug)]
 pub struct TerrainConfig {
@@ -180,6 +181,7 @@ pub struct SceneObjectDef {
 pub struct ObjectProperties {
     pub model_renderable: Option<bool>,
     pub model_validation_reason: Option<String>,
+    pub animation_speed: Option<f32>,
     pub particle_emitter: Option<String>,
     pub light_color: Option<[f32; 3]>,
     pub light_intensity: Option<f32>,
@@ -487,6 +489,14 @@ impl SceneLoader {
             .strip_prefix("world")
             .and_then(|value| value.parse::<u32>().ok());
 
+        let scene_objects_path = scene_objects_asset_path(world_name);
+        if scene_objects_path != world_asset_path(world_name, SCENE_OBJECTS_FILE) {
+            info!(
+                "Using scene object override for {world_name}: {}={}",
+                SCENE_OBJECTS_FILE_OVERRIDE_ENV, scene_objects_path
+            );
+        }
+
         let world = LoadedSceneWorld {
             world_name: world_name.to_string(),
             terrain_config: asset_server.load(world_asset_path(world_name, TERRAIN_CONFIG_FILE)),
@@ -501,7 +511,7 @@ impl SceneLoader {
             terrain_texture_slots: Some(
                 asset_server.load(world_asset_path(world_name, TERRAIN_TEXTURE_SLOTS_FILE)),
             ),
-            scene_objects: asset_server.load(world_asset_path(world_name, SCENE_OBJECTS_FILE)),
+            scene_objects: asset_server.load(scene_objects_path),
             camera_tour: asset_server.load(world_asset_path(world_name, CAMERA_TOUR_FILE)),
         };
 
@@ -535,6 +545,24 @@ pub fn normalize_world_name(raw_world_name: &str) -> String {
 
 fn world_asset_path(world_name: &str, file_name: &str) -> String {
     format!("data/{world_name}/{file_name}")
+}
+
+fn scene_objects_asset_path(world_name: &str) -> String {
+    let default_path = world_asset_path(world_name, SCENE_OBJECTS_FILE);
+    let Ok(raw_override) = std::env::var(SCENE_OBJECTS_FILE_OVERRIDE_ENV) else {
+        return default_path;
+    };
+
+    let override_path = raw_override.trim();
+    if override_path.is_empty() {
+        return default_path;
+    }
+
+    if override_path.contains('/') || override_path.contains('\\') {
+        override_path.replace('\\', "/")
+    } else {
+        world_asset_path(world_name, override_path)
+    }
 }
 
 pub struct SceneLoaderPlugin;

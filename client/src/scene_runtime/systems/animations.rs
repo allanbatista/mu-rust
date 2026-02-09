@@ -67,6 +67,7 @@ pub fn start_scene_object_animations(
                 let mut transitions = AnimationTransitions::new();
                 transitions
                     .play(&mut player, first_clip, Duration::ZERO)
+                    .set_speed(source.playback_speed.max(0.001))
                     .repeat();
 
                 commands.entity(player_entity).insert((

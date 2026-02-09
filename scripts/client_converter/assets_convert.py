@@ -71,16 +71,16 @@ IMAGE_SPECS: Dict[str, Dict[str, object]] = {
 }
 
 TEXTURE_EXT_PRIORITY: Dict[str, int] = {
-    ".ozj": 0,
-    ".ozj2": 0,
-    ".jpg": 1,
-    ".jpeg": 1,
+    ".ozt": 0,
+    ".tga": 1,
     ".png": 2,
-    ".bmp": 3,
-    ".tga": 4,
-    ".ozt": 5,
-    ".ozb": 6,
-    ".ozp": 7,
+    ".ozp": 3,
+    ".ozj": 4,
+    ".ozj2": 4,
+    ".jpg": 5,
+    ".jpeg": 5,
+    ".bmp": 6,
+    ".ozb": 7,
 }
 
 TERRAIN_HEIGHT_STEMS = {"terrainheight", "terrain_height"}

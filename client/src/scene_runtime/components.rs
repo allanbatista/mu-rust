@@ -29,6 +29,7 @@ pub struct SceneObject;
 #[derive(Component, Clone)]
 pub struct SceneObjectAnimationSource {
     pub glb_asset_path: String,
+    pub playback_speed: f32,
 }
 
 /// Marker to avoid re-initializing the same animation player repeatedly.

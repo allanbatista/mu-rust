@@ -10,6 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+const DEFAULT_SCENE_OBJECT_ANIMATION_SPEED: f32 = 0.16;
+const DEFAULT_NPC_MONSTER_ANIMATION_SPEED: f32 = 0.25;
+
 /// Marker component to track if scene objects have been spawned
 #[derive(Component)]
 pub struct SceneObjectsSpawned;
@@ -166,8 +169,14 @@ fn spawn_scene_object(
         || is_renderable_model(&object_def.model, model_validation_cache)
     {
         let scene_path = normalize_scene_path(&object_def.model);
-        let animation_source = glb_asset_path_from_scene_path(&scene_path)
-            .map(|glb_asset_path| SceneObjectAnimationSource { glb_asset_path });
+        let animation_speed =
+            scene_object_animation_speed(&object_def.model, object_def.properties.animation_speed);
+        let animation_source = glb_asset_path_from_scene_path(&scene_path).map(|glb_asset_path| {
+            SceneObjectAnimationSource {
+                glb_asset_path,
+                playback_speed: animation_speed,
+            }
+        });
         if let Some(source) = animation_source.clone() {
             entity_cmd.insert(source);
         }
@@ -209,6 +218,21 @@ fn spawn_scene_object(
     if object_def.object_type == 62 {
         spawn_boid(commands, object_def);
     }
+}
+
+fn scene_object_animation_speed(model_path: &str, configured_speed: Option<f32>) -> f32 {
+    if let Some(speed) = configured_speed {
+        if speed.is_finite() && speed > 0.0 {
+            return speed;
+        }
+    }
+
+    let normalized = model_path.to_ascii_lowercase();
+    if normalized.contains("/monster") || normalized.contains("/npc") {
+        return DEFAULT_NPC_MONSTER_ANIMATION_SPEED;
+    }
+
+    DEFAULT_SCENE_OBJECT_ANIMATION_SPEED
 }
 
 fn is_renderable_model(model_path: &str, cache: &mut ModelValidationCache) -> bool {
