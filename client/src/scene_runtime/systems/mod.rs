@@ -1,6 +1,7 @@
 mod animations;
 mod asset_loaders;
 mod boids;
+mod boundary_walls;
 mod camera;
 mod debug_stats;
 mod frame_limiter;
@@ -16,6 +17,7 @@ mod vfx;
 pub use animations::*;
 pub use asset_loaders::*;
 pub use boids::*;
+pub use boundary_walls::*;
 pub use camera::*;
 pub use debug_stats::*;
 pub use frame_limiter::*;

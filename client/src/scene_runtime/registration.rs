@@ -12,11 +12,11 @@ use crate::scene_runtime::systems::{
     cycle_debug_shadow_quality, ensure_particle_render_batches,
     ensure_scene_object_animation_players, handle_window_occlusion, load_scene_runtime_assets,
     reset_debug_free_camera, reset_debug_overlay_state, reset_debug_scene_stats, setup_camera_tour,
-    spawn_debug_free_camera_hint, spawn_debug_scene_stats_hud, spawn_dynamic_lights,
-    spawn_runtime_sun_light, spawn_scene_objects_when_ready, spawn_skybox_when_ready,
-    spawn_terrain_grass_when_ready, spawn_terrain_when_ready, toggle_debug_free_camera,
-    toggle_debug_overlay_shortcut, toggle_offscreen_scene_animations, update_boids,
-    update_camera_tour, update_debug_free_camera_hint, update_debug_scene_stats,
+    spawn_boundary_walls_when_ready, spawn_debug_free_camera_hint, spawn_debug_scene_stats_hud,
+    spawn_dynamic_lights, spawn_runtime_sun_light, spawn_scene_objects_when_ready,
+    spawn_skybox_when_ready, spawn_terrain_grass_when_ready, spawn_terrain_when_ready,
+    toggle_debug_free_camera, toggle_debug_overlay_shortcut, toggle_offscreen_scene_animations,
+    update_boids, update_camera_tour, update_debug_free_camera_hint, update_debug_scene_stats,
     update_dynamic_lights, update_map_vfx_billboard_sprites, update_particle_emitters,
     update_particle_render_batches,
 };
@@ -55,6 +55,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
                 spawn_scene_objects_when_ready,
                 spawn_skybox_when_ready,
                 spawn_runtime_sun_light,
+                spawn_boundary_walls_when_ready,
                 setup_camera_tour,
             )
                 .in_set(SceneRenderPipeline::Spawn)

@@ -141,6 +141,51 @@ SCENE_OBJECT_FALLBACK_ENTRY_SIZES: Tuple[int, ...] = tuple(
 
 _LEGACY_OBJECT_MODEL_INDEX_CACHE: Dict[str, Dict[int, Tuple[int, ...]]] = {}
 _LEGACY_OBJECT_DIR_INDEX_CACHE: Dict[str, Tuple[int, ...]] = {}
+_WORLD1_NAMED_MODEL_MAP_CACHE: Optional[Dict[int, str]] = None
+
+# World 1 (Lorencia) does not follow ObjectXX naming.
+# Canonical source: MuClient5.2 MapManager.cpp WorldActive==0 block.
+WORLD1_NAMED_MODEL_GROUPS: Tuple[Tuple[int, int, str, int], ...] = (
+    (0, 13, "Tree", 1),
+    (20, 8, "Grass", 1),
+    (30, 5, "Stone", 1),
+    (40, 3, "StoneStatue", 1),
+    (43, 1, "SteelStatue", 1),
+    (44, 3, "Tomb", 1),
+    (50, 2, "FireLight", 1),
+    (52, 1, "Bonfire", 1),
+    (55, 1, "DoungeonGate", 1),
+    (56, 2, "MerchantAnimal", 1),
+    (58, 1, "TreasureDrum", 1),
+    (59, 1, "TreasureChest", 1),
+    (60, 1, "Ship", 1),
+    (65, 3, "SteelWall", 1),
+    (68, 1, "SteelDoor", 1),
+    (69, 6, "StoneWall", 1),
+    (75, 4, "StoneMuWall", 1),
+    (80, 1, "Bridge", 1),
+    (81, 4, "Fence", 1),
+    (85, 1, "BridgeStone", 1),
+    (90, 1, "StreetLight", 1),
+    (91, 3, "Cannon", 1),
+    (95, 1, "Curtain", 1),
+    (96, 2, "Sign", 1),
+    (98, 4, "Carriage", 1),
+    (102, 2, "Straw", 1),
+    (105, 1, "Waterspout", 1),
+    (106, 4, "Well", 1),
+    (110, 1, "Hanging", 1),
+    (111, 1, "Stair", 1),
+    (115, 5, "House", 1),
+    (120, 1, "Tent", 1),
+    (121, 6, "HouseWall", 1),
+    (127, 3, "HouseEtc", 1),
+    (130, 3, "Light", 1),
+    (133, 1, "PoseBox", 1),
+    (140, 7, "Furniture", 1),
+    (150, 1, "Candle", 1),
+    (151, 3, "Beer", 1),
+)
 DEFAULT_TERRAIN_TEXTURE_SLOT_FILES: Dict[int, str] = {
     0: "TileGrass01.png",
     1: "TileGrass02.png",
@@ -1728,6 +1773,21 @@ def emit_scene_objects_json(
 ) -> None:
     rel = canonicalize_rel_path(source.relative_to(legacy_root))
     world_dir = canonical_world_dir_from_path(rel)
+    world_dir_number = parse_world_number(world_dir) if world_dir is not None else None
+    stem_world_number = terrain_number_from_stem(source.stem)
+    if (
+        world_dir_number is not None
+        and stem_world_number is not None
+        and stem_world_number != world_dir_number
+    ):
+        logging.debug(
+            "Skipping scene object sidecar for %s (stem world=%d, dir world=%d)",
+            source,
+            stem_world_number,
+            world_dir_number,
+        )
+        return
+
     target_parent = world_dir if world_dir is not None else rel.parent
     target = output_root / target_parent / "scene_objects.json"
 
@@ -1759,7 +1819,8 @@ def emit_scene_objects_json(
             )
 
         objects: List[Dict[str, object]] = []
-        model_path_cache: Dict[int, str] = {}
+        world_uses_named_models = world_number == 1
+        model_path_cache: Dict[Tuple[int, int], str] = {}
         model_quality_cache: Dict[str, Tuple[bool, str]] = {}
         offset = entry_offset
         for index in range(object_count):
@@ -1767,15 +1828,20 @@ def emit_scene_objects_json(
             offset += entry_size
 
             model_index = max(1, int(obj_type) + 1)
-            model_path = model_path_cache.get(model_index)
+            if world_uses_named_models:
+                model_cache_key = (int(obj_type), 0)
+            else:
+                model_cache_key = (0, model_index)
+            model_path = model_path_cache.get(model_cache_key)
             if model_path is None:
-                model_path = resolve_model_asset_path(
+                model_path = resolve_scene_object_model_path(
                     output_root=output_root,
                     legacy_root=legacy_root,
                     world_number=world_number,
+                    obj_type=int(obj_type),
                     model_index=model_index,
                 )
-                model_path_cache[model_index] = model_path
+                model_path_cache[model_cache_key] = model_path
 
             model_quality = model_quality_cache.get(model_path)
             if model_quality is None:
@@ -1866,6 +1932,23 @@ def _snake_case_name(stem: str) -> str:
         else:
             out.append(ch)
     return "".join(out)
+
+
+def world1_named_model_map() -> Dict[int, str]:
+    global _WORLD1_NAMED_MODEL_MAP_CACHE
+    if _WORLD1_NAMED_MODEL_MAP_CACHE is not None:
+        return _WORLD1_NAMED_MODEL_MAP_CACHE
+
+    mapping: Dict[int, str] = {}
+    for start_type, count, legacy_base_name, start_index in WORLD1_NAMED_MODEL_GROUPS:
+        stem = _snake_case_name(legacy_base_name)
+        for offset in range(count):
+            obj_type = start_type + offset
+            variant = start_index + offset
+            mapping[obj_type] = f"data/object_1/{stem}_{variant:02d}.glb"
+
+    _WORLD1_NAMED_MODEL_MAP_CACHE = mapping
+    return mapping
 
 
 def _terrain_map_candidate_score(file_name: str, world_number: int) -> int:
@@ -2082,18 +2165,24 @@ def resolve_model_asset_path(
     legacy_root: Path,
     world_number: int,
     model_index: int,
+    allow_cross_world_fallback: bool = True,
 ) -> str:
     glb_name = f"object_{model_index:02d}.glb"
     bmd_name = f"object_{model_index:02d}.bmd"
 
     legacy_index = _legacy_object_model_index(legacy_root)
     candidate_dirs: List[int] = [world_number]
-    for object_dir_number in sorted(
-        legacy_index.get(model_index, ()),
-        key=lambda number: (0 if number == world_number else 1, abs(number - world_number), number),
-    ):
-        if object_dir_number not in candidate_dirs:
-            candidate_dirs.append(object_dir_number)
+    if allow_cross_world_fallback:
+        for object_dir_number in sorted(
+            legacy_index.get(model_index, ()),
+            key=lambda number: (
+                0 if number == world_number else 1,
+                abs(number - world_number),
+                number,
+            ),
+        ):
+            if object_dir_number not in candidate_dirs:
+                candidate_dirs.append(object_dir_number)
 
     for object_dir_number in candidate_dirs:
         object_dir = output_root / f"object_{object_dir_number}"
@@ -2109,6 +2198,34 @@ def resolve_model_asset_path(
     # No direct match found anywhere: keep deterministic fallback.
     fallback_dir = candidate_dirs[0] if candidate_dirs else world_number
     return f"data/object_{fallback_dir}/{glb_name}"
+
+
+def resolve_scene_object_model_path(
+    output_root: Path,
+    legacy_root: Path,
+    world_number: int,
+    obj_type: int,
+    model_index: int,
+) -> str:
+    if world_number == 1:
+        named_model = world1_named_model_map().get(obj_type)
+        if named_model is not None:
+            return named_model
+        return resolve_model_asset_path(
+            output_root=output_root,
+            legacy_root=legacy_root,
+            world_number=world_number,
+            model_index=model_index,
+            allow_cross_world_fallback=False,
+        )
+
+    return resolve_model_asset_path(
+        output_root=output_root,
+        legacy_root=legacy_root,
+        world_number=world_number,
+        model_index=model_index,
+        allow_cross_world_fallback=True,
+    )
 
 
 def inspect_converted_model(path: Path) -> Tuple[bool, str]:
