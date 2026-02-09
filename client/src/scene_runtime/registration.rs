@@ -7,6 +7,7 @@ use crate::scene_runtime::systems::{
     DebugShadowQuality, DynamicLightBudget, GrassMaterial, SceneObjectDistanceCullingConfig,
     apply_debug_overlay_visibility, apply_grass_distance_culling,
     apply_legacy_gltf_material_overrides, apply_map_vfx_profile_to_scene_objects,
+    fix_scene_object_backface_culling,
     apply_scene_object_distance_culling, control_debug_free_camera, cycle_debug_frame_limit,
     cycle_debug_shadow_quality, ensure_particle_render_batches,
     ensure_scene_object_animation_players, handle_window_occlusion, load_scene_runtime_assets,
@@ -63,6 +64,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
             Update,
             (
                 apply_legacy_gltf_material_overrides,
+                fix_scene_object_backface_culling,
                 ensure_scene_object_animation_players.run_if(
                     |q: Query<
                         (),

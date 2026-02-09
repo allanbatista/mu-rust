@@ -794,6 +794,49 @@ pub fn apply_legacy_gltf_material_overrides(
     }
 }
 
+/// Fix backface culling for scene objects loaded from GLB files.
+///
+/// MU BMD models are converted to GLB with single-sided geometry. When the camera
+/// views a wall from the "back" side, standard backface culling discards those
+/// triangles, making the wall invisible. This system sets `double_sided: true` on
+/// all StandardMaterials that belong to scene object entities (descendants of
+/// entities with the `SceneObject` component).
+pub fn fix_scene_object_backface_culling(
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    new_material_query: Query<(Entity, &Handle<StandardMaterial>), Added<Handle<StandardMaterial>>>,
+    parent_query: Query<&Parent>,
+    scene_object_query: Query<(), With<SceneObject>>,
+) {
+    for (entity, mat_handle) in &new_material_query {
+        // Walk up the parent chain to check if this entity is a descendant of a SceneObject
+        let mut current = entity;
+        let mut is_scene_object_descendant = false;
+        for _ in 0..10 {
+            if scene_object_query.get(current).is_ok() {
+                is_scene_object_descendant = true;
+                break;
+            }
+            match parent_query.get(current) {
+                Ok(parent) => current = parent.get(),
+                Err(_) => break,
+            }
+        }
+
+        if !is_scene_object_descendant {
+            continue;
+        }
+
+        let Some(material) = materials.get_mut(mat_handle) else {
+            continue;
+        };
+
+        if !material.double_sided {
+            material.double_sided = true;
+            material.cull_mode = None;
+        }
+    }
+}
+
 fn normalize_scene_path(model_path: &str) -> String {
     if model_path.contains('#') {
         return model_path.to_string();
