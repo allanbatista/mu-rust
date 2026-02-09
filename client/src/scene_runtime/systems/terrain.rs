@@ -260,6 +260,7 @@ fn build_terrain_batches(
     let mut grass_billboard_like_cache: HashMap<u8, bool> = HashMap::new();
     let fallback_ground_slot = find_fallback_ground_slot(world_name, texture_slots);
     let mut replaced_billboard_grass_bases = 0usize;
+    let mut skipped_billboard_grass_alpha_layers = 0usize;
 
     for z in 0..(map_height - 1) {
         for x in 0..(map_width - 1) {
@@ -292,7 +293,7 @@ fn build_terrain_batches(
             };
 
             if base_slot != TERRAIN_NO_LAYER_SLOT
-                && should_replace_billboard_like_grass_base(
+                && is_billboard_like_grass_slot(
                     base_slot,
                     terrain_grass_slots,
                     world_name,
@@ -345,6 +346,18 @@ fn build_terrain_batches(
                 && s1.layer2 != TERRAIN_NO_LAYER_SLOT
                 && s1.layer2 != base_slot
             {
+                // Billboard-like grass belongs to the dedicated grass pass, not alpha terrain blends.
+                if is_billboard_like_grass_slot(
+                    s1.layer2,
+                    terrain_grass_slots,
+                    world_name,
+                    texture_slots,
+                    &mut grass_billboard_like_cache,
+                ) {
+                    skipped_billboard_grass_alpha_layers += 1;
+                    continue;
+                }
+
                 let uv_step = *slot_uv_steps.entry(s1.layer2).or_insert_with(|| {
                     resolve_texture_uv_step(
                         world_name,
@@ -413,6 +426,12 @@ fn build_terrain_batches(
             world_name, replaced_billboard_grass_bases
         );
     }
+    if skipped_billboard_grass_alpha_layers > 0 {
+        warn!(
+            "Terrain '{}' skipped {} billboard-like grass alpha overlays",
+            world_name, skipped_billboard_grass_alpha_layers
+        );
+    }
 
     info!(
         "Terrain mesh build: {}x{} vertices, map {}x{}, height range [{:.2}, {:.2}], batches={}",
@@ -440,7 +459,7 @@ fn find_fallback_ground_slot(
     None
 }
 
-fn should_replace_billboard_like_grass_base(
+fn is_billboard_like_grass_slot(
     slot: u8,
     terrain_grass_slots: Option<&HashSet<u8>>,
     world_name: &str,
@@ -739,5 +758,67 @@ fn resolve_case_insensitive_path(root: &Path, rel_path: &str) -> Option<String> 
         Some(resolved_parts.join("/"))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene_runtime::scene_loader::{HeightmapData, TerrainConfig};
+    use serde::de::DeserializeOwned;
+    use std::fs;
+
+    fn load_json_asset<T: DeserializeOwned>(relative_path: &str) -> T {
+        let full_path = Path::new(CLIENT_ASSETS_ROOT).join(relative_path);
+        let bytes = fs::read(&full_path)
+            .unwrap_or_else(|err| panic!("failed to read asset {}: {err}", full_path.display()));
+        serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+            panic!("failed to parse JSON asset {}: {err}", full_path.display())
+        })
+    }
+
+    #[test]
+    fn world4_skips_billboard_like_grass_alpha_overlays() {
+        let world_name = "world4";
+        let config: TerrainConfig = load_json_asset("data/world4/terrain_config.json");
+        let heightmap: HeightmapData = load_json_asset("data/world4/terrain_height.json");
+        let terrain_map: TerrainMapData = load_json_asset("data/world4/terrain_map.json");
+        let texture_slots: TerrainTextureSlotsData =
+            load_json_asset("data/world4/terrain_texture_slots.json");
+
+        let grass_slots = find_grass_slots(Some(&texture_slots), world_name);
+        assert!(
+            !grass_slots.is_empty(),
+            "world4 must expose grass slots to validate terrain grass handling"
+        );
+
+        let batches = build_terrain_batches(
+            &heightmap,
+            &config,
+            &terrain_map,
+            Some(&texture_slots),
+            world_name,
+            Some(&grass_slots),
+        );
+
+        let mut cache = HashMap::new();
+        let billboard_like_alpha_batches = batches
+            .iter()
+            .filter(|batch| batch.pass == TerrainPass::Alpha)
+            .filter(|batch| {
+                is_billboard_like_grass_slot(
+                    batch.texture_slot,
+                    Some(&grass_slots),
+                    world_name,
+                    Some(&texture_slots),
+                    &mut cache,
+                )
+            })
+            .count();
+
+        assert_eq!(
+            billboard_like_alpha_batches, 0,
+            "world4 should not render billboard-like grass in terrain alpha pass"
+        );
     }
 }
