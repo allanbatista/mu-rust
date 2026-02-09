@@ -11,6 +11,7 @@ mod particles;
 mod shadow_quality;
 mod skybox;
 mod terrain;
+mod vfx;
 
 pub use animations::*;
 pub use asset_loaders::*;
@@ -25,3 +26,4 @@ pub use particles::*;
 pub use shadow_quality::*;
 pub use skybox::*;
 pub use terrain::*;
+pub use vfx::*;

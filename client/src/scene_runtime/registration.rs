@@ -5,17 +5,19 @@ use crate::scene_runtime::pipeline::SceneRenderPipeline;
 use crate::scene_runtime::systems::{
     DebugFrameLimiter, DebugFreeCameraController, DebugOverlayState, DebugSceneStats,
     DebugShadowQuality, GrassMaterial, SceneObjectDistanceCullingConfig,
-    apply_debug_overlay_visibility, apply_legacy_gltf_material_overrides,
-    apply_scene_object_distance_culling, toggle_offscreen_scene_animations, control_debug_free_camera,
-    cycle_debug_frame_limit, cycle_debug_shadow_quality,
-    ensure_scene_object_animation_players, handle_window_occlusion,
-    load_scene_runtime_assets,
+    apply_debug_overlay_visibility, apply_grass_distance_culling,
+    apply_legacy_gltf_material_overrides, apply_map_vfx_profile_to_scene_objects,
+    apply_scene_object_distance_culling, control_debug_free_camera, cycle_debug_frame_limit,
+    cycle_debug_shadow_quality, ensure_particle_render_batches,
+    ensure_scene_object_animation_players, handle_window_occlusion, load_scene_runtime_assets,
     reset_debug_free_camera, reset_debug_overlay_state, reset_debug_scene_stats, setup_camera_tour,
     spawn_debug_free_camera_hint, spawn_debug_scene_stats_hud, spawn_dynamic_lights,
     spawn_runtime_sun_light, spawn_scene_objects_when_ready, spawn_skybox_when_ready,
     spawn_terrain_grass_when_ready, spawn_terrain_when_ready, toggle_debug_free_camera,
-    toggle_debug_overlay_shortcut, update_boids, update_camera_tour, update_debug_free_camera_hint,
-    update_debug_scene_stats, update_dynamic_lights, update_particle_emitters,
+    toggle_debug_overlay_shortcut, toggle_offscreen_scene_animations, update_boids,
+    update_camera_tour, update_debug_free_camera_hint, update_debug_scene_stats,
+    update_dynamic_lights, update_map_vfx_billboard_sprites, update_particle_emitters,
+    update_particle_render_batches,
 };
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
@@ -61,13 +63,29 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
             (
                 apply_legacy_gltf_material_overrides,
                 ensure_scene_object_animation_players.run_if(
-                    |q: Query<(), (With<SceneObjectAnimationSource>, Without<SceneObjectAnimationInitialized>)>| {
-                        !q.is_empty()
-                    },
+                    |q: Query<
+                        (),
+                        (
+                            With<SceneObjectAnimationSource>,
+                            Without<SceneObjectAnimationInitialized>,
+                        ),
+                    >| { !q.is_empty() },
                 ),
                 update_boids,
-                update_particle_emitters,
+                apply_map_vfx_profile_to_scene_objects,
             )
+                .in_set(SceneRenderPipeline::Simulate)
+                .run_if(in_state(active_state)),
+        )
+        .add_systems(
+            Update,
+            (
+                update_particle_emitters,
+                ensure_particle_render_batches,
+                update_particle_render_batches,
+                update_map_vfx_billboard_sprites,
+            )
+                .chain()
                 .in_set(SceneRenderPipeline::Simulate)
                 .run_if(in_state(active_state)),
         )
@@ -90,6 +108,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
             (
                 update_camera_tour,
                 apply_scene_object_distance_culling,
+                apply_grass_distance_culling,
                 toggle_offscreen_scene_animations,
             )
                 .chain()

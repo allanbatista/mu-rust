@@ -12,8 +12,10 @@ use bevy::render::render_resource::{
 use bevy::render::texture::{
     ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+use super::SceneObjectDistanceCullingConfig;
 
 const GRASS_HEIGHT: f32 = 100.0;
 const GRASS_WIDTH: f32 = 80.0;
@@ -21,10 +23,19 @@ const GRASS_ALPHA_CUTOFF: f32 = 0.35;
 const GRASS_WIND_STRENGTH: f32 = 15.0;
 const GRASS_WIND_SPEED: f32 = 1.5;
 const CLIENT_ASSETS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets");
+const GRASS_CHUNK_SIZE: usize = 8;
+const GRASS_CULLING_CAMERA_MOVE_THRESHOLD_SQ: f32 = 100.0;
 
 /// Marker component to track if terrain grass has been spawned.
 #[derive(Component)]
 pub struct TerrainGrassSpawned;
+
+/// Marker component for individual grass chunks (used for distance culling).
+/// Stores half-extents so culling can measure distance to the nearest edge.
+#[derive(Component)]
+pub struct GrassChunk {
+    pub half_extents: Vec3,
+}
 
 /// Custom material for grass billboards with wind animation and unlit rendering.
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
@@ -137,17 +148,29 @@ pub fn spawn_terrain_grass_when_ready(
         return;
     };
 
-    // Build the batched grass mesh
+    // Build grass quads grouped by chunk
     let scale = config.size.scale;
     let vertical_scale = config.height_multiplier * (scale / config.legacy_terrain_scale.max(1.0));
 
     let map_width = terrain_map.width().min(heightmap.width as usize);
     let map_height = terrain_map.height().min(heightmap.height as usize);
 
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut normals: Vec<[f32; 3]> = Vec::new();
-    let mut uvs: Vec<[f32; 2]> = Vec::new();
-    let mut grass_count = 0u32;
+    // Accumulate per-chunk buffers: key is (chunk_x, chunk_z)
+    struct ChunkBuffers {
+        positions: Vec<[f32; 3]>,
+        normals: Vec<[f32; 3]>,
+        uvs: Vec<[f32; 2]>,
+        grass_count: u32,
+        // Track world-space bounds for computing chunk center
+        min_x: f32,
+        max_x: f32,
+        min_y: f32,
+        max_y: f32,
+        min_z: f32,
+        max_z: f32,
+    }
+
+    let mut chunks: HashMap<(usize, usize), ChunkBuffers> = HashMap::new();
 
     for z in 0..map_height.saturating_sub(1) {
         for x in 0..map_width.saturating_sub(1) {
@@ -172,20 +195,40 @@ pub fn spawn_terrain_grass_when_ready(
             let cz = (z as f32 + 0.5) * scale;
             let cy = heightmap.get_height(x, z) * vertical_scale;
 
-            // Select texture variant (4 variants in a 256x64 atlas, each 64x64)
             let variant = ((x * 7 + z * 13) % 4) as f32;
             let u_min = variant * 0.25;
             let u_max = (variant + 1.0) * 0.25;
 
-            let half_w = GRASS_WIDTH * 0.5;
+            let diag = GRASS_WIDTH * 0.5 * std::f32::consts::FRAC_1_SQRT_2;
             let h = GRASS_HEIGHT;
 
-            // Quad 1: diagonal along +X+Z to -X-Z
-            let diag = half_w * std::f32::consts::FRAC_1_SQRT_2;
+            let chunk_key = (x / GRASS_CHUNK_SIZE, z / GRASS_CHUNK_SIZE);
+            let buf = chunks.entry(chunk_key).or_insert_with(|| ChunkBuffers {
+                positions: Vec::new(),
+                normals: Vec::new(),
+                uvs: Vec::new(),
+                grass_count: 0,
+                min_x: f32::MAX,
+                max_x: f32::MIN,
+                min_y: f32::MAX,
+                max_y: f32::MIN,
+                min_z: f32::MAX,
+                max_z: f32::MIN,
+            });
+
+            // Track world-space bounds (including grass height)
+            buf.min_x = buf.min_x.min(cx - diag);
+            buf.max_x = buf.max_x.max(cx + diag);
+            buf.min_y = buf.min_y.min(cy);
+            buf.max_y = buf.max_y.max(cy + h);
+            buf.min_z = buf.min_z.min(cz - diag);
+            buf.max_z = buf.max_z.max(cz + diag);
+
+            // Quad 1: diagonal along +X+Z to -X-Z (world-space coords, offset later)
             push_quad(
-                &mut positions,
-                &mut normals,
-                &mut uvs,
+                &mut buf.positions,
+                &mut buf.normals,
+                &mut buf.uvs,
                 [cx - diag, cy, cz - diag],
                 [cx + diag, cy, cz + diag],
                 [cx + diag, cy + h, cz + diag],
@@ -196,9 +239,9 @@ pub fn spawn_terrain_grass_when_ready(
 
             // Quad 2: perpendicular diagonal along +X-Z to -X+Z
             push_quad(
-                &mut positions,
-                &mut normals,
-                &mut uvs,
+                &mut buf.positions,
+                &mut buf.normals,
+                &mut buf.uvs,
                 [cx + diag, cy, cz - diag],
                 [cx - diag, cy, cz + diag],
                 [cx - diag, cy + h, cz + diag],
@@ -207,11 +250,11 @@ pub fn spawn_terrain_grass_when_ready(
                 u_max,
             );
 
-            grass_count += 1;
+            buf.grass_count += 1;
         }
     }
 
-    if positions.is_empty() {
+    if chunks.is_empty() {
         info!(
             "No grass cells found in '{}', skipping grass mesh",
             world.world_name
@@ -219,14 +262,6 @@ pub fn spawn_terrain_grass_when_ready(
         commands.spawn((RuntimeSceneEntity, TerrainGrassSpawned));
         return;
     }
-
-    let triangles = positions.len() / 3;
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, default());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-
-    let mesh_handle = meshes.add(mesh);
 
     let diffuse =
         asset_server.load_with_settings(grass_texture_path.clone(), |settings: &mut _| {
@@ -260,25 +295,119 @@ pub fn spawn_terrain_grass_when_ready(
         ))
         .id();
 
-    commands.entity(root).with_children(|parent| {
-        parent.spawn((
-            RuntimeSceneEntity,
-            Terrain,
-            NotShadowCaster,
-            NotShadowReceiver,
-            MaterialMeshBundle::<GrassMaterial> {
-                mesh: mesh_handle,
-                material: material_handle,
-                transform: Transform::IDENTITY,
-                ..default()
-            },
-        ));
-    });
+    let mut total_grass_count = 0u32;
+    let mut total_triangles = 0usize;
+    let num_chunks = chunks.len();
+
+    for (_chunk_key, buf) in chunks {
+        if buf.positions.is_empty() {
+            continue;
+        }
+
+        // Compute chunk center and half-extents from bounds
+        let center_x = (buf.min_x + buf.max_x) * 0.5;
+        let center_y = (buf.min_y + buf.max_y) * 0.5;
+        let center_z = (buf.min_z + buf.max_z) * 0.5;
+        let chunk_center = Vec3::new(center_x, center_y, center_z);
+        let half_extents = Vec3::new(
+            (buf.max_x - buf.min_x) * 0.5,
+            (buf.max_y - buf.min_y) * 0.5,
+            (buf.max_z - buf.min_z) * 0.5,
+        );
+
+        // Offset positions to be relative to chunk center
+        let positions: Vec<[f32; 3]> = buf
+            .positions
+            .iter()
+            .map(|p| [p[0] - center_x, p[1] - center_y, p[2] - center_z])
+            .collect();
+
+        let triangles = positions.len() / 3;
+        total_triangles += triangles;
+        total_grass_count += buf.grass_count;
+
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, default());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, buf.normals);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, buf.uvs);
+
+        let mesh_handle = meshes.add(mesh);
+
+        commands.entity(root).with_children(|parent| {
+            parent.spawn((
+                RuntimeSceneEntity,
+                Terrain,
+                GrassChunk { half_extents },
+                NotShadowCaster,
+                NotShadowReceiver,
+                MaterialMeshBundle::<GrassMaterial> {
+                    mesh: mesh_handle,
+                    material: material_handle.clone(),
+                    transform: Transform::from_translation(chunk_center),
+                    ..default()
+                },
+            ));
+        });
+    }
 
     info!(
-        "Terrain grass '{}' spawned: {} cells, {} triangles, texture={} (wind enabled)",
-        world.world_name, grass_count, triangles, grass_texture_path
+        "Terrain grass '{}' spawned: {} cells, {} triangles, {} chunks, texture={} (wind enabled)",
+        world.world_name, total_grass_count, total_triangles, num_chunks, grass_texture_path
     );
+}
+
+/// Distance culling for grass chunks. Reuses the same config as scene objects.
+/// Uses distance to the nearest edge of the chunk AABB (not center) so chunks
+/// that are partially in range are still shown.
+pub fn apply_grass_distance_culling(
+    config: Res<SceneObjectDistanceCullingConfig>,
+    camera_query: Query<&Transform, With<Camera3d>>,
+    mut chunks_query: Query<(&GlobalTransform, &GrassChunk, &mut Visibility)>,
+    mut last_camera_pos: Local<Option<Vec3>>,
+) {
+    let Ok(camera_transform) = camera_query.get_single() else {
+        return;
+    };
+    let camera_position = camera_transform.translation;
+
+    if !config.enabled {
+        for (_, _, mut visibility) in &mut chunks_query {
+            if *visibility == Visibility::Hidden {
+                *visibility = Visibility::Inherited;
+            }
+        }
+        *last_camera_pos = Some(camera_position);
+        return;
+    }
+
+    // Skip recalculation if camera hasn't moved significantly
+    if let Some(prev) = *last_camera_pos {
+        if prev.distance_squared(camera_position) < GRASS_CULLING_CAMERA_MOVE_THRESHOLD_SQ {
+            return;
+        }
+    }
+    *last_camera_pos = Some(camera_position);
+
+    for (global_transform, chunk, mut visibility) in &mut chunks_query {
+        let center = global_transform.translation();
+        let he = chunk.half_extents;
+        // Clamp camera position to AABB to get nearest point on the box
+        let nearest = Vec3::new(
+            camera_position.x.clamp(center.x - he.x, center.x + he.x),
+            camera_position.y.clamp(center.y - he.y, center.y + he.y),
+            camera_position.z.clamp(center.z - he.z, center.z + he.z),
+        );
+        let distance_squared = nearest.distance_squared(camera_position);
+        let target_visibility = if distance_squared <= config.max_distance_squared {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+
+        if *visibility != target_visibility {
+            *visibility = target_visibility;
+        }
+    }
 }
 
 /// Push a single quad (2 triangles, 6 vertices) into the buffers.

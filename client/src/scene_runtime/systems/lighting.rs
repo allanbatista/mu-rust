@@ -88,7 +88,9 @@ pub fn spawn_runtime_sun_light(
     // Set initial shadow quality to Low
     commands.insert_resource(DirectionalLightShadowMap { size: 1024 });
     for entity in camera_query.iter() {
-        commands.entity(entity).insert(ShadowFilteringMethod::Hardware2x2);
+        commands
+            .entity(entity)
+            .insert(ShadowFilteringMethod::Hardware2x2);
     }
 
     info!(

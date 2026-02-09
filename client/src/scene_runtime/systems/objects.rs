@@ -1,3 +1,4 @@
+use super::particles::particle_emitter_from_definition;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::scene_loader::{SceneObjectsMetadata, SceneRotationEncoding};
 use crate::scene_runtime::state::RuntimeSceneAssets;
@@ -16,7 +17,7 @@ const DEFAULT_SCENE_OBJECT_ANIMATION_SPEED: f32 = 0.16;
 const DEFAULT_NPC_MONSTER_ANIMATION_SPEED: f32 = 0.25;
 const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 180.0;
 const SCENE_OBJECT_YAW_OFFSET_ENV: &str = "MU_SCENE_OBJECT_YAW_OFFSET_DEGREES";
-const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 1500.0;
+const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 2000.0;
 const SCENE_OBJECT_CULL_DISTANCE_ENV: &str = "MU_SCENE_OBJECT_CULL_DISTANCE";
 
 /// Marker component to track if scene objects have been spawned
@@ -39,7 +40,7 @@ pub(crate) struct ProxyAssetCache {
 pub struct SceneObjectDistanceCullingConfig {
     pub enabled: bool,
     pub max_distance: f32,
-    max_distance_squared: f32,
+    pub(crate) max_distance_squared: f32,
 }
 
 impl Default for SceneObjectDistanceCullingConfig {
@@ -237,6 +238,7 @@ fn spawn_scene_object(
     let mut entity_cmd = commands.spawn((
         RuntimeSceneEntity,
         SceneObject,
+        SceneObjectKind(object_def.object_type),
         SpatialBundle {
             transform: Transform {
                 translation: position,
@@ -483,18 +485,9 @@ fn spawn_model_proxy(
 
 /// Add particle emitter component to entity
 fn add_particle_emitter(entity_cmd: &mut EntityCommands, emitter_def: &ParticleEmitterDef) {
-    let config = ParticleEmitterConfig {
-        lifetime_range: (emitter_def.lifetime[0], emitter_def.lifetime[1]),
-        initial_velocity: Vec3::from(emitter_def.initial_velocity),
-        velocity_variance: Vec3::from(emitter_def.velocity_variance),
-    };
-
-    entity_cmd.insert(ParticleEmitter {
-        config,
-        active: true,
-        particles: Vec::new(),
-        spawn_timer: Timer::from_seconds(1.0 / emitter_def.spawn_rate, TimerMode::Repeating),
-    });
+    if let Some(emitter) = particle_emitter_from_definition(emitter_def) {
+        entity_cmd.insert(emitter);
+    }
 }
 
 /// Add dynamic light component to entity

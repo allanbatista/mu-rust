@@ -32,8 +32,8 @@ use super::SceneBuilder;
 // Default login world (can be changed via MU_LOGIN_WORLD environment variable)
 // Valid login worlds are: 55, 73, 77 (LoginScene, NewLoginScene1, NewLoginScene2)
 const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::Noria;
-const DEFAULT_FIRE_PARTICLE_TEXTURE: &str = "data/Skill/bons_particle.png";
-const DEFAULT_CLOUD_PARTICLE_TEXTURE: &str = "data/Effect/hart_particle02.png";
+const DEFAULT_FIRE_PARTICLE_TEXTURE: &str = "data/effect/flame_chrom2.png";
+const DEFAULT_CLOUD_PARTICLE_TEXTURE: &str = "data/effect/hart_particle02.png";
 
 /// Gets the login world from environment variable or returns the default.
 ///
@@ -136,6 +136,57 @@ fn default_particle_definitions() -> ParticleDefinitions {
             color_fade: [0.92, 0.92, 0.95, 0.0],
             blend_mode: "alpha".to_string(),
             rotation_speed: Some(0.25),
+        },
+    );
+
+    emitters.insert(
+        "losttower_fire".to_string(),
+        ParticleEmitterDef {
+            texture: "data/effect/flame_chrom2.png".to_string(),
+            spawn_rate: 14.0,
+            lifetime: [0.45, 1.15],
+            initial_velocity: [0.0, 20.0, 0.0],
+            velocity_variance: [3.5, 8.0, 3.5],
+            scale: [0.65, 1.35],
+            scale_variance: 0.2,
+            color: [1.0, 0.58, 0.25, 0.95],
+            color_fade: [0.95, 0.2, 0.06, 0.0],
+            blend_mode: "additive".to_string(),
+            rotation_speed: Some(1.4),
+        },
+    );
+
+    emitters.insert(
+        "losttower_arcane".to_string(),
+        ParticleEmitterDef {
+            texture: "data/skill/light01.png".to_string(),
+            spawn_rate: 8.0,
+            lifetime: [0.5, 1.25],
+            initial_velocity: [0.0, 8.5, 0.0],
+            velocity_variance: [1.8, 4.0, 1.8],
+            scale: [0.7, 1.35],
+            scale_variance: 0.18,
+            color: [0.45, 0.78, 1.0, 0.9],
+            color_fade: [0.2, 0.38, 1.0, 0.0],
+            blend_mode: "additive".to_string(),
+            rotation_speed: Some(1.1),
+        },
+    );
+
+    emitters.insert(
+        "losttower_smoke".to_string(),
+        ParticleEmitterDef {
+            texture: "data/effect/hart_particle02.png".to_string(),
+            spawn_rate: 5.5,
+            lifetime: [1.25, 2.8],
+            initial_velocity: [0.0, 6.0, 0.0],
+            velocity_variance: [1.2, 2.2, 1.2],
+            scale: [0.75, 1.9],
+            scale_variance: 0.15,
+            color: [0.78, 0.74, 0.7, 0.4],
+            color_fade: [0.65, 0.62, 0.58, 0.0],
+            blend_mode: "alpha".to_string(),
+            rotation_speed: Some(0.35),
         },
     );
 

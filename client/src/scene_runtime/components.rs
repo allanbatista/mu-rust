@@ -1,6 +1,7 @@
 pub use crate::scene_runtime::scene_loader::{
-    CameraTourData, HeightmapData, ObjectProperties, SceneObjectDef, SceneObjectsData,
-    TerrainConfig, TerrainMapData, TerrainMapSample, TerrainTextureSlotsData,
+    CameraTourData, HeightmapData, MapVfxBlendMode, MapVfxProfile, ObjectProperties,
+    SceneObjectDef, SceneObjectsData, TerrainConfig, TerrainMapData, TerrainMapSample,
+    TerrainTextureSlotsData,
 };
 use bevy::gltf::Gltf;
 use bevy::prelude::*;
@@ -30,6 +31,10 @@ pub struct Terrain;
 #[derive(Component)]
 pub struct SceneObject;
 
+/// Original MU object type used for map-specific behavior and VFX matching.
+#[derive(Component, Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SceneObjectKind(pub u32);
+
 /// Animation metadata for scene objects spawned from GLB scenes.
 #[derive(Component, Clone)]
 pub struct SceneObjectAnimationSource {
@@ -55,11 +60,25 @@ pub struct ParticleEmitter {
     pub spawn_timer: Timer,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ParticleBlendMode {
+    Alpha,
+    Additive,
+}
+
 #[derive(Clone)]
 pub struct ParticleEmitterConfig {
     pub lifetime_range: (f32, f32),
     pub initial_velocity: Vec3,
     pub velocity_variance: Vec3,
+    pub scale_range: (f32, f32),
+    pub scale_variance: f32,
+    pub color_start: Vec4,
+    pub color_end: Vec4,
+    pub texture_path: String,
+    pub blend_mode: ParticleBlendMode,
+    pub rotation_speed: f32,
+    pub max_particles: usize,
 }
 
 pub struct Particle {
@@ -67,6 +86,9 @@ pub struct Particle {
     pub velocity: Vec3,
     pub lifetime: f32,
     pub max_lifetime: f32,
+    pub scale: f32,
+    pub rotation: f32,
+    pub rotation_speed: f32,
 }
 
 /// Particle definitions loaded from JSON

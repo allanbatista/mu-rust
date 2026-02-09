@@ -3,6 +3,7 @@ use bevy::asset::{AssetLoader, AsyncReadExt, LoadContext};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use thiserror::Error;
 
 const TERRAIN_CONFIG_FILE: &str = "terrain_config.json";
@@ -11,7 +12,10 @@ const TERRAIN_MAP_FILE: &str = "terrain_map.json";
 const TERRAIN_TEXTURE_SLOTS_FILE: &str = "terrain_texture_slots.json";
 const SCENE_OBJECTS_FILE: &str = "scene_objects.json";
 const CAMERA_TOUR_FILE: &str = "camera_tour.json";
+const MAP_VFX_FILE: &str = "map_vfx.json";
 const SCENE_OBJECTS_FILE_OVERRIDE_ENV: &str = "MU_SCENE_OBJECTS_FILE";
+const DISABLE_MAP_VFX_ENV: &str = "MU_DISABLE_MAP_VFX";
+const CLIENT_ASSETS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets");
 
 #[derive(Asset, TypePath, Serialize, Deserialize, Clone, Debug)]
 pub struct TerrainConfig {
@@ -218,6 +222,100 @@ pub struct CameraWaypointDef {
     pub delay: f32,
 }
 
+#[derive(Asset, TypePath, Serialize, Deserialize, Clone, Debug, Default)]
+pub struct MapVfxProfile {
+    #[serde(default)]
+    pub object_overrides: Vec<MapVfxObjectOverride>,
+    #[serde(default)]
+    pub object_sprites: Vec<MapVfxObjectSprite>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MapVfxObjectOverride {
+    pub object_type: u32,
+    #[serde(default)]
+    pub particle_emitter: Option<String>,
+    #[serde(default)]
+    pub light_color: Option<[f32; 3]>,
+    #[serde(default)]
+    pub light_intensity: Option<f32>,
+    #[serde(default)]
+    pub light_range: Option<f32>,
+    #[serde(default)]
+    pub flicker: Option<MapVfxFlicker>,
+    #[serde(default = "default_spawn_stride")]
+    pub spawn_stride: u32,
+    #[serde(default)]
+    pub max_instances: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MapVfxObjectSprite {
+    pub object_type: u32,
+    pub texture: String,
+    #[serde(default = "default_sprite_size")]
+    pub size: f32,
+    #[serde(default = "default_sprite_color")]
+    pub color: [f32; 4],
+    #[serde(default)]
+    pub z_offset: f32,
+    #[serde(default)]
+    pub spin_speed: f32,
+    #[serde(default)]
+    pub pulse: Option<MapVfxPulse>,
+    #[serde(default)]
+    pub max_distance: Option<f32>,
+    #[serde(default)]
+    pub blend_mode: MapVfxBlendMode,
+    #[serde(default = "default_spawn_stride")]
+    pub spawn_stride: u32,
+    #[serde(default)]
+    pub max_instances: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MapVfxFlicker {
+    pub min_intensity: f32,
+    pub max_intensity: f32,
+    pub speed: f32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MapVfxPulse {
+    #[serde(default = "default_pulse_amplitude")]
+    pub amplitude: f32,
+    #[serde(default = "default_pulse_speed")]
+    pub speed: f32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum MapVfxBlendMode {
+    #[default]
+    Alpha,
+    Additive,
+}
+
+fn default_spawn_stride() -> u32 {
+    1
+}
+
+fn default_sprite_size() -> f32 {
+    120.0
+}
+
+fn default_sprite_color() -> [f32; 4] {
+    [1.0, 1.0, 1.0, 1.0]
+}
+
+fn default_pulse_amplitude() -> f32 {
+    0.0
+}
+
+fn default_pulse_speed() -> f32 {
+    1.0
+}
+
 #[derive(Default)]
 pub struct TerrainConfigLoader;
 
@@ -416,6 +514,39 @@ impl AssetLoader for CameraTourLoader {
     }
 }
 
+#[derive(Default)]
+pub struct MapVfxLoader;
+
+#[derive(Debug, Error)]
+pub enum MapVfxLoaderError {
+    #[error("Could not load map vfx profile: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Could not parse JSON: {0}")]
+    JsonError(#[from] serde_json::Error),
+}
+
+impl AssetLoader for MapVfxLoader {
+    type Asset = MapVfxProfile;
+    type Settings = ();
+    type Error = MapVfxLoaderError;
+
+    async fn load<'a>(
+        &'a self,
+        reader: &'a mut Reader<'_>,
+        _settings: &'a (),
+        _load_context: &'a mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        let profile = serde_json::from_slice::<MapVfxProfile>(&bytes)?;
+        Ok(profile)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &[MAP_VFX_FILE]
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LoadedSceneWorld {
     pub world_name: String,
@@ -426,6 +557,7 @@ pub struct LoadedSceneWorld {
     pub terrain_texture_slots: Option<Handle<TerrainTextureSlotsData>>,
     pub scene_objects: Handle<SceneObjectsData>,
     pub camera_tour: Handle<CameraTourData>,
+    pub map_vfx: Option<Handle<MapVfxProfile>>,
 }
 
 enum SceneLoadState {
@@ -456,6 +588,7 @@ impl SceneLoader {
         terrain_maps: &Assets<TerrainMapData>,
         scene_objects: &Assets<SceneObjectsData>,
         camera_tours: &Assets<CameraTourData>,
+        map_vfx_profiles: &Assets<MapVfxProfile>,
     ) -> Option<LoadedSceneWorld> {
         let world_name = normalize_world_name(world_name);
         let world = self.ensure_requested(&world_name, asset_server);
@@ -471,7 +604,12 @@ impl SceneLoader {
             && heightmaps.get(&world.heightmap).is_some()
             && terrain_map_ready
             && scene_objects.get(&world.scene_objects).is_some()
-            && camera_tours.get(&world.camera_tour).is_some();
+            && camera_tours.get(&world.camera_tour).is_some()
+            && world
+                .map_vfx
+                .as_ref()
+                .map(|profile| map_vfx_profiles.get(profile).is_some())
+                .unwrap_or(true);
 
         if !is_ready {
             return None;
@@ -519,6 +657,7 @@ impl SceneLoader {
             ),
             scene_objects: asset_server.load(scene_objects_path),
             camera_tour: asset_server.load(world_asset_path(world_name, CAMERA_TOUR_FILE)),
+            map_vfx: map_vfx_asset_path(world_name).map(|path| asset_server.load(path)),
         };
 
         self.worlds.insert(
@@ -553,6 +692,36 @@ fn world_asset_path(world_name: &str, file_name: &str) -> String {
     format!("data/{world_name}/{file_name}")
 }
 
+fn optional_world_asset_path_if_exists(world_name: &str, file_name: &str) -> Option<String> {
+    let relative = world_asset_path(world_name, file_name);
+    let full_path = Path::new(CLIENT_ASSETS_ROOT).join(&relative);
+    if full_path.is_file() {
+        Some(relative)
+    } else {
+        None
+    }
+}
+
+fn map_vfx_asset_path(world_name: &str) -> Option<String> {
+    if disable_map_vfx_from_env() {
+        return None;
+    }
+    optional_world_asset_path_if_exists(world_name, MAP_VFX_FILE)
+}
+
+fn disable_map_vfx_from_env() -> bool {
+    return true;
+    
+    let Ok(raw_value) = std::env::var(DISABLE_MAP_VFX_ENV) else {
+        return false;
+    };
+
+    matches!(
+        raw_value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 fn scene_objects_asset_path(world_name: &str) -> String {
     let default_path = world_asset_path(world_name, SCENE_OBJECTS_FILE);
     let Ok(raw_override) = std::env::var(SCENE_OBJECTS_FILE_OVERRIDE_ENV) else {
@@ -582,11 +751,13 @@ impl Plugin for SceneLoaderPlugin {
             .init_asset::<TerrainTextureSlotsData>()
             .init_asset::<SceneObjectsData>()
             .init_asset::<CameraTourData>()
+            .init_asset::<MapVfxProfile>()
             .init_asset_loader::<TerrainConfigLoader>()
             .init_asset_loader::<HeightmapLoader>()
             .init_asset_loader::<TerrainMapLoader>()
             .init_asset_loader::<TerrainTextureSlotsLoader>()
             .init_asset_loader::<SceneObjectsLoader>()
-            .init_asset_loader::<CameraTourLoader>();
+            .init_asset_loader::<CameraTourLoader>()
+            .init_asset_loader::<MapVfxLoader>();
     }
 }

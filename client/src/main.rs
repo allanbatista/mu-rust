@@ -6,15 +6,15 @@ use bevy::app::PluginGroupBuilder;
 use bevy::asset::AssetPlugin;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
-use bevy::state::app::AppExtStates;
 use bevy::render::pipelined_rendering::PipelinedRenderingPlugin;
+use bevy::state::app::AppExtStates;
 use bevy::window::{PresentMode, WindowResolution};
-use bevy::winit::{WinitSettings, UpdateMode};
-use std::time::Duration;
+use bevy::winit::{UpdateMode, WinitSettings};
 use scene_runtime::scene_loader::SceneLoaderPlugin;
 use scenes::ScenePlugin;
 use scenes::loading::LoadingScene;
 use scenes::login::LoginScene;
+use std::time::Duration;
 use world::WorldPlugin;
 
 #[derive(bevy::prelude::States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]

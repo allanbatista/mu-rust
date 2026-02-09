@@ -22,6 +22,7 @@ pub fn load_scene_runtime_assets(
     terrain_maps: Res<Assets<TerrainMapData>>,
     scene_objects: Res<Assets<SceneObjectsData>>,
     camera_tours: Res<Assets<CameraTourData>>,
+    map_vfx_profiles: Res<Assets<MapVfxProfile>>,
     particle_defs: Res<Assets<ParticleDefinitions>>,
 ) {
     if assets.loaded {
@@ -36,6 +37,7 @@ pub fn load_scene_runtime_assets(
         &terrain_maps,
         &scene_objects,
         &camera_tours,
+        &map_vfx_profiles,
     ) else {
         return;
     };
