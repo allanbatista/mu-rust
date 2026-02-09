@@ -41,23 +41,27 @@ pub fn reset_debug_free_camera(mut controller: ResMut<DebugFreeCameraController>
 }
 
 pub fn spawn_debug_free_camera_hint(mut commands: Commands) {
+    let mut hint_text = TextBundle::from_section(
+        "",
+        TextStyle {
+            font_size: 16.0,
+            color: Color::WHITE,
+            ..default()
+        },
+    )
+    .with_style(Style {
+        position_type: PositionType::Absolute,
+        top: Val::Px(14.0),
+        left: Val::Px(14.0),
+        ..default()
+    });
+    hint_text.background_color = BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5));
+
     commands.spawn((
         RuntimeSceneEntity,
+        DebugOverlayElement,
         DebugFreeCameraHint,
-        TextBundle::from_section(
-            "",
-            TextStyle {
-                font_size: 16.0,
-                color: Color::srgb(0.95, 0.9, 0.6),
-                ..default()
-            },
-        )
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            top: Val::Px(14.0),
-            left: Val::Px(14.0),
-            ..default()
-        }),
+        hint_text,
     ));
 }
 
@@ -68,7 +72,7 @@ pub fn update_debug_free_camera_hint(
     let mode = if controller.enabled { "ON" } else { "OFF" };
     for mut text in &mut hints {
         text.sections[0].value = format!(
-            "[DEBUG] Ctrl+W: Free Camera {mode} | WASD mover | Botao direito + mouse olhar | Scroll zoom"
+            "[DEBUG] Ctrl+W: Free Camera {mode} | F3: Toggle HUD | WASD mover | Botao direito + mouse olhar | Scroll zoom"
         );
     }
 }

@@ -16,6 +16,8 @@ const DEFAULT_SCENE_OBJECT_ANIMATION_SPEED: f32 = 0.16;
 const DEFAULT_NPC_MONSTER_ANIMATION_SPEED: f32 = 0.25;
 const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 180.0;
 const SCENE_OBJECT_YAW_OFFSET_ENV: &str = "MU_SCENE_OBJECT_YAW_OFFSET_DEGREES";
+const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 9_000.0;
+const SCENE_OBJECT_CULL_DISTANCE_ENV: &str = "MU_SCENE_OBJECT_CULL_DISTANCE";
 
 /// Marker component to track if scene objects have been spawned
 #[derive(Component)]
@@ -31,6 +33,35 @@ pub(crate) struct ModelValidationCache {
 pub(crate) struct ProxyAssetCache {
     mesh: Option<Handle<Mesh>>,
     materials: HashMap<u32, Handle<StandardMaterial>>,
+}
+
+#[derive(Resource, Clone, Debug)]
+pub struct SceneObjectDistanceCullingConfig {
+    pub enabled: bool,
+    pub max_distance: f32,
+    max_distance_squared: f32,
+}
+
+impl Default for SceneObjectDistanceCullingConfig {
+    fn default() -> Self {
+        let max_distance = std::env::var(SCENE_OBJECT_CULL_DISTANCE_ENV)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<f32>().ok())
+            .filter(|value| value.is_finite())
+            .unwrap_or(DEFAULT_SCENE_OBJECT_CULL_DISTANCE);
+        let enabled = max_distance > 0.0;
+        let max_distance = if enabled {
+            max_distance
+        } else {
+            DEFAULT_SCENE_OBJECT_CULL_DISTANCE
+        };
+
+        Self {
+            enabled,
+            max_distance,
+            max_distance_squared: max_distance * max_distance,
+        }
+    }
 }
 
 /// System to spawn scene objects once assets are loaded
@@ -124,6 +155,46 @@ pub fn spawn_scene_objects_when_ready(
         "Scene objects spawned successfully in {} ms",
         spawn_started_at.elapsed().as_millis()
     );
+}
+
+/// Additional distance-based culling on top of Bevy frustum culling.
+///
+/// Controlled by `MU_SCENE_OBJECT_CULL_DISTANCE` (world units):
+/// - `> 0`: enabled with provided distance
+/// - `<= 0`: disabled
+pub fn apply_scene_object_distance_culling(
+    config: Res<SceneObjectDistanceCullingConfig>,
+    camera_query: Query<&Transform, With<Camera3d>>,
+    mut scene_objects: Query<(&Transform, &mut Visibility), With<SceneObject>>,
+) {
+    let Ok(camera_transform) = camera_query.get_single() else {
+        return;
+    };
+    let camera_position = camera_transform.translation;
+
+    if !config.enabled {
+        for (_, mut visibility) in &mut scene_objects {
+            if *visibility == Visibility::Hidden {
+                *visibility = Visibility::Inherited;
+            }
+        }
+        return;
+    }
+
+    for (object_transform, mut visibility) in &mut scene_objects {
+        let distance_squared = object_transform
+            .translation
+            .distance_squared(camera_position);
+        let target_visibility = if distance_squared <= config.max_distance_squared {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+
+        if *visibility != target_visibility {
+            *visibility = target_visibility;
+        }
+    }
 }
 
 /// Spawn a single scene object

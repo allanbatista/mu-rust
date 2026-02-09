@@ -40,7 +40,7 @@ fn build_bevy_plugins() -> PluginGroupBuilder {
             ..Default::default()
         })
         .set(AssetPlugin {
-            file_path: "../assets".into(),
+            file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../assets").into(),
             ..Default::default()
         })
 }

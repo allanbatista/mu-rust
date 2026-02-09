@@ -7,6 +7,7 @@ mod grass;
 mod lighting;
 mod objects;
 mod particles;
+mod skybox;
 mod terrain;
 
 pub use animations::*;
@@ -18,4 +19,5 @@ pub use grass::*;
 pub use lighting::*;
 pub use objects::*;
 pub use particles::*;
+pub use skybox::*;
 pub use terrain::*;

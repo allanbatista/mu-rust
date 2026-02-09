@@ -1,21 +1,41 @@
+use super::objects::SceneObjectDistanceCullingConfig;
 use crate::scene_runtime::components::*;
 use bevy::asset::AssetId;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::renderer::RenderAdapterInfo;
+use bevy::render::view::{VisibleEntities, WithMesh};
 use std::collections::{HashMap, HashSet};
 
-/// UI marker for scene stats text shown in debug mode.
+/// UI marker for performance stats text (fps/frame/object counters).
 #[derive(Component)]
-pub struct DebugSceneStatsText;
+pub struct DebugSceneStatsPerformanceText;
+
+/// UI marker for graphics adapter stats text.
+#[derive(Component)]
+pub struct DebugSceneStatsGpuText;
+
+#[derive(Resource)]
+pub struct DebugOverlayState {
+    pub visible: bool,
+}
+
+impl Default for DebugOverlayState {
+    fn default() -> Self {
+        Self { visible: true }
+    }
+}
 
 #[derive(Resource)]
 pub struct DebugSceneStats {
     pub refresh_timer: Timer,
     pub object_count: usize,
+    pub visible_object_count: usize,
     pub mesh_count: usize,
+    pub visible_mesh_count: usize,
     pub polygon_count: u64,
+    pub visible_polygon_count: u64,
     pub last_runtime_entity_count: usize,
     pub last_mesh_asset_count: usize,
 }
@@ -25,8 +45,11 @@ impl Default for DebugSceneStats {
         Self {
             refresh_timer: Timer::from_seconds(0.75, TimerMode::Repeating),
             object_count: 0,
+            visible_object_count: 0,
             mesh_count: 0,
+            visible_mesh_count: 0,
             polygon_count: 0,
+            visible_polygon_count: 0,
             last_runtime_entity_count: 0,
             last_mesh_asset_count: 0,
         }
@@ -37,24 +60,91 @@ pub fn reset_debug_scene_stats(mut debug_stats: ResMut<DebugSceneStats>) {
     *debug_stats = DebugSceneStats::default();
 }
 
+pub fn reset_debug_overlay_state(mut overlay_state: ResMut<DebugOverlayState>) {
+    *overlay_state = DebugOverlayState::default();
+}
+
+pub fn toggle_debug_overlay_shortcut(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut overlay_state: ResMut<DebugOverlayState>,
+) {
+    if keys.just_pressed(KeyCode::F3) {
+        overlay_state.visible = !overlay_state.visible;
+        info!(
+            "Debug overlay {}",
+            if overlay_state.visible {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+    }
+}
+
+pub fn apply_debug_overlay_visibility(
+    overlay_state: Res<DebugOverlayState>,
+    mut overlay_elements: Query<&mut Visibility, With<DebugOverlayElement>>,
+) {
+    if !overlay_state.is_changed() {
+        return;
+    }
+
+    let visibility = if overlay_state.visible {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut element_visibility in &mut overlay_elements {
+        *element_visibility = visibility;
+    }
+}
+
 pub fn spawn_debug_scene_stats_hud(mut commands: Commands) {
+    let mut performance_text = TextBundle::from_section(
+        "",
+        TextStyle {
+            font_size: 16.0,
+            color: Color::WHITE,
+            ..default()
+        },
+    )
+    .with_text_justify(JustifyText::Right)
+    .with_style(Style {
+        position_type: PositionType::Absolute,
+        top: Val::Px(14.0),
+        right: Val::Px(14.0),
+        ..default()
+    });
+    performance_text.background_color = BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5));
+
     commands.spawn((
         RuntimeSceneEntity,
-        DebugSceneStatsText,
-        TextBundle::from_section(
-            "",
-            TextStyle {
-                font_size: 16.0,
-                color: Color::srgb(0.85, 0.95, 0.95),
-                ..default()
-            },
-        )
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            top: Val::Px(38.0),
-            left: Val::Px(14.0),
+        DebugOverlayElement,
+        DebugSceneStatsPerformanceText,
+        performance_text,
+    ));
+
+    let mut gpu_text = TextBundle::from_section(
+        "",
+        TextStyle {
+            font_size: 16.0,
+            color: Color::WHITE,
             ..default()
-        }),
+        },
+    )
+    .with_style(Style {
+        position_type: PositionType::Absolute,
+        bottom: Val::Px(14.0),
+        left: Val::Px(14.0),
+        ..default()
+    });
+    gpu_text.background_color = BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5));
+
+    commands.spawn((
+        RuntimeSceneEntity,
+        DebugOverlayElement,
+        DebugSceneStatsGpuText,
+        gpu_text,
     ));
 }
 
@@ -65,54 +155,93 @@ pub fn update_debug_scene_stats(
     meshes: Res<Assets<Mesh>>,
     login_entities: Query<Entity, With<RuntimeSceneEntity>>,
     scene_objects: Query<(), With<SceneObject>>,
+    parent_query: Query<&Parent>,
     children_query: Query<&Children>,
+    camera_visible_meshes: Query<&VisibleEntities, With<Camera3d>>,
     mesh_handles: Query<&Handle<Mesh>>,
+    distance_culling: Option<Res<SceneObjectDistanceCullingConfig>>,
     mut debug_stats: ResMut<DebugSceneStats>,
-    mut text_query: Query<&mut Text, With<DebugSceneStatsText>>,
+    overlay_state: Res<DebugOverlayState>,
+    mut perf_text_query: Query<
+        &mut Text,
+        (
+            With<DebugSceneStatsPerformanceText>,
+            Without<DebugSceneStatsGpuText>,
+        ),
+    >,
+    mut gpu_text_query: Query<
+        &mut Text,
+        (
+            With<DebugSceneStatsGpuText>,
+            Without<DebugSceneStatsPerformanceText>,
+        ),
+    >,
 ) {
+    if !overlay_state.visible {
+        return;
+    }
+
     debug_stats.refresh_timer.tick(time.delta());
-    if debug_stats.refresh_timer.just_finished() {
+    if cfg!(debug_assertions) && debug_stats.refresh_timer.just_finished() {
         let runtime_entity_count = login_entities.iter().count();
         let mesh_asset_count = meshes.len();
 
-        if runtime_entity_count != debug_stats.last_runtime_entity_count
-            || mesh_asset_count != debug_stats.last_mesh_asset_count
-        {
-            let mut visited_entities = HashSet::<Entity>::new();
-            let mut stack: Vec<Entity> = login_entities.iter().collect();
-            let mut mesh_triangles_by_id = HashMap::<AssetId<Mesh>, u64>::new();
-            let mut mesh_count = 0usize;
-            let mut polygon_count = 0u64;
+        let mut visited_entities = HashSet::<Entity>::new();
+        let mut stack: Vec<Entity> = login_entities.iter().collect();
+        let mut mesh_triangles_by_id = HashMap::<AssetId<Mesh>, u64>::new();
+        let mut visible_objects = HashSet::<Entity>::new();
+        let visible_mesh_entities: HashSet<Entity> = camera_visible_meshes
+            .get_single()
+            .map(|visible_entities| visible_entities.iter::<WithMesh>().copied().collect())
+            .unwrap_or_default();
+        let mut mesh_count = 0usize;
+        let mut visible_mesh_count = 0usize;
+        let mut polygon_count = 0u64;
+        let mut visible_polygon_count = 0u64;
 
-            while let Some(entity) = stack.pop() {
-                if !visited_entities.insert(entity) {
-                    continue;
-                }
+        while let Some(entity) = stack.pop() {
+            if !visited_entities.insert(entity) {
+                continue;
+            }
 
-                if let Ok(mesh_handle) = mesh_handles.get(entity) {
-                    mesh_count += 1;
-                    if let Some(mesh) = meshes.get(mesh_handle) {
-                        let mesh_id = mesh_handle.id();
-                        let triangle_count = *mesh_triangles_by_id
-                            .entry(mesh_id)
-                            .or_insert_with(|| triangles_for_mesh(mesh));
-                        polygon_count = polygon_count.saturating_add(triangle_count);
-                    }
-                }
+            if let Ok(mesh_handle) = mesh_handles.get(entity) {
+                mesh_count += 1;
+                let triangle_count = if let Some(mesh) = meshes.get(mesh_handle) {
+                    let mesh_id = mesh_handle.id();
+                    *mesh_triangles_by_id
+                        .entry(mesh_id)
+                        .or_insert_with(|| triangles_for_mesh(mesh))
+                } else {
+                    0
+                };
+                polygon_count = polygon_count.saturating_add(triangle_count);
 
-                if let Ok(children) = children_query.get(entity) {
-                    for child in children.iter() {
-                        stack.push(*child);
+                if visible_mesh_entities.contains(&entity) {
+                    visible_mesh_count += 1;
+                    visible_polygon_count = visible_polygon_count.saturating_add(triangle_count);
+                    if let Some(scene_object_root) =
+                        find_scene_object_ancestor(entity, &parent_query, &scene_objects)
+                    {
+                        visible_objects.insert(scene_object_root);
                     }
                 }
             }
 
-            debug_stats.object_count = scene_objects.iter().count();
-            debug_stats.mesh_count = mesh_count;
-            debug_stats.polygon_count = polygon_count;
-            debug_stats.last_runtime_entity_count = runtime_entity_count;
-            debug_stats.last_mesh_asset_count = mesh_asset_count;
+            if let Ok(children) = children_query.get(entity) {
+                for child in children.iter() {
+                    stack.push(*child);
+                }
+            }
         }
+
+        debug_stats.object_count = scene_objects.iter().count();
+        debug_stats.visible_object_count = visible_objects.len();
+        debug_stats.mesh_count = mesh_count;
+        debug_stats.visible_mesh_count = visible_mesh_count;
+        debug_stats.polygon_count = polygon_count;
+        debug_stats.visible_polygon_count = visible_polygon_count;
+        debug_stats.last_runtime_entity_count = runtime_entity_count;
+        debug_stats.last_mesh_asset_count = mesh_asset_count;
     }
 
     let fps = diagnostics
@@ -143,11 +272,35 @@ pub fn update_debug_scene_stats(
         ("n/a".to_string(), "n/a".to_string(), "n/a".to_string())
     };
 
-    for mut text in &mut text_query {
-        text.sections[0].value = format!(
-            "[DEBUG] FPS: {fps_text} | Frame: {frame_text} ms | Objetos: {} | Meshes: {} | Poligonos: {}\n[DEBUG] GPU: {gpu_name} | API: {graphics_api} | Versao: {graphics_version}",
-            debug_stats.object_count, debug_stats.mesh_count, debug_stats.polygon_count,
-        );
+    let elapsed_text = format!("{:.1}", time.elapsed_seconds());
+    let distance_culling_text = if let Some(config) = distance_culling {
+        if config.enabled {
+            format!("{:.0}", config.max_distance)
+        } else {
+            "off".to_string()
+        }
+    } else {
+        "n/a".to_string()
+    };
+    for mut text in &mut perf_text_query {
+        text.sections[0].value = if cfg!(debug_assertions) {
+            format!(
+                "FPS: {fps_text}\nFrame: {frame_text} ms\nTempo: {elapsed_text} s\nCull dist: {distance_culling_text}\nObjetos render: {}/{}\nMeshes render: {}/{}\nPoligonos render: {}/{}",
+                debug_stats.visible_object_count,
+                debug_stats.object_count,
+                debug_stats.visible_mesh_count,
+                debug_stats.mesh_count,
+                debug_stats.visible_polygon_count,
+                debug_stats.polygon_count,
+            )
+        } else {
+            format!("FPS: {fps_text}\nFrame: {frame_text} ms\nTempo: {elapsed_text} s")
+        };
+    }
+
+    for mut text in &mut gpu_text_query {
+        text.sections[0].value =
+            format!("GPU: {gpu_name}\nVideo API: {graphics_api}\nVersao: {graphics_version}",);
     }
 }
 
@@ -172,4 +325,25 @@ fn sanitize_info_text(value: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn find_scene_object_ancestor(
+    start: Entity,
+    parents: &Query<&Parent>,
+    scene_objects: &Query<(), With<SceneObject>>,
+) -> Option<Entity> {
+    if scene_objects.contains(start) {
+        return Some(start);
+    }
+
+    let mut current = start;
+    while let Ok(parent) = parents.get(current) {
+        let parent_entity = parent.get();
+        if scene_objects.contains(parent_entity) {
+            return Some(parent_entity);
+        }
+        current = parent_entity;
+    }
+
+    None
 }

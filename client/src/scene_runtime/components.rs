@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Component)]
 pub struct RuntimeSceneEntity;
 
+/// Marker for on-screen debug overlay UI elements.
+#[derive(Component)]
+pub struct DebugOverlayElement;
+
 // ============================================================================
 // TERRAIN COMPONENTS
 // ============================================================================

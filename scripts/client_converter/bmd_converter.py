@@ -36,7 +36,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, fields as dataclass_fields
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple
 
 
@@ -79,13 +79,14 @@ def _apply_black_color_key_alpha(
     image_bytes: bytes,
     threshold: int,
 ) -> Tuple[bytes, bool]:
-    """Return PNG bytes with near-black pixels keyed to alpha=0.
+    """Return PNG bytes with border-connected near-black pixels keyed to alpha=0.
 
-    This is used only for specific legacy additive meshes where MU relied on
-    black backgrounds behaving as fully transparent in fixed-function blending.
+    Only near-black regions that are connected to texture borders are removed.
+    This avoids erasing dark-but-valid details inside the effect texture.
     """
     try:
         import io
+        from collections import deque
         from PIL import Image
 
         clamped_threshold = max(0, min(255, int(threshold)))
@@ -93,22 +94,65 @@ def _apply_black_color_key_alpha(
         image = Image.open(io.BytesIO(image_bytes))
         image.load()
         rgba = image.convert("RGBA")
-        pixels = list(rgba.getdata())
+        width, height = rgba.size
+        if width <= 0 or height <= 0:
+            return image_bytes, False
+
+        px = rgba.load()
+        if px is None:
+            return image_bytes, False
+
+        visited = bytearray(width * height)
+        queue: deque[Tuple[int, int]] = deque()
+
+        def is_near_black(x: int, y: int) -> bool:
+            r, g, b, _a = px[x, y]
+            return r <= clamped_threshold and g <= clamped_threshold and b <= clamped_threshold
+
+        def enqueue_if_candidate(x: int, y: int) -> None:
+            index = y * width + x
+            if visited[index]:
+                return
+            visited[index] = 1
+            if is_near_black(x, y):
+                queue.append((x, y))
+
+        for x in range(width):
+            enqueue_if_candidate(x, 0)
+            enqueue_if_candidate(x, height - 1)
+        for y in range(height):
+            enqueue_if_candidate(0, y)
+            enqueue_if_candidate(width - 1, y)
 
         changed = False
-        converted: List[Tuple[int, int, int, int]] = []
-        for r, g, b, a in pixels:
-            if r <= clamped_threshold and g <= clamped_threshold and b <= clamped_threshold:
-                if a != 0:
-                    changed = True
-                converted.append((r, g, b, 0))
-            else:
-                converted.append((r, g, b, a))
+        while queue:
+            x, y = queue.popleft()
+            r, g, b, a = px[x, y]
+            if a != 0:
+                changed = True
+                px[x, y] = (r, g, b, 0)
+
+            if x > 0:
+                enqueue_if_candidate(x - 1, y)
+            if x + 1 < width:
+                enqueue_if_candidate(x + 1, y)
+            if y > 0:
+                enqueue_if_candidate(x, y - 1)
+            if y + 1 < height:
+                enqueue_if_candidate(x, y + 1)
 
         if not changed:
             return image_bytes, False
 
-        rgba.putdata(converted)
+        non_zero_alpha = 0
+        for _r, _g, _b, a in rgba.getdata():
+            if a > 0:
+                non_zero_alpha += 1
+                break
+        if non_zero_alpha == 0:
+            # Never emit a fully transparent texture; keep original in this case.
+            return image_bytes, False
+
         output = io.BytesIO()
         rgba.save(output, format="PNG")
         return output.getvalue(), True
@@ -187,6 +231,19 @@ NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9]+")
 # Global cache for fallback PNG lookup maps, keyed by absolute root path.
 _GLOBAL_PNG_INDEX_CACHE: Dict[str, Tuple[Dict[str, Path], Dict[str, Path], Dict[str, Path]]] = {}
 
+LEGACY_TEXTURE_EXTENSIONS_BY_PREFERENCE: Tuple[str, ...] = (
+    ".ozj",
+    ".ozj2",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".ozp",
+    ".ozt",
+    ".tga",
+    ".ozb",
+    ".bmp",
+)
+
 # Legacy world/object rendering hints from MuClient5.2 / muonline-cross source.
 # Key: (object_dir, model_index), where model_index is from ObjectXX.bmd.
 # Value: BlendMesh value used by RenderMesh, which maps to Mesh.Texture index.
@@ -217,7 +274,7 @@ LEGACY_BLEND_TEXTURE_INDEX_BY_OBJECT_MODEL: Dict[Tuple[int, int], int] = {
 # that should be fully transparent in modern pipelines. We apply a conservative
 # color-key threshold during GLB embedding for these specific models.
 LEGACY_ADDITIVE_COLOR_KEY_THRESHOLD_BY_OBJECT_MODEL: Dict[Tuple[int, int], int] = {
-    (4, 40): 16,  # Object4/Object40 (Chaos Machine glow mesh)
+    (4, 40): 64,  # Object4/Object40 (Chaos Machine glow mesh)
 }
 
 # ---------------------------------------------------------------------------
@@ -1047,6 +1104,14 @@ def _mime_type_for_texture_uri(texture_uri: str) -> str:
     return "image/png"
 
 
+def _force_texture_uri_png(texture_uri: str) -> str:
+    """Return *texture_uri* rewritten with a `.png` suffix."""
+    uri = PurePosixPath(texture_uri)
+    if uri.suffix:
+        return str(uri.with_suffix(".png"))
+    return f"{texture_uri}.png"
+
+
 def _normalize_texture_lookup_key(raw_name: str) -> str:
     return NON_ALNUM_PATTERN.sub("", raw_name.lower())
 
@@ -1096,10 +1161,14 @@ class TextureResolver:
         texture_dir: Path,
         embed_textures: bool,
         fallback_root: Optional[Path] = None,
+        legacy_texture_dir: Optional[Path] = None,
     ) -> None:
         self.texture_dir = texture_dir.resolve()
         self.embed_textures = embed_textures
         self.fallback_root = fallback_root.resolve() if fallback_root else None
+        self.legacy_texture_dir = (
+            legacy_texture_dir.resolve() if legacy_texture_dir else None
+        )
         self._index_built = False
         self._by_lower_name: Dict[str, Path] = {}
         self._by_lower_stem: Dict[str, Path] = {}
@@ -1107,7 +1176,115 @@ class TextureResolver:
         self._fallback_by_lower_name: Optional[Dict[str, Path]] = None
         self._fallback_by_lower_stem: Optional[Dict[str, Path]] = None
         self._fallback_by_normalized_stem: Optional[Dict[str, Path]] = None
+        self._legacy_by_lower_name: Optional[Dict[str, Path]] = None
         self._cache: Dict[str, ResolvedTexture] = {}
+
+    def _legacy_texture_suffix_order(self, requested_suffix: str) -> List[str]:
+        suffix = requested_suffix.lower()
+        if suffix in {".jpg", ".jpeg", ".ozj", ".ozj2"}:
+            preferred = [".ozj", ".ozj2", ".jpg", ".jpeg"]
+        elif suffix in {".tga", ".ozt"}:
+            preferred = [".ozt", ".tga"]
+        elif suffix in {".png", ".ozp"}:
+            preferred = [".png", ".ozp"]
+        elif suffix in {".bmp", ".ozb"}:
+            preferred = [".ozb", ".bmp"]
+        else:
+            preferred = []
+
+        ordered: List[str] = []
+        seen: set[str] = set()
+        for entry in preferred + list(LEGACY_TEXTURE_EXTENSIONS_BY_PREFERENCE):
+            if entry in seen:
+                continue
+            seen.add(entry)
+            ordered.append(entry)
+        return ordered
+
+    def _decode_legacy_texture_payload(
+        self,
+        source_path: Path,
+    ) -> Optional[Tuple[bytes, str]]:
+        try:
+            raw = source_path.read_bytes()
+        except OSError:
+            return None
+
+        suffix = source_path.suffix.lower()
+        stem = source_path.stem
+
+        if suffix in {".ozj", ".ozj2"}:
+            if len(raw) <= 24:
+                return None
+            return raw[24:], f"{stem}.jpg"
+        if suffix == ".ozp":
+            if len(raw) <= 4:
+                return None
+            return raw[4:], f"{stem}.png"
+        if suffix == ".ozt":
+            if len(raw) <= 4:
+                return None
+            return raw[4:], f"{stem}.tga"
+        if suffix == ".ozb":
+            if len(raw) <= 4:
+                return None
+            return raw[4:], f"{stem}.bmp"
+        if suffix in {".jpg", ".jpeg", ".png", ".tga", ".bmp"}:
+            return raw, source_path.name
+        return None
+
+    def _build_legacy_index(self) -> None:
+        if self._legacy_by_lower_name is not None:
+            return
+
+        by_lower_name: Dict[str, Path] = {}
+        if self.legacy_texture_dir and self.legacy_texture_dir.exists() and self.legacy_texture_dir.is_dir():
+            for child in self.legacy_texture_dir.iterdir():
+                if not child.is_file():
+                    continue
+                by_lower_name.setdefault(child.name.lower(), child)
+        self._legacy_by_lower_name = by_lower_name
+
+    def _resolve_legacy_texture_source(self, texture_name: str) -> Optional[ResolvedTexture]:
+        if self.legacy_texture_dir is None:
+            return None
+        if not self.legacy_texture_dir.exists() or not self.legacy_texture_dir.is_dir():
+            return None
+
+        requested = texture_name.strip().replace("\\", "/")
+        stem = Path(requested).stem
+        if not stem:
+            return None
+        requested_suffix = Path(requested).suffix.lower()
+
+        for suffix in self._legacy_texture_suffix_order(requested_suffix):
+            candidate = self.legacy_texture_dir / f"{stem}{suffix}"
+            if not candidate.exists() or not candidate.is_file():
+                self._build_legacy_index()
+                assert self._legacy_by_lower_name is not None
+                candidate = self._legacy_by_lower_name.get(f"{stem}{suffix}".lower())
+                if candidate is None or not candidate.exists() or not candidate.is_file():
+                    continue
+
+            decoded = self._decode_legacy_texture_payload(candidate)
+            if decoded is None:
+                continue
+
+            payload_bytes, virtual_uri = decoded
+            has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio = _png_alpha_profile(
+                payload_bytes
+            )
+            return ResolvedTexture(
+                uri=virtual_uri,
+                png_bytes=payload_bytes if self.embed_textures else None,
+                found_on_disk=True,
+                has_alpha=has_alpha,
+                has_partial_alpha=has_partial_alpha,
+                transparent_ratio=transparent_ratio,
+                opaque_ratio=opaque_ratio,
+            )
+
+        return None
 
     def _build_index(self) -> None:
         if self._index_built:
@@ -1155,7 +1332,11 @@ class TextureResolver:
             self._fallback_by_normalized_stem,
         ) = _build_global_png_index(self.fallback_root)
 
-    def _resolve_texture_path(self, requested_uri: str) -> Optional[Path]:
+    def _resolve_texture_path(
+        self,
+        requested_uri: str,
+        allow_fallback_root: bool = True,
+    ) -> Optional[Path]:
         direct = self.texture_dir / requested_uri
         if direct.exists() and direct.is_file():
             return direct
@@ -1175,7 +1356,37 @@ class TextureResolver:
         if normalized_stem and normalized_stem in self._by_normalized_stem:
             return self._by_normalized_stem[normalized_stem]
 
-        if self.fallback_root is not None:
+        if allow_fallback_root and self.fallback_root is not None:
+            preferred_dirs: List[Path] = []
+            if self.legacy_texture_dir is not None:
+                legacy_dir_name = self.legacy_texture_dir.name
+                if legacy_dir_name:
+                    preferred_dirs.append(self.fallback_root / legacy_dir_name)
+                    preferred_dirs.append(self.fallback_root / legacy_dir_name.lower())
+
+            for preferred_dir in preferred_dirs:
+                if not preferred_dir.exists() or not preferred_dir.is_dir():
+                    continue
+
+                preferred_direct = preferred_dir / requested_uri
+                if preferred_direct.exists() and preferred_direct.is_file():
+                    return preferred_direct
+
+                (
+                    preferred_by_lower_name,
+                    preferred_by_lower_stem,
+                    preferred_by_normalized_stem,
+                ) = _build_global_png_index(preferred_dir)
+                if lower_name in preferred_by_lower_name:
+                    return preferred_by_lower_name[lower_name]
+                if lower_stem in preferred_by_lower_stem:
+                    return preferred_by_lower_stem[lower_stem]
+                if (
+                    normalized_stem
+                    and normalized_stem in preferred_by_normalized_stem
+                ):
+                    return preferred_by_normalized_stem[normalized_stem]
+
             fallback_direct = self.fallback_root / requested_uri
             if fallback_direct.exists() and fallback_direct.is_file():
                 return fallback_direct
@@ -1210,6 +1421,53 @@ class TextureResolver:
         except ValueError:
             return path.name
 
+    def _resolved_texture_from_path(self, resolved_path: Path) -> ResolvedTexture:
+        payload_bytes: Optional[bytes] = None
+        alpha_probe_payload: Optional[bytes] = None
+        if self.embed_textures:
+            try:
+                payload_bytes = resolved_path.read_bytes()
+                alpha_probe_payload = payload_bytes
+            except OSError as exc:
+                logging.warning(
+                    "Failed to read texture '%s' for embedding: %s",
+                    resolved_path,
+                    exc,
+                )
+                payload_bytes = None
+        else:
+            try:
+                alpha_probe_payload = resolved_path.read_bytes()
+            except OSError as exc:
+                logging.warning(
+                    "Failed to read texture '%s' for alpha analysis: %s",
+                    resolved_path,
+                    exc,
+                )
+
+        has_alpha = False
+        has_partial_alpha = False
+        transparent_ratio = 0.0
+        opaque_ratio = 1.0
+        if alpha_probe_payload is not None:
+            (
+                has_alpha,
+                has_partial_alpha,
+                transparent_ratio,
+                opaque_ratio,
+            ) = _png_alpha_profile(alpha_probe_payload)
+
+        resolved_uri = self._uri_for_path(resolved_path)
+        return ResolvedTexture(
+            uri=resolved_uri,
+            png_bytes=payload_bytes,
+            found_on_disk=True,
+            has_alpha=has_alpha,
+            has_partial_alpha=has_partial_alpha,
+            transparent_ratio=transparent_ratio,
+            opaque_ratio=opaque_ratio,
+        )
+
     def resolve(self, texture_name: str) -> Optional[ResolvedTexture]:
         texture_uris = _texture_name_to_candidate_uris(texture_name)
         if not texture_uris:
@@ -1227,55 +1485,31 @@ class TextureResolver:
         )
 
         for texture_uri in texture_uris:
-            resolved_path = self._resolve_texture_path(texture_uri)
+            resolved_path = self._resolve_texture_path(
+                texture_uri,
+                allow_fallback_root=False,
+            )
             if resolved_path is None:
                 continue
 
-            payload_bytes: Optional[bytes] = None
-            alpha_probe_payload: Optional[bytes] = None
-            if self.embed_textures:
-                try:
-                    payload_bytes = resolved_path.read_bytes()
-                    alpha_probe_payload = payload_bytes
-                except OSError as exc:
-                    logging.warning(
-                        "Failed to read texture '%s' for embedding: %s",
-                        resolved_path,
-                        exc,
-                    )
-                    payload_bytes = None
-            else:
-                try:
-                    alpha_probe_payload = resolved_path.read_bytes()
-                except OSError as exc:
-                    logging.warning(
-                        "Failed to read texture '%s' for alpha analysis: %s",
-                        resolved_path,
-                        exc,
-                    )
+            resolved = self._resolved_texture_from_path(resolved_path)
+            self._cache[cache_key] = resolved
+            return resolved
 
-            has_alpha = False
-            has_partial_alpha = False
-            transparent_ratio = 0.0
-            opaque_ratio = 1.0
-            if alpha_probe_payload is not None:
-                (
-                    has_alpha,
-                    has_partial_alpha,
-                    transparent_ratio,
-                    opaque_ratio,
-                ) = _png_alpha_profile(alpha_probe_payload)
+        legacy_resolved = self._resolve_legacy_texture_source(texture_name)
+        if legacy_resolved is not None:
+            self._cache[cache_key] = legacy_resolved
+            return legacy_resolved
 
-            resolved_uri = self._uri_for_path(resolved_path)
-            resolved = ResolvedTexture(
-                uri=resolved_uri,
-                png_bytes=payload_bytes,
-                found_on_disk=True,
-                has_alpha=has_alpha,
-                has_partial_alpha=has_partial_alpha,
-                transparent_ratio=transparent_ratio,
-                opaque_ratio=opaque_ratio,
+        for texture_uri in texture_uris:
+            resolved_path = self._resolve_texture_path(
+                texture_uri,
+                allow_fallback_root=True,
             )
+            if resolved_path is None:
+                continue
+
+            resolved = self._resolved_texture_from_path(resolved_path)
             self._cache[cache_key] = resolved
             return resolved
 
@@ -1684,7 +1918,8 @@ def bmd_to_glb(
     textures: List[Dict[str, object]] = []
     materials: List[Dict[str, object]] = []
     material_index_by_texture: Dict[Tuple[Optional[str], Optional[str]], int] = {}
-    image_buffer_view_by_texture: Dict[str, int] = {}
+    image_buffer_view_by_texture: Dict[Tuple[str, Optional[str], Optional[int]], int] = {}
+    uses_khr_materials_unlit = False
 
     if missing_textures:
         missing_preview = ", ".join(sorted(missing_textures)[:4])
@@ -1719,13 +1954,30 @@ def bmd_to_glb(
                 "roughnessFactor": 1.0,
             }
         }
-        def apply_legacy_additive_mode() -> None:
+        additive_alpha_key_threshold: Optional[int] = None
+        if legacy_blend_mode == "additive" and legacy_object_identity is not None:
+            additive_alpha_key_threshold = LEGACY_ADDITIVE_COLOR_KEY_THRESHOLD_BY_OBJECT_MODEL.get(
+                legacy_object_identity
+            )
+
+        def apply_legacy_additive_mode(alpha_key_applied: bool = False) -> None:
+            nonlocal uses_khr_materials_unlit
             material["alphaMode"] = "BLEND"
             material["doubleSided"] = True
+            extensions = material.get("extensions")
+            if not isinstance(extensions, dict):
+                extensions = {}
+            extensions["KHR_materials_unlit"] = {}
+            material["extensions"] = extensions
+            uses_khr_materials_unlit = True
             extras: Dict[str, object] = {
                 "mu_legacy_blend_mode": "additive",
                 "mu_legacy_blend_mode_reason": "blend_mesh_texture_index",
             }
+            if additive_alpha_key_threshold is not None:
+                extras["mu_legacy_alpha_key_threshold"] = additive_alpha_key_threshold
+                if alpha_key_applied:
+                    extras["mu_legacy_alpha_key_applied"] = True
             if legacy_blend_texture_index is not None:
                 extras["mu_legacy_blend_texture_index"] = legacy_blend_texture_index
             if legacy_object_identity is not None:
@@ -1733,20 +1985,38 @@ def bmd_to_glb(
                 extras["mu_legacy_object_model"] = legacy_object_identity[1]
             material["extras"] = extras
 
+        alpha_key_applied = False
         if texture_uri:
             image_index = len(images)
             embedded_payload = embedded_texture_payloads.get(texture_uri)
             if embedded_payload is not None:
-                image_buffer_view = image_buffer_view_by_texture.get(texture_uri)
+                image_name_uri = texture_uri
+                if (
+                    legacy_blend_mode == "additive"
+                    and additive_alpha_key_threshold is not None
+                ):
+                    embedded_payload, alpha_key_applied = _apply_black_color_key_alpha(
+                        embedded_payload,
+                        additive_alpha_key_threshold,
+                    )
+                    if alpha_key_applied:
+                        image_name_uri = _force_texture_uri_png(texture_uri)
+
+                image_payload_key = (
+                    image_name_uri,
+                    legacy_blend_mode if legacy_blend_mode == "additive" else None,
+                    additive_alpha_key_threshold if legacy_blend_mode == "additive" else None,
+                )
+                image_buffer_view = image_buffer_view_by_texture.get(image_payload_key)
                 if image_buffer_view is None:
                     image_buffer_view = append_binary_buffer_view(embedded_payload)
-                    image_buffer_view_by_texture[texture_uri] = image_buffer_view
+                    image_buffer_view_by_texture[image_payload_key] = image_buffer_view
 
                 images.append(
                     {
                         "bufferView": image_buffer_view,
-                        "mimeType": _mime_type_for_texture_uri(texture_uri),
-                        "name": texture_uri,
+                        "mimeType": _mime_type_for_texture_uri(image_name_uri),
+                        "name": image_name_uri,
                     }
                 )
             else:
@@ -1760,7 +2030,9 @@ def bmd_to_glb(
                 pbr["baseColorTexture"] = {"index": texture_index}
 
             if legacy_blend_mode == "additive":
-                apply_legacy_additive_mode()
+                material["emissiveFactor"] = [1.0, 1.0, 1.0]
+                material["emissiveTexture"] = {"index": texture_index}
+                apply_legacy_additive_mode(alpha_key_applied=alpha_key_applied)
             else:
                 has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio = (
                     texture_alpha_profile_by_uri.get(texture_uri, (False, False, 0.0, 1.0))
@@ -1779,7 +2051,7 @@ def bmd_to_glb(
                     material["alphaCutoff"] = ALPHA_MASK_CUTOFF
                     material["doubleSided"] = True
         elif legacy_blend_mode == "additive":
-            apply_legacy_additive_mode()
+            apply_legacy_additive_mode(alpha_key_applied=False)
 
         material_index = len(materials)
         materials.append(material)
@@ -2055,6 +2327,8 @@ def bmd_to_glb(
         gltf["textures"] = textures
     if materials:
         gltf["materials"] = materials
+    if uses_khr_materials_unlit:
+        gltf["extensionsUsed"] = ["KHR_materials_unlit"]
 
     # Encode GLB.
     json_bytes = json.dumps(gltf, indent=2).encode('ascii')
@@ -2162,6 +2436,7 @@ def convert_single_bmd(
             texture_dir=output_path.parent,
             embed_textures=embed_textures,
             fallback_root=output_root,
+            legacy_texture_dir=source.parent,
         )
         glb_bytes = bmd_to_glb(
             model,
@@ -2286,6 +2561,13 @@ def canonicalize_output_rel_path(path: Path) -> Path:
             normalized.append(f"object{int(object_match.group(1))}")
             continue
         normalized.append(part)
+
+    # Normalize model filenames (e.g. Object40.bmd -> object40.bmd) so output
+    # paths stay consistent with scene references that use lowercase names.
+    filename = Path(normalized[-1])
+    model_match = OBJECT_MODEL_PATTERN.fullmatch(filename.stem)
+    if model_match:
+        normalized[-1] = f"object{int(model_match.group(1))}{filename.suffix.lower()}"
 
     return Path(*normalized)
 
