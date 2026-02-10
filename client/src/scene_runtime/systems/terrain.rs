@@ -18,6 +18,15 @@ const TERRAIN_TILE_UV_STEP: f32 = 0.25;
 const CLIENT_ASSETS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets");
 const TERRAIN_NO_LAYER_SLOT: u8 = 255;
 
+fn effective_height_multiplier(world_name: &str, config: &TerrainConfig) -> f32 {
+    if world_name == "world_56" {
+        // C++ WD_55LOGINSCENE loads World56 terrain and applies x3.0 height.
+        3.0
+    } else {
+        config.height_multiplier
+    }
+}
+
 /// Marker component to track if terrain has been spawned.
 #[derive(Component)]
 pub struct TerrainSpawned;
@@ -224,7 +233,8 @@ fn build_terrain_batches(
     let scale = config.size.scale;
     let max_world_x = (width.saturating_sub(1) as f32) * scale;
     let max_world_z = (height.saturating_sub(1) as f32) * scale;
-    let vertical_scale = config.height_multiplier * (scale / config.legacy_terrain_scale.max(1.0));
+    let vertical_scale = effective_height_multiplier(world_name, config)
+        * (scale / config.legacy_terrain_scale.max(1.0));
     let layer_uv_scale = config
         .texture_layers
         .first()

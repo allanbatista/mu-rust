@@ -8,12 +8,15 @@
 //!
 //! ```bash
 //! # Using world ID (numeric)
-//! MU_LOGIN_WORLD=55    # Original login scene (WD_55LOGINSCENE)
-//! MU_LOGIN_WORLD=73    # New login scene v1 (WD_73NEW_LOGIN_SCENE)
-//! MU_LOGIN_WORLD=77    # New login scene v2 (WD_77NEW_LOGIN_SCENE)
+//! MU_LOGIN_WORLD=55    # Original login scene (C++ WD_55LOGINSCENE -> World56 assets)
+//! MU_LOGIN_WORLD=56    # Original login scene (asset world ID)
+//! MU_LOGIN_WORLD=73    # New login scene v1 (C++ WD_73NEW_LOGIN_SCENE -> World74 assets)
+//! MU_LOGIN_WORLD=74    # New login scene v1 (asset world ID)
+//! MU_LOGIN_WORLD=77    # New login scene v2 (C++ WD_77NEW_LOGIN_SCENE -> World78 assets)
+//! MU_LOGIN_WORLD=78    # New login scene v2 (asset world ID)
 //! ```
 //!
-//! If not set, defaults to `WorldMap::LoginScene` (ID 55).
+//! If not set, defaults to `WorldMap::LoginScene` (asset world ID 56).
 
 use crate::scene_runtime::components::{
     ParticleDefinitions, ParticleEmitterDef, RuntimeSceneEntity,
@@ -29,18 +32,52 @@ use std::collections::HashMap;
 
 use super::SceneBuilder;
 
-// Default login world (can be changed via MU_LOGIN_WORLD environment variable)
-// Valid login worlds are: 55, 73, 77 (LoginScene, NewLoginScene1, NewLoginScene2)
-const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::Lorencia;
+// Default login world (can be changed via MU_LOGIN_WORLD environment variable).
+// Valid login worlds are:
+// - C++ logical IDs: 55, 73, 77
+// - Asset world IDs: 56, 74, 78
+// - Aliases: LoginScene, NewLoginScene1, NewLoginScene2
+const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::LoginScene;
 const DEFAULT_FIRE_PARTICLE_TEXTURE: &str = "data/effect/flame_chrom2.png";
 const DEFAULT_CLOUD_PARTICLE_TEXTURE: &str = "data/effect/hart_particle02.png";
+
+fn resolve_login_world_from_numeric_id(id: u8) -> Option<WorldMap> {
+    match id {
+        // C++ WD_55LOGINSCENE -> loads World56 assets.
+        55 | 56 => Some(WorldMap::LoginScene),
+        // C++ WD_73NEW_LOGIN_SCENE -> loads World74 assets.
+        73 | 74 => Some(WorldMap::NewLoginScene1),
+        // C++ WD_77NEW_LOGIN_SCENE -> loads World78 assets.
+        77 | 78 => Some(WorldMap::NewLoginScene2),
+        _ => match WorldMap::from_id(id) {
+            Some(
+                map @ (WorldMap::LoginScene | WorldMap::NewLoginScene1 | WorldMap::NewLoginScene2),
+            ) => Some(map),
+            _ => None,
+        },
+    }
+}
+
+fn resolve_login_world_from_alias(raw: &str) -> Option<WorldMap> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "loginscene" | "wd_55loginscene" | "wd55loginscene" => Some(WorldMap::LoginScene),
+        "newloginscene1" | "wd_73new_login_scene" | "wd73newloginscene" => {
+            Some(WorldMap::NewLoginScene1)
+        }
+        "newloginscene2" | "wd_77new_login_scene" | "wd77newloginscene" => {
+            Some(WorldMap::NewLoginScene2)
+        }
+        _ => None,
+    }
+}
 
 /// Gets the login world from environment variable or returns the default.
 ///
 /// Accepts:
-/// - `MU_LOGIN_WORLD=55` or `MU_LOGIN_WORLD=LoginScene`
-/// - `MU_LOGIN_WORLD=73` or `MU_LOGIN_WORLD=NewLoginScene1`
-/// - `MU_LOGIN_WORLD=77` or `MU_LOGIN_WORLD=NewLoginScene2`s
+/// - `MU_LOGIN_WORLD=55` or `MU_LOGIN_WORLD=56` or `MU_LOGIN_WORLD=LoginScene`
+/// - `MU_LOGIN_WORLD=73` or `MU_LOGIN_WORLD=74` or `MU_LOGIN_WORLD=NewLoginScene1`
+/// - `MU_LOGIN_WORLD=77` or `MU_LOGIN_WORLD=78` or `MU_LOGIN_WORLD=NewLoginScene2`
 fn get_login_world() -> WorldMap {
     match std::env::var("MU_LOGIN_WORLD") {
         Ok(raw_world) => {
@@ -48,33 +85,42 @@ fn get_login_world() -> WorldMap {
 
             // Try to parse as world ID (u8)
             if let Ok(id) = trimmed.parse::<u8>() {
-                if let Some(map) = WorldMap::from_id(id) {
-                    // Validate that it's a login scene
-                    if map.is_login_scene() {
+                if let Some(map) = resolve_login_world_from_numeric_id(id) {
+                    if id != map as u8 {
+                        info!(
+                            "Using login world from MU_LOGIN_WORLD: {} (ID: {}) -> {} (asset ID: {})",
+                            id,
+                            id,
+                            map.name(),
+                            map as u8
+                        );
+                    } else {
                         info!(
                             "Using login world from MU_LOGIN_WORLD: {} (ID: {})",
                             map.name(),
                             id
                         );
-                        return map;
-                    } else {
-                        warn!(
-                            "MU_LOGIN_WORLD={} (ID: {}) is not a login scene; using default {}",
-                            id,
-                            id,
-                            DEFAULT_LOGIN_WORLD.name()
-                        );
                     }
+                    return map;
                 } else {
                     warn!(
-                        "MU_LOGIN_WORLD={} is not a valid world ID; using default {}",
+                        "MU_LOGIN_WORLD={} is not a supported login world ID; use 55/56, 73/74, or 77/78. Using default {}",
                         id,
                         DEFAULT_LOGIN_WORLD.name()
                     );
                 }
             } else {
+                if let Some(map) = resolve_login_world_from_alias(trimmed) {
+                    info!(
+                        "Using login world from MU_LOGIN_WORLD: {} (asset ID: {})",
+                        map.name(),
+                        map as u8
+                    );
+                    return map;
+                }
+
                 warn!(
-                    "MU_LOGIN_WORLD='{}' is not a valid world ID; using default {}",
+                    "MU_LOGIN_WORLD='{}' is not a valid login world; use 55/56, 73/74, 77/78, or LoginScene/NewLoginScene1/NewLoginScene2. Using default {}",
                     raw_world,
                     DEFAULT_LOGIN_WORLD.name()
                 );

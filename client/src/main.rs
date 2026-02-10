@@ -1,3 +1,4 @@
+mod character;
 mod scene_runtime;
 mod scenes;
 mod world;

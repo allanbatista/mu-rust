@@ -2333,6 +2333,254 @@ def bmd_to_glb(
     return bytes(glb)
 
 
+def bmd_to_skeleton_glb(
+    model: BmdModel,
+    source_path: Optional[Path] = None,
+) -> Optional[bytes]:
+    """Convert a parsed BMD model with bones+animations but 0 meshes to GLB.
+
+    Creates a skeleton-only GLB containing bone nodes and all animation clips.
+    This is used for files like player.bmd which carry a skeleton and animations
+    but no renderable geometry (body parts are in separate BMDs).
+
+    Returns None if the model has no bones or no actions.
+    """
+    if model.num_bones == 0 or model.num_actions <= 1:
+        return None
+
+    fixups = compute_bone_fixups(model)
+    if len(fixups) != model.num_bones:
+        return None
+
+    # Binary buffer for GLB
+    binary_buffer = bytearray()
+    buffer_views: List[Dict[str, object]] = []
+    accessors: List[Dict[str, object]] = []
+
+    def append_binary_buffer_view(data: bytes) -> int:
+        alignment = (4 - len(binary_buffer) % 4) % 4
+        binary_buffer.extend(b'\x00' * alignment)
+        offset = len(binary_buffer)
+        binary_buffer.extend(data)
+        view_index = len(buffer_views)
+        buffer_views.append({
+            "buffer": 0,
+            "byteOffset": offset,
+            "byteLength": len(data),
+        })
+        return view_index
+
+    # Build bone nodes
+    bone_node_offset = 0  # No mesh node — bones start at index 0
+    bone_nodes: List[Dict[str, object]] = []
+
+    for bone_index, bone in enumerate(model.bones):
+        bind_pos, bind_rot = _bone_local_pose(model, bone_index, action_index=0, key_index=0)
+        translation, quaternion = _mu_local_pose_to_gltf_trs(bind_pos, bind_rot)
+
+        bone_name = bone.name.strip() if bone.name else ""
+        if not bone_name:
+            bone_name = f"Bone_{bone_index:03d}"
+
+        bone_nodes.append({
+            "name": bone_name,
+            "translation": [translation[0], translation[1], translation[2]],
+            "rotation": [quaternion[0], quaternion[1], quaternion[2], quaternion[3]],
+        })
+
+    root_bones: List[int] = []
+    for child_index, bone in enumerate(model.bones):
+        parent_index = bone.parent
+        if 0 <= parent_index < model.num_bones and parent_index != child_index:
+            children = bone_nodes[parent_index].setdefault("children", [])
+            if isinstance(children, list):
+                children.append(bone_node_offset + child_index)
+        else:
+            root_bones.append(child_index)
+
+    if not root_bones and model.num_bones > 0:
+        root_bones.append(0)
+
+    nodes: List[Dict[str, object]] = list(bone_nodes)
+    scene_nodes: List[int] = [bone_node_offset + ri for ri in root_bones]
+
+    # Build skin with inverse bind matrices
+    joint_nodes = [bone_node_offset + bi for bi in range(model.num_bones)]
+
+    inverse_bind_values: List[float] = []
+    for fixup in fixups:
+        bind_global = _fixup_to_gltf_global_matrix(fixup)
+        inverse_bind = _inverse_rigid_matrix4(bind_global)
+        inverse_bind_values.extend(_matrix4_to_column_major_values(inverse_bind))
+
+    inverse_bind_data = b''.join(struct.pack('<f', v) for v in inverse_bind_values)
+    inverse_bind_view = append_binary_buffer_view(inverse_bind_data)
+    inverse_bind_accessor = len(accessors)
+    accessors.append({
+        "bufferView": inverse_bind_view,
+        "componentType": 5126,
+        "count": model.num_bones,
+        "type": "MAT4",
+    })
+
+    skin: Dict[str, object] = {
+        "joints": joint_nodes,
+        "inverseBindMatrices": inverse_bind_accessor,
+    }
+    if root_bones:
+        skin["skeleton"] = bone_node_offset + root_bones[0]
+
+    skins = [skin]
+
+    # Export animations (same logic as bmd_to_glb)
+    animations: List[Dict[str, object]] = []
+    for action_index, action in enumerate(model.actions):
+        key_count = action.num_animation_keys
+        if key_count <= 0:
+            continue
+
+        time_values = [float(key) / 30.0 for key in range(key_count)]
+        time_accessor: Optional[int] = None
+
+        samplers: List[Dict[str, object]] = []
+        channels: List[Dict[str, object]] = []
+
+        for bone_index in range(model.num_bones):
+            translation_values: List[Tuple[float, float, float]] = []
+            rotation_values: List[Tuple[float, float, float, float]] = []
+
+            for key_index in range(key_count):
+                pos_mu, rot_mu = _bone_local_pose(
+                    model,
+                    bone_index=bone_index,
+                    action_index=action_index,
+                    key_index=key_index,
+                )
+                translation, quaternion = _mu_local_pose_to_gltf_trs(pos_mu, rot_mu)
+                translation_values.append(translation)
+                rotation_values.append(quaternion)
+
+            translation_varies = _track_values_vary(translation_values)
+            rotation_varies = _track_values_vary(rotation_values)
+            if not translation_varies and not rotation_varies:
+                continue
+
+            if time_accessor is None:
+                time_data = b''.join(struct.pack('<f', v) for v in time_values)
+                time_view = append_binary_buffer_view(time_data)
+                time_accessor = len(accessors)
+                accessors.append({
+                    "bufferView": time_view,
+                    "componentType": 5126,
+                    "count": key_count,
+                    "type": "SCALAR",
+                    "min": [time_values[0]],
+                    "max": [time_values[-1]],
+                })
+
+            if translation_varies:
+                translation_data = b''.join(
+                    struct.pack('<3f', v[0], v[1], v[2])
+                    for v in translation_values
+                )
+                translation_view = append_binary_buffer_view(translation_data)
+                translation_accessor = len(accessors)
+                accessors.append({
+                    "bufferView": translation_view,
+                    "componentType": 5126,
+                    "count": key_count,
+                    "type": "VEC3",
+                })
+
+                translation_sampler = len(samplers)
+                samplers.append({
+                    "input": time_accessor,
+                    "output": translation_accessor,
+                    "interpolation": "LINEAR",
+                })
+                channels.append({
+                    "sampler": translation_sampler,
+                    "target": {
+                        "node": bone_node_offset + bone_index,
+                        "path": "translation",
+                    },
+                })
+
+            if rotation_varies:
+                rotation_data = b''.join(
+                    struct.pack('<4f', v[0], v[1], v[2], v[3])
+                    for v in rotation_values
+                )
+                rotation_view = append_binary_buffer_view(rotation_data)
+                rotation_accessor = len(accessors)
+                accessors.append({
+                    "bufferView": rotation_view,
+                    "componentType": 5126,
+                    "count": key_count,
+                    "type": "VEC4",
+                })
+
+                rotation_sampler = len(samplers)
+                samplers.append({
+                    "input": time_accessor,
+                    "output": rotation_accessor,
+                    "interpolation": "LINEAR",
+                })
+                channels.append({
+                    "sampler": rotation_sampler,
+                    "target": {
+                        "node": bone_node_offset + bone_index,
+                        "path": "rotation",
+                    },
+                })
+
+        if not channels:
+            continue
+
+        animation: Dict[str, object] = {
+            "name": f"Action{action_index:03d}",
+            "samplers": samplers,
+            "channels": channels,
+        }
+        if action.lock_positions:
+            animation["extras"] = {"lock_positions": True}
+        animations.append(animation)
+
+    if not animations:
+        return None
+
+    # Build GLTF JSON
+    gltf: Dict[str, object] = {
+        "asset": {"version": "2.0", "generator": "mu-rust bmd_converter.py (skeleton-only)"},
+        "scene": 0,
+        "scenes": [{"nodes": scene_nodes}],
+        "nodes": nodes,
+        "buffers": [{"byteLength": len(binary_buffer)}],
+        "bufferViews": buffer_views,
+        "accessors": accessors,
+        "skins": skins,
+        "animations": animations,
+    }
+
+    # Encode GLB
+    json_bytes = json.dumps(gltf, indent=2).encode('ascii')
+    json_pad = (4 - len(json_bytes) % 4) % 4
+    json_bytes += b' ' * json_pad
+
+    bin_pad = (4 - len(binary_buffer) % 4) % 4
+    binary_buffer += b'\x00' * bin_pad
+
+    total_length = 12 + 8 + len(json_bytes) + 8 + len(binary_buffer)
+    glb = bytearray()
+    glb += struct.pack('<III', 0x46546C67, 2, total_length)
+    glb += struct.pack('<II', len(json_bytes), 0x4E4F534A)
+    glb += json_bytes
+    glb += struct.pack('<II', len(binary_buffer), 0x004E4942)
+    glb += binary_buffer
+
+    return bytes(glb)
+
+
 # ---------------------------------------------------------------------------
 # Batch conversion
 # ---------------------------------------------------------------------------
@@ -2432,6 +2680,22 @@ def convert_single_bmd(
         stats.failures.append({"source": str(source), "error": str(exc), "type": "convert"})
         logging.error("Conversion error for %s: %s", source, exc)
         return
+
+    if glb_bytes is None:
+        # Try skeleton-only export for files like player.bmd (0 meshes, many bones+animations)
+        if model.num_bones > 0 and model.num_actions > 1:
+            try:
+                glb_bytes = bmd_to_skeleton_glb(model, source_path=source)
+            except Exception as exc:
+                stats.failed += 1
+                stats.failures.append({"source": str(source), "error": str(exc), "type": "skeleton_convert"})
+                logging.error("Skeleton-only conversion error for %s: %s", source, exc)
+                return
+            if glb_bytes is not None:
+                logging.info(
+                    "Skeleton-only GLB for %s: %d bones, %d actions, %d bytes",
+                    source, model.num_bones, model.num_actions, len(glb_bytes),
+                )
 
     if glb_bytes is None:
         stats.skipped_no_geometry += 1

@@ -14,8 +14,8 @@ use bevy::render::texture::{
     ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
 };
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 use super::SceneObjectDistanceCullingConfig;
 
@@ -27,6 +27,15 @@ const GRASS_WIND_SPEED: f32 = 1.5;
 const CLIENT_ASSETS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets");
 const GRASS_CHUNK_SIZE: usize = 8;
 const GRASS_CULLING_CAMERA_MOVE_THRESHOLD_SQ: f32 = 100.0;
+
+fn effective_height_multiplier(world_name: &str, config: &TerrainConfig) -> f32 {
+    if world_name == "world_56" {
+        // C++ WD_55LOGINSCENE loads World56 terrain and applies x3.0 height.
+        3.0
+    } else {
+        config.height_multiplier
+    }
+}
 
 /// Marker component to track if terrain grass has been spawned.
 #[derive(Component)]
@@ -167,7 +176,8 @@ pub fn spawn_terrain_grass_when_ready(
 
     // Build grass quads grouped by chunk
     let scale = config.size.scale;
-    let vertical_scale = config.height_multiplier * (scale / config.legacy_terrain_scale.max(1.0));
+    let vertical_scale = effective_height_multiplier(&world.world_name, config)
+        * (scale / config.legacy_terrain_scale.max(1.0));
 
     let map_width = terrain_map.width().min(heightmap.width as usize);
     let map_height = terrain_map.height().min(heightmap.height as usize);

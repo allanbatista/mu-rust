@@ -3,6 +3,7 @@ use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::world_coordinates::{mirror_map_position_with_axis, world_mirror_axis};
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
+use bevy::render::camera::Projection;
 
 /// Marker for camera tour setup
 #[derive(Component)]
@@ -34,6 +35,18 @@ impl Default for DebugFreeCameraController {
             pitch: 0.0,
             tour_was_active: true,
         }
+    }
+}
+
+fn login_camera_fov_for_world(world_name: &str) -> Option<f32> {
+    match world_name {
+        // Legacy login scene: C++ WD_55LOGINSCENE (assets from World56).
+        "world_56" => Some(35.0_f32.to_radians()),
+        // New login scene v1: C++ WD_73NEW_LOGIN_SCENE (assets from World74).
+        "world_74" => Some(65.0_f32.to_radians()),
+        // New login scene v2: C++ WD_77NEW_LOGIN_SCENE (assets from World78).
+        "world_78" => Some(61.0_f32.to_radians()),
+        _ => None,
     }
 }
 
@@ -198,7 +211,7 @@ pub fn setup_camera_tour(
     assets: Res<RuntimeSceneAssets>,
     terrain_configs: Res<Assets<TerrainConfig>>,
     camera_tour_data: Res<Assets<CameraTourData>>,
-    mut camera_query: Query<Entity, (With<Camera3d>, Without<CameraTour>)>,
+    mut camera_query: Query<(Entity, &mut Projection), (With<Camera3d>, Without<CameraTour>)>,
     setup_query: Query<&CameraTourSetup>,
 ) {
     // Only setup once
@@ -263,7 +276,18 @@ pub fn setup_camera_tour(
     }
 
     // Add camera tour to the main 3D camera
-    if let Ok(camera_entity) = camera_query.get_single_mut() {
+    if let Ok((camera_entity, mut projection)) = camera_query.get_single_mut() {
+        if let Some(fov_radians) = login_camera_fov_for_world(&assets.world_name) {
+            if let Projection::Perspective(perspective) = projection.as_mut() {
+                perspective.fov = fov_radians;
+                info!(
+                    "Applied login camera FOV profile for {}: {:.1} degrees",
+                    assets.world_name,
+                    fov_radians.to_degrees()
+                );
+            }
+        }
+
         commands.entity(camera_entity).insert((
             CameraTour {
                 waypoints,

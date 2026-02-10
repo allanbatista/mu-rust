@@ -1,13 +1,19 @@
 use bevy::asset::{AssetId, AssetPlugin};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gltf::Gltf;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
+use bevy::render::mesh::VertexAttributeValues;
 use bevy::window::WindowResolution;
-use bevy_egui::{EguiContexts, EguiPlugin, egui};
-use std::collections::HashMap;
+use bevy_egui::{EguiClipboard, EguiContexts, EguiPlugin, egui};
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 const DEFAULT_OBJECT_PLAYBACK_SPEED: f32 = 0.16;
+const CAMERA_MIN_DISTANCE: f32 = 80.0;
+const CAMERA_MAX_DISTANCE: f32 = 4_000.0;
+const CAMERA_ZOOM_SPEED: f32 = 120.0;
+const GROUND_Y_OFFSET: f32 = 0.5;
 
 #[derive(Resource)]
 struct ViewerState {
@@ -59,13 +65,24 @@ struct LoadedSceneRoot;
 struct ViewerAnimationBound;
 
 #[derive(Component)]
+struct GroundPlane;
+
+#[derive(Component)]
 struct OrbitCamera {
     target: Vec3,
     yaw: f32,
     pitch: f32,
     distance: f32,
+    min_distance: f32,
+    max_distance: f32,
     yaw_speed: f32,
     pitch_speed: f32,
+    zoom_speed: f32,
+}
+
+#[derive(Resource, Default)]
+struct MeshBoundsCache {
+    local_aabb_by_mesh: HashMap<AssetId<Mesh>, (Vec3, Vec3)>,
 }
 
 fn main() {
@@ -74,6 +91,7 @@ fn main() {
             color: Color::WHITE,
             brightness: 250.0,
         })
+        .insert_resource(MeshBoundsCache::default())
         .insert_resource(ViewerState::default())
         .add_plugins(
             DefaultPlugins
@@ -101,6 +119,7 @@ fn main() {
                 initialize_animation_graph,
                 bind_animation_players,
                 apply_animation_controls,
+                sync_ground_below_loaded_object,
                 update_orbit_camera,
             ),
         )
@@ -122,8 +141,11 @@ fn setup_viewer_scene(
         yaw: std::f32::consts::FRAC_PI_2,
         pitch: 0.28,
         distance: 854.0,
+        min_distance: CAMERA_MIN_DISTANCE,
+        max_distance: CAMERA_MAX_DISTANCE,
         yaw_speed: 1.8,
         pitch_speed: 1.4,
+        zoom_speed: CAMERA_ZOOM_SPEED,
     };
     apply_orbit_transform(&mut camera_transform, &orbit_camera);
 
@@ -146,26 +168,72 @@ fn setup_viewer_scene(
         ..default()
     });
 
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Plane3d::default().mesh().size(5000.0, 5000.0)),
-        material: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.08, 0.09, 0.1),
-            perceptual_roughness: 0.95,
-            metallic: 0.0,
+    commands
+        .spawn(PbrBundle {
+            mesh: meshes.add(Plane3d::default().mesh().size(5000.0, 5000.0)),
+            material: materials.add(StandardMaterial {
+                base_color: Color::srgb(0.08, 0.09, 0.1),
+                perceptual_roughness: 0.95,
+                metallic: 0.0,
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
-    });
+        })
+        .insert(GroundPlane);
 }
 
-fn draw_ui_panel(mut contexts: EguiContexts, mut viewer: ResMut<ViewerState>) {
+fn draw_ui_panel(
+    mut contexts: EguiContexts,
+    mut viewer: ResMut<ViewerState>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut clipboard: ResMut<EguiClipboard>,
+) {
     let ctx = contexts.ctx_mut();
     egui::Window::new("Object Loader")
         .default_pos(egui::pos2(12.0, 12.0))
         .default_width(520.0)
         .show(ctx, |ui| {
             ui.label("GLB path (relative to assets root)");
-            ui.text_edit_singleline(&mut viewer.input_path);
+            let previous_path = viewer.input_path.clone();
+            let path_edit = egui::TextEdit::singleline(&mut viewer.input_path)
+                .id_source("object_loader_glb_path")
+                .desired_width(f32::INFINITY)
+                .show(ui);
+
+            let command_pressed =
+                command_modifier_pressed(&keys) || ctx.input(|i| i.modifiers.command);
+            if path_edit.response.has_focus() && command_pressed {
+                if keys.just_pressed(KeyCode::KeyC) {
+                    clipboard.set_contents(&viewer.input_path);
+                    // Prevent stray "c" insertion when some platforms don't emit Copy/Paste events.
+                    viewer.input_path = previous_path.clone();
+                } else if keys.just_pressed(KeyCode::KeyX) {
+                    clipboard.set_contents(&viewer.input_path);
+                    viewer.input_path.clear();
+                } else if keys.just_pressed(KeyCode::KeyV) {
+                    if let Some(contents) = clipboard.get_contents() {
+                        viewer.input_path = contents;
+                    } else {
+                        viewer.input_path = previous_path.clone();
+                        viewer.status =
+                            "Clipboard unavailable for paste on this platform/session.".to_string();
+                    }
+                }
+            }
+
+            ui.horizontal(|ui| {
+                if ui.button("Paste").clicked() {
+                    if let Some(contents) = clipboard.get_contents() {
+                        viewer.input_path = contents;
+                    } else {
+                        viewer.status =
+                            "Clipboard unavailable for paste on this platform/session.".to_string();
+                    }
+                }
+                if ui.button("Copy").clicked() {
+                    clipboard.set_contents(&viewer.input_path);
+                }
+            });
 
             ui.horizontal(|ui| {
                 if ui.button("Load").clicked() {
@@ -187,7 +255,7 @@ fn draw_ui_panel(mut contexts: EguiContexts, mut viewer: ResMut<ViewerState>) {
             if ui.add(speed_slider).changed() {
                 viewer.pending_apply_selection = true;
             }
-            ui.label("W/S: pitch | A/D: yaw");
+            ui.label("W/S: pitch | A/D: yaw | Scroll: zoom");
 
             if viewer.animation_names.is_empty() {
                 ui.label("Animations: none loaded");
@@ -428,38 +496,163 @@ fn apply_animation_controls(
     }
 }
 
+fn sync_ground_below_loaded_object(
+    viewer: Res<ViewerState>,
+    mut grounds: Query<&mut Transform, With<GroundPlane>>,
+    mesh_entities: Query<(Entity, &GlobalTransform, &Handle<Mesh>), Without<GroundPlane>>,
+    children_query: Query<&Children>,
+    meshes: Res<Assets<Mesh>>,
+    mut bounds_cache: ResMut<MeshBoundsCache>,
+) {
+    let Some(scene_root) = viewer.scene_entity else {
+        return;
+    };
+    let Ok(mut ground_transform) = grounds.get_single_mut() else {
+        return;
+    };
+
+    let mut scene_entities = HashSet::new();
+    collect_descendants(scene_root, &children_query, &mut scene_entities);
+    scene_entities.insert(scene_root);
+
+    let mut min_world_y = f32::INFINITY;
+    for (entity, global_transform, mesh_handle) in &mesh_entities {
+        if !scene_entities.contains(&entity) {
+            continue;
+        }
+
+        let bounds = if let Some(bounds) = bounds_cache.local_aabb_by_mesh.get(&mesh_handle.id()) {
+            Some(*bounds)
+        } else {
+            let Some(mesh) = meshes.get(mesh_handle) else {
+                continue;
+            };
+            let Some(bounds) = compute_local_aabb(mesh) else {
+                continue;
+            };
+            bounds_cache
+                .local_aabb_by_mesh
+                .insert(mesh_handle.id(), bounds);
+            Some(bounds)
+        };
+
+        let Some((local_min, local_max)) = bounds else {
+            continue;
+        };
+        let entity_min_y = transformed_aabb_min_y(global_transform, local_min, local_max);
+        min_world_y = min_world_y.min(entity_min_y);
+    }
+
+    if min_world_y.is_finite() {
+        ground_transform.translation.y = min_world_y - GROUND_Y_OFFSET;
+    }
+}
+
+fn collect_descendants(root: Entity, children_query: &Query<&Children>, out: &mut HashSet<Entity>) {
+    let Ok(children) = children_query.get(root) else {
+        return;
+    };
+    for child in children.iter() {
+        if out.insert(*child) {
+            collect_descendants(*child, children_query, out);
+        }
+    }
+}
+
+fn compute_local_aabb(mesh: &Mesh) -> Option<(Vec3, Vec3)> {
+    let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?;
+    let VertexAttributeValues::Float32x3(positions) = positions else {
+        return None;
+    };
+
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for [x, y, z] in positions {
+        let p = Vec3::new(*x, *y, *z);
+        min = min.min(p);
+        max = max.max(p);
+    }
+
+    if min.x.is_finite() && min.y.is_finite() && min.z.is_finite() {
+        Some((min, max))
+    } else {
+        None
+    }
+}
+
+fn transformed_aabb_min_y(transform: &GlobalTransform, local_min: Vec3, local_max: Vec3) -> f32 {
+    let affine = transform.affine();
+    let xs = [local_min.x, local_max.x];
+    let ys = [local_min.y, local_max.y];
+    let zs = [local_min.z, local_max.z];
+
+    let mut min_world_y = f32::INFINITY;
+    for x in xs {
+        for y in ys {
+            for z in zs {
+                let world = affine.transform_point3(Vec3::new(x, y, z));
+                min_world_y = min_world_y.min(world.y);
+            }
+        }
+    }
+    min_world_y
+}
+
 fn update_orbit_camera(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut egui_contexts: EguiContexts,
+    mut mouse_wheel_events: EventReader<MouseWheel>,
     mut cameras: Query<(&mut Transform, &mut OrbitCamera)>,
 ) {
-    if egui_contexts.ctx_mut().wants_keyboard_input() {
-        return;
+    let wants_keyboard_input;
+    let wants_pointer_input;
+    {
+        let ctx = egui_contexts.ctx_mut();
+        wants_keyboard_input = ctx.wants_keyboard_input();
+        wants_pointer_input = ctx.wants_pointer_input();
     }
 
     let mut yaw_input = 0.0f32;
-    if keys.pressed(KeyCode::KeyA) {
-        yaw_input -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyD) {
-        yaw_input += 1.0;
+    if !wants_keyboard_input {
+        if keys.pressed(KeyCode::KeyA) {
+            yaw_input -= 1.0;
+        }
+        if keys.pressed(KeyCode::KeyD) {
+            yaw_input += 1.0;
+        }
     }
 
     let mut pitch_input = 0.0f32;
-    if keys.pressed(KeyCode::KeyW) {
-        pitch_input += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyS) {
-        pitch_input -= 1.0;
+    if !wants_keyboard_input {
+        if keys.pressed(KeyCode::KeyW) {
+            pitch_input += 1.0;
+        }
+        if keys.pressed(KeyCode::KeyS) {
+            pitch_input -= 1.0;
+        }
     }
 
-    if yaw_input == 0.0 && pitch_input == 0.0 {
+    let mut zoom_input = 0.0f32;
+    for event in mouse_wheel_events.read() {
+        if wants_pointer_input {
+            continue;
+        }
+        let unit_scale = match event.unit {
+            MouseScrollUnit::Line => 1.0,
+            MouseScrollUnit::Pixel => 0.02,
+        };
+        zoom_input += event.y * unit_scale;
+    }
+
+    if yaw_input == 0.0 && pitch_input == 0.0 && zoom_input == 0.0 {
         return;
     }
 
     let dt = time.delta_seconds();
     for (mut transform, mut orbit) in &mut cameras {
+        orbit.distance = (orbit.distance - zoom_input * orbit.zoom_speed)
+            .clamp(orbit.min_distance, orbit.max_distance);
         orbit.yaw += yaw_input * orbit.yaw_speed * dt;
         orbit.pitch = (orbit.pitch + pitch_input * orbit.pitch_speed * dt).clamp(-1.2, 1.2);
         apply_orbit_transform(&mut transform, &orbit);
@@ -475,6 +668,13 @@ fn apply_orbit_transform(transform: &mut Transform, orbit: &OrbitCamera) {
     );
     transform.translation = orbit.target + direction * orbit.distance;
     transform.look_at(orbit.target, Vec3::Y);
+}
+
+fn command_modifier_pressed(keys: &ButtonInput<KeyCode>) -> bool {
+    keys.pressed(KeyCode::ControlLeft)
+        || keys.pressed(KeyCode::ControlRight)
+        || keys.pressed(KeyCode::SuperLeft)
+        || keys.pressed(KeyCode::SuperRight)
 }
 
 fn normalize_scene_and_gltf_path(raw_path: &str) -> (String, String) {

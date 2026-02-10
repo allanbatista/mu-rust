@@ -84,6 +84,16 @@ TEXTURE_EXT_PRIORITY: Dict[str, int] = {
     ".ozb": 7,
 }
 
+TERRAIN_COLOR_TEXTURE_EXTENSIONS = {".ozj", ".ozj2", ".jpg", ".jpeg", ".png", ".ozp", ".bmp", ".ozb"}
+TERRAIN_ALPHA_TEXTURE_EXTENSIONS = {".ozt", ".tga"}
+TERRAIN_COLOR_PREFERRED_PREFIXES = (
+    "tileground",
+    "tilerock",
+    "tilewater",
+    "tilewood",
+    "tilem",
+)
+
 TERRAIN_HEIGHT_STEMS = {"terrainheight", "terrain_height"}
 TERRAIN_SIZE = 256
 LEGACY_OZB_TERRAIN_HEADER = 1080
@@ -605,8 +615,24 @@ def discover_textures(
             yield path
 
 
+def _terrain_prefers_color_texture(stem: str) -> bool:
+    lower = stem.lower()
+    if lower.startswith("tilegrass"):
+        return False
+    return any(lower.startswith(prefix) for prefix in TERRAIN_COLOR_PREFERRED_PREFIXES)
+
+
 def texture_priority(path: Path) -> int:
-    return TEXTURE_EXT_PRIORITY.get(path.suffix.lower(), 100)
+    ext = path.suffix.lower()
+    priority = TEXTURE_EXT_PRIORITY.get(ext, 100)
+
+    if _terrain_prefers_color_texture(path.stem):
+        if ext in TERRAIN_COLOR_TEXTURE_EXTENSIONS:
+            return priority - 20
+        if ext in TERRAIN_ALPHA_TEXTURE_EXTENSIONS:
+            return priority + 20
+
+    return priority
 
 
 def select_texture_sources(legacy_root: Path, textures: Iterable[Path]) -> List[Path]:

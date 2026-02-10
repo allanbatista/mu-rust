@@ -11,6 +11,15 @@ const WALL_HEIGHT: f32 = 3000.0;
 /// How far below the terrain minimum to extend the walls.
 const WALL_DEPTH_BELOW: f32 = 500.0;
 
+fn effective_height_multiplier(world_name: &str, config: &TerrainConfig) -> f32 {
+    if world_name == "world_56" {
+        // C++ WD_55LOGINSCENE loads World56 terrain and applies x3.0 height.
+        3.0
+    } else {
+        config.height_multiplier
+    }
+}
+
 /// Marker component to track if boundary walls have been spawned.
 #[derive(Component)]
 pub struct BoundaryWallsSpawned;
@@ -48,8 +57,8 @@ pub fn spawn_boundary_walls_when_ready(
     let scale = config.size.scale;
     let max_x = (width.saturating_sub(1) as f32) * scale;
     let max_z = (depth.saturating_sub(1) as f32) * scale;
-    let vertical_scale =
-        config.height_multiplier * (scale / config.legacy_terrain_scale.max(1.0));
+    let vertical_scale = effective_height_multiplier(&world.world_name, config)
+        * (scale / config.legacy_terrain_scale.max(1.0));
 
     // Scan heightmap edges to find reasonable base heights per wall.
     let mut min_h = f32::MAX;
