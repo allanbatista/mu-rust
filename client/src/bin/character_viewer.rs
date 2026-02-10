@@ -1,7 +1,7 @@
 use bevy::asset::AssetPlugin;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gltf::Gltf;
-use bevy::input::mouse::MouseWheel;
+use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::mesh::Indices;
 use bevy::render::render_asset::RenderAssetUsages;
@@ -891,6 +891,11 @@ const ZOOM_MIN: f32 = 300.0;
 const ZOOM_MAX: f32 = 2500.0;
 const ZOOM_SPEED: f32 = 100.0;
 
+/// Camera rotation sensitivity (degrees per pixel of mouse movement).
+const CAMERA_ROTATION_SENSITIVITY: f32 = 0.3;
+const CAMERA_PITCH_MIN: f32 = 5.0;
+const CAMERA_PITCH_MAX: f32 = 89.0;
+
 const WALK_SPEED: f32 = 300.0;
 const RUN_SPEED: f32 = 375.0;
 const ARRIVAL_THRESHOLD: f32 = 5.0;
@@ -984,6 +989,7 @@ struct ViewerState {
     status: String,
     selected_set_index: usize,
     available_sets: Vec<EquipmentSet>,
+    use_remaster: bool,
 }
 
 impl Default for ViewerState {
@@ -1002,6 +1008,7 @@ impl Default for ViewerState {
             status: "Loading player.glb...".to_string(),
             selected_set_index: 0,
             available_sets: EquipmentSet::available_for(body_type),
+            use_remaster: false,
         }
     }
 }
@@ -1097,6 +1104,7 @@ fn main() {
                 advance_movement,
                 rotate_idle_to_mouse,
                 handle_scroll_zoom,
+                handle_camera_rotation,
                 update_mu_camera,
                 draw_grid_lines,
                 draw_movement_target,
@@ -1314,6 +1322,38 @@ fn handle_scroll_zoom(
 }
 
 // ============================================================================
+// Right-click camera rotation
+// ============================================================================
+
+fn handle_camera_rotation(
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut motion_events: EventReader<MouseMotion>,
+    mut cameras: Query<&mut MuCamera>,
+    mut egui_contexts: EguiContexts,
+) {
+    // Consume motion events regardless to avoid stale accumulation
+    let total_delta: Vec2 = motion_events.read().map(|e| e.delta).sum();
+
+    if !mouse.pressed(MouseButton::Right) {
+        return;
+    }
+
+    if egui_contexts.ctx_mut().wants_pointer_input() {
+        return;
+    }
+
+    if total_delta.length_squared() < 0.001 {
+        return;
+    }
+
+    for mut mu_cam in &mut cameras {
+        mu_cam.yaw_deg -= total_delta.x * CAMERA_ROTATION_SENSITIVITY;
+        mu_cam.pitch_deg = (mu_cam.pitch_deg + total_delta.y * CAMERA_ROTATION_SENSITIVITY)
+            .clamp(CAMERA_PITCH_MIN, CAMERA_PITCH_MAX);
+    }
+}
+
+// ============================================================================
 // Grid lines (Gizmos)
 // ============================================================================
 
@@ -1454,6 +1494,14 @@ fn draw_character_viewer_ui(
                 viewer.pending_class_change = true; // Respawn with new equipment
             }
 
+            // Remaster toggle
+            ui.separator();
+            let prev_remaster = viewer.use_remaster;
+            ui.checkbox(&mut viewer.use_remaster, "Use Remaster models");
+            if viewer.use_remaster != prev_remaster {
+                viewer.pending_class_change = true; // Respawn with new paths
+            }
+
             ui.separator();
 
             // Animation selector
@@ -1498,7 +1546,7 @@ fn draw_character_viewer_ui(
                 }
             });
 
-            ui.label("Click ground to move (grid-snapped). Scroll to zoom.");
+            ui.label("LMB: move | Scroll: zoom | RMB: rotate camera");
 
             ui.separator();
             ui.label(format!("Status: {}", viewer.status));
@@ -1532,6 +1580,26 @@ fn draw_bottom_info_bar(
                 );
             });
         });
+}
+
+// ============================================================================
+// Remaster path resolution
+// ============================================================================
+
+/// Given a standard asset path like `data/player/foo.glb`, return the remaster
+/// version `remaster/data/player/foo.glb` if it exists on disk, otherwise the original.
+fn resolve_asset_path(path: &str, use_remaster: bool) -> String {
+    if !use_remaster {
+        return path.to_string();
+    }
+    let remaster_path = format!("remaster/{}", path);
+    let asset_root = asset_root_path();
+    let full = format!("{}/{}", asset_root, remaster_path);
+    if std::path::Path::new(&full).exists() {
+        remaster_path
+    } else {
+        path.to_string()
+    }
 }
 
 // ============================================================================
@@ -1591,7 +1659,8 @@ fn handle_class_change(
         .id();
 
     for &slot in slots {
-        let glb_path = equipment_set.glb_path(slot, body_type, class);
+        let base_path = equipment_set.glb_path(slot, body_type, class);
+        let glb_path = resolve_asset_path(&base_path, viewer.use_remaster);
         let scene_path = format!("{glb_path}#Scene0");
         let scene_handle: Handle<Scene> = asset_server.load(scene_path);
 
@@ -1609,7 +1678,8 @@ fn handle_class_change(
     }
 
     // Spawn the animated skeleton (player.glb has animations, 0 meshes).
-    let skeleton_scene: Handle<Scene> = asset_server.load("data/player/player.glb#Scene0");
+    let skeleton_glb = resolve_asset_path("data/player/player.glb", viewer.use_remaster);
+    let skeleton_scene: Handle<Scene> = asset_server.load(format!("{}#Scene0", skeleton_glb));
     let skeleton = commands
         .spawn((
             SceneBundle {
@@ -1622,11 +1692,13 @@ fn handle_class_change(
     commands.entity(root).add_child(skeleton);
 
     viewer.character_entity = Some(root);
+    let remaster_tag = if viewer.use_remaster { " [Remaster]" } else { "" };
     viewer.status = format!(
-        "Spawned {} ({} body, {})",
+        "Spawned {} ({} body, {}){}",
         class.name(),
         body_type.slug(),
-        equipment_set.display_name()
+        equipment_set.display_name(),
+        remaster_tag
     );
 }
 

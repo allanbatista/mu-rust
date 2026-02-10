@@ -123,9 +123,10 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
         description="Remaster GLB objects by sending full GLB context to a model and validating returned GLB.",
     )
     parser.add_argument(
-        "input_path",
+        "input_paths",
         type=Path,
-        help="GLB file or directory containing GLB assets.",
+        nargs="+",
+        help="One or more GLB files or directories containing GLB assets.",
     )
     parser.add_argument(
         "--raw-dir",
@@ -1571,30 +1572,41 @@ def main(argv: Iterable[str]) -> int:
     if Image is None and not args.dry_run:
         logging.warning("Pillow not installed, texture pad/crop/chroma postprocess is disabled.")
 
-    input_path = args.input_path.resolve()
+    input_paths = [path.resolve() for path in args.input_paths]
     args.raw_dir = args.raw_dir.resolve()
     args.out_dir = args.out_dir.resolve()
+    entries: List[Tuple[Path, Path]] = []
+    seen_glb_paths: set[Path] = set()
 
-    if not input_path.exists():
-        logging.error("Input path does not exist: %s", input_path)
-        return 2
-
-    if input_path.is_file():
-        if input_path.suffix.lower() != ".glb":
-            logging.error("Input file must be a .glb: %s", input_path)
+    for input_path in input_paths:
+        if not input_path.exists():
+            logging.error("Input path does not exist: %s", input_path)
             return 2
-        glb_files = [input_path]
-    elif input_path.is_dir():
-        glb_files = sorted(input_path.rglob("*.glb"), key=lambda p: p.as_posix().lower())
-    else:
+
+        if input_path.is_file():
+            if input_path.suffix.lower() != ".glb":
+                logging.error("Input file must be a .glb: %s", input_path)
+                return 2
+            if input_path not in seen_glb_paths:
+                seen_glb_paths.add(input_path)
+                entries.append((input_path, resolve_rel_glb_path(input_path, input_path)))
+            continue
+
+        if input_path.is_dir():
+            glb_files = sorted(input_path.rglob("*.glb"), key=lambda p: p.as_posix().lower())
+            for glb_path in glb_files:
+                if glb_path in seen_glb_paths:
+                    continue
+                seen_glb_paths.add(glb_path)
+                entries.append((glb_path, resolve_rel_glb_path(glb_path, input_path)))
+            continue
+
         logging.error("Input path must be a file or directory: %s", input_path)
         return 2
 
-    if not glb_files:
-        logging.warning("No .glb files found under %s", input_path)
+    if not entries:
+        logging.warning("No .glb files found under provided input paths")
         return 0
-
-    entries = [(glb_path, resolve_rel_glb_path(glb_path, input_path)) for glb_path in glb_files]
 
     if not args.dry_run and not args.api_key:
         logging.error("API key is required. Use --api-key or env GEMINI_API_KEY/NANO_BANANA_API_KEY.")
@@ -1604,10 +1616,14 @@ def main(argv: Iterable[str]) -> int:
         args.raw_dir.mkdir(parents=True, exist_ok=True)
         args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    if input_path.is_file():
-        logging.info("Input file: %s", input_path)
+    if len(input_paths) == 1 and input_paths[0].is_file():
+        logging.info("Input file: %s", input_paths[0])
+    elif len(input_paths) == 1 and input_paths[0].is_dir():
+        logging.info("Input dir: %s", input_paths[0])
     else:
-        logging.info("Input dir: %s", input_path)
+        logging.info("Input paths: %d", len(input_paths))
+        for input_path in input_paths:
+            logging.info(" - %s", input_path)
     logging.info("Raw dir: %s", args.raw_dir)
     logging.info("Out dir: %s", args.out_dir)
     logging.info("Found %d GLB file(s)", len(entries))
