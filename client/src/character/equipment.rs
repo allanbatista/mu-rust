@@ -66,12 +66,7 @@ impl EquipmentSet {
     }
 
     /// GLB asset path for a specific slot in this equipment set.
-    pub fn glb_path(
-        &self,
-        slot: BodySlot,
-        body_type: BodyType,
-        class: CharacterClass,
-    ) -> String {
+    pub fn glb_path(&self, slot: BodySlot, body_type: BodyType, class: CharacterClass) -> String {
         match self {
             EquipmentSet::ClassDefault => {
                 format!(
@@ -105,11 +100,7 @@ impl EquipmentSet {
             EquipmentSet::Mask(id) => {
                 // Mask is helm-only; for non-helm slots fall back to class default.
                 if slot == BodySlot::Helm {
-                    format!(
-                        "data/player/mask_helm_{}_{:02}.glb",
-                        body_type.slug(),
-                        id
-                    )
+                    format!("data/player/mask_helm_{}_{:02}.glb", body_type.slug(), id)
                 } else {
                     format!(
                         "data/player/{}_class_{:02}.glb",
@@ -119,11 +110,7 @@ impl EquipmentSet {
                 }
             }
             EquipmentSet::ElfCosmic(id) => {
-                format!(
-                    "data/player/{}_elf_c_{:02}.glb",
-                    slot.prefix(),
-                    id
-                )
+                format!("data/player/{}_elf_c_{:02}.glb", slot.prefix(), id)
             }
         }
     }

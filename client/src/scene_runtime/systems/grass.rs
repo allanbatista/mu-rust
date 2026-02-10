@@ -1,18 +1,17 @@
 use super::terrain::TerrainSpawned;
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::world_coordinates::{mirror_map_xz_with_axis, world_mirror_axis};
-use bevy::pbr::{
-    MaterialMeshBundle, MaterialPipeline, MaterialPipelineKey, NotShadowCaster, NotShadowReceiver,
-};
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
+use bevy::mesh::{MeshVertexBufferLayoutRef, PrimitiveTopology};
+use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
-use bevy::render::mesh::{MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, ShaderRef, ShaderType, SpecializedMeshPipelineError,
+    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
 };
-use bevy::render::texture::{
-    ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
-};
+use bevy::shader::ShaderRef;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -80,7 +79,7 @@ impl Material for GrassMaterial {
     }
 
     fn specialize(
-        _pipeline: &MaterialPipeline<Self>,
+        _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
@@ -376,8 +375,8 @@ pub fn spawn_terrain_grass_when_ready(
                 NotShadowCaster,
                 NotShadowReceiver,
                 MaterialMeshBundle::<GrassMaterial> {
-                    mesh: mesh_handle,
-                    material: material_handle.clone(),
+                    mesh: Mesh3d(mesh_handle),
+                    material: MeshMaterial3d(material_handle.clone()),
                     transform: Transform::from_translation(chunk_center),
                     ..default()
                 },
@@ -400,7 +399,7 @@ pub fn apply_grass_distance_culling(
     mut chunks_query: Query<(&GlobalTransform, &GrassChunk, &mut Visibility)>,
     mut last_camera_pos: Local<Option<Vec3>>,
 ) {
-    let Ok(camera_transform) = camera_query.get_single() else {
+    let Ok(camera_transform) = camera_query.single() else {
         return;
     };
     let camera_position = camera_transform.translation;

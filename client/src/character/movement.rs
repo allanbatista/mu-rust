@@ -18,7 +18,7 @@ pub fn advance_character_movement(
         With<CharacterRoot>,
     >,
 ) {
-    let dt = time.delta_seconds();
+    let dt = time.delta_secs();
 
     for (mut transform, mut controller, mut anim_state) in &mut characters {
         let target = match controller.state {

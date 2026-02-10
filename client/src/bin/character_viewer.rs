@@ -1,15 +1,20 @@
 use bevy::asset::AssetPlugin;
+use bevy::asset::RenderAssetUsages;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gltf::Gltf;
+use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::light::GlobalAmbientLight;
+use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod};
+use bevy::mesh::Indices;
+use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
-use bevy::render::mesh::Indices;
-use bevy::render::render_asset::RenderAssetUsages;
-use bevy::render::render_resource::PrimitiveTopology;
-use bevy::pbr::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod};
-use bevy::render::texture::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::window::WindowResolution;
-use bevy_egui::{EguiContexts, EguiPlugin, egui};
+use bevy_egui::input::EguiWantsInput;
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+#[path = "../bevy_compat.rs"]
+mod bevy_compat;
+use bevy_compat::*;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -797,42 +802,86 @@ mod character {
                 let mut sets = vec![EquipmentSet::ClassDefault];
                 match body_type {
                     BodyType::Male => {
-                        for id in 1..=10 { sets.push(EquipmentSet::Standard(id)); }
-                        for id in 16..=29 { sets.push(EquipmentSet::Standard(id)); }
-                        for id in 1..=5 { sets.push(EquipmentSet::ClassWar(id)); }
-                        for id in 1..=5 { sets.push(EquipmentSet::HighDarkKnight(id)); }
-                        for id in [1, 6, 7, 9, 10] { sets.push(EquipmentSet::Mask(id)); }
+                        for id in 1..=10 {
+                            sets.push(EquipmentSet::Standard(id));
+                        }
+                        for id in 16..=29 {
+                            sets.push(EquipmentSet::Standard(id));
+                        }
+                        for id in 1..=5 {
+                            sets.push(EquipmentSet::ClassWar(id));
+                        }
+                        for id in 1..=5 {
+                            sets.push(EquipmentSet::HighDarkKnight(id));
+                        }
+                        for id in [1, 6, 7, 9, 10] {
+                            sets.push(EquipmentSet::Mask(id));
+                        }
                     }
                     BodyType::Elf => {
-                        for id in 1..=5 { sets.push(EquipmentSet::Standard(id)); }
-                        for id in 1..=2 { sets.push(EquipmentSet::ElfCosmic(id)); }
+                        for id in 1..=5 {
+                            sets.push(EquipmentSet::Standard(id));
+                        }
+                        for id in 1..=2 {
+                            sets.push(EquipmentSet::ElfCosmic(id));
+                        }
                     }
                     BodyType::Monk => {
-                        for id in 1..=4 { sets.push(EquipmentSet::Standard(id)); }
+                        for id in 1..=4 {
+                            sets.push(EquipmentSet::Standard(id));
+                        }
                     }
                 }
                 sets
             }
 
-            pub fn glb_path(&self, slot: BodySlot, body_type: BodyType, class: CharacterClass) -> String {
+            pub fn glb_path(
+                &self,
+                slot: BodySlot,
+                body_type: BodyType,
+                class: CharacterClass,
+            ) -> String {
                 match self {
                     EquipmentSet::ClassDefault => {
-                        format!("data/player/{}_class_{:02}.glb", slot.prefix(), class.class_id())
+                        format!(
+                            "data/player/{}_class_{:02}.glb",
+                            slot.prefix(),
+                            class.class_id()
+                        )
                     }
                     EquipmentSet::Standard(id) => {
-                        format!("data/player/{}_{}_{:02}.glb", slot.prefix(), body_type.slug(), id)
+                        format!(
+                            "data/player/{}_{}_{:02}.glb",
+                            slot.prefix(),
+                            body_type.slug(),
+                            id
+                        )
                     }
                     EquipmentSet::ClassWar(id) => {
-                        format!("data/player/cw_{}_{}_{:02}.glb", slot.prefix(), body_type.slug(), id)
+                        format!(
+                            "data/player/cw_{}_{}_{:02}.glb",
+                            slot.prefix(),
+                            body_type.slug(),
+                            id
+                        )
                     }
                     EquipmentSet::HighDarkKnight(id) => {
-                        format!("data/player/hdk_{}_{}_{:02}.glb", slot.prefix(), body_type.slug(), id)
+                        format!(
+                            "data/player/hdk_{}_{}_{:02}.glb",
+                            slot.prefix(),
+                            body_type.slug(),
+                            id
+                        )
                     }
                     EquipmentSet::Mask(id) => {
                         if slot == BodySlot::Helm {
                             format!("data/player/mask_helm_{}_{:02}.glb", body_type.slug(), id)
                         } else {
-                            format!("data/player/{}_class_{:02}.glb", slot.prefix(), class.class_id())
+                            format!(
+                                "data/player/{}_class_{:02}.glb",
+                                slot.prefix(),
+                                class.class_id()
+                            )
                         }
                     }
                     EquipmentSet::ElfCosmic(id) => {
@@ -936,7 +985,11 @@ impl HeightmapResource {
                 }
             }
         }
-        Self { width: w, height: h, heights: flat }
+        Self {
+            width: w,
+            height: h,
+            heights: flat,
+        }
     }
 
     fn get_height(&self, x: usize, z: usize) -> f32 {
@@ -1065,9 +1118,10 @@ fn main() {
     );
 
     App::new()
-        .insert_resource(AmbientLight {
+        .insert_resource(GlobalAmbientLight {
             color: Color::WHITE,
             brightness: 250.0,
+            affects_lightmapped_meshes: true,
         })
         .insert_resource(ViewerState::default())
         .insert_resource(heightmap)
@@ -1077,7 +1131,7 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "MU Character Viewer".to_string(),
-                        resolution: WindowResolution::new(1440.0, 900.0),
+                        resolution: WindowResolution::new(1440, 900),
                         resizable: true,
                         ..default()
                     }),
@@ -1088,14 +1142,16 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_plugins(EguiPlugin)
+        .add_plugins(EguiPlugin::default())
         .add_systems(Startup, setup_viewer)
+        .add_systems(
+            EguiPrimaryContextPass,
+            (draw_character_viewer_ui, draw_bottom_info_bar),
+        )
         .add_systems(
             Update,
             (
                 configure_ground_texture,
-                draw_character_viewer_ui,
-                draw_bottom_info_bar,
                 handle_class_change,
                 init_player_animation_lib,
                 bind_anim_players,
@@ -1112,7 +1168,7 @@ fn main() {
         )
         .add_systems(
             PostUpdate,
-            sync_bone_transforms.before(bevy::transform::TransformSystem::TransformPropagate),
+            sync_bone_transforms.before(bevy::transform::TransformSystems::Propagate),
         )
         .run();
 }
@@ -1176,13 +1232,13 @@ fn setup_viewer(
     let terrain_mesh = build_terrain_mesh(&heightmap);
 
     commands.spawn(PbrBundle {
-        mesh: meshes.add(terrain_mesh),
-        material: materials.add(StandardMaterial {
+        mesh: Mesh3d(meshes.add(terrain_mesh)),
+        material: MeshMaterial3d(materials.add(StandardMaterial {
             base_color_texture: Some(ground_texture.clone()),
             perceptual_roughness: 0.95,
             metallic: 0.0,
             ..default()
-        }),
+        })),
         ..default()
     });
 
@@ -1299,11 +1355,11 @@ fn configure_ground_texture(
 // ============================================================================
 
 fn handle_scroll_zoom(
-    mut scroll_events: EventReader<MouseWheel>,
+    mut scroll_events: MessageReader<MouseWheel>,
     mut cameras: Query<&mut MuCamera>,
-    mut egui_contexts: EguiContexts,
+    egui_wants_input: Res<EguiWantsInput>,
 ) {
-    if egui_contexts.ctx_mut().wants_pointer_input() {
+    if egui_wants_input.wants_any_pointer_input() {
         return;
     }
 
@@ -1327,9 +1383,9 @@ fn handle_scroll_zoom(
 
 fn handle_camera_rotation(
     mouse: Res<ButtonInput<MouseButton>>,
-    mut motion_events: EventReader<MouseMotion>,
+    mut motion_events: MessageReader<MouseMotion>,
     mut cameras: Query<&mut MuCamera>,
-    mut egui_contexts: EguiContexts,
+    egui_wants_input: Res<EguiWantsInput>,
 ) {
     // Consume motion events regardless to avoid stale accumulation
     let total_delta: Vec2 = motion_events.read().map(|e| e.delta).sum();
@@ -1338,7 +1394,7 @@ fn handle_camera_rotation(
         return;
     }
 
-    if egui_contexts.ctx_mut().wants_pointer_input() {
+    if egui_wants_input.wants_any_pointer_input() {
         return;
     }
 
@@ -1363,7 +1419,7 @@ fn draw_grid_lines(
     heightmap: Res<HeightmapResource>,
 ) {
     let char_pos = characters
-        .get_single()
+        .single()
         .map(|t| t.translation)
         .unwrap_or(Vec3::ZERO);
 
@@ -1432,7 +1488,7 @@ fn update_mu_camera(
     mut cameras: Query<(&mut Transform, &MuCamera), Without<CharacterRoot>>,
 ) {
     let char_pos = characters
-        .get_single()
+        .single()
         .map(|t| t.translation)
         .unwrap_or(Vec3::ZERO);
 
@@ -1450,7 +1506,9 @@ fn draw_character_viewer_ui(
     mut viewer: ResMut<ViewerState>,
     library: Option<Res<PlayerAnimLib>>,
 ) {
-    let ctx = contexts.ctx_mut();
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
     egui::Window::new("Character Viewer")
         .default_pos(egui::pos2(12.0, 12.0))
         .default_width(420.0)
@@ -1477,7 +1535,8 @@ fn draw_character_viewer_ui(
             // Equipment set selector
             ui.separator();
             ui.label("Equipment Set:");
-            let current_set_name = viewer.available_sets
+            let current_set_name = viewer
+                .available_sets
                 .get(viewer.selected_set_index)
                 .map(|s| s.display_name())
                 .unwrap_or_else(|| "Class Default".to_string());
@@ -1559,16 +1618,18 @@ fn draw_bottom_info_bar(
     characters: Query<&Transform, With<CharacterRoot>>,
 ) {
     let char_pos = characters
-        .get_single()
+        .single()
         .map(|t| t.translation)
         .unwrap_or(Vec3::ZERO);
 
     let col = ((char_pos.x / GRID_CELL_SIZE).floor() as i32 + 1).clamp(1, 256);
     let row = ((char_pos.z / GRID_CELL_SIZE).floor() as i32 + 1).clamp(1, 256);
 
-    let ctx = contexts.ctx_mut();
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
     egui::TopBottomPanel::bottom("info_bar")
-        .frame(egui::Frame::none().fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128)))
+        .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128)))
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.colored_label(
@@ -1619,7 +1680,7 @@ fn handle_class_change(
 
     // Despawn existing character
     if let Some(entity) = viewer.character_entity.take() {
-        commands.entity(entity).despawn_recursive();
+        commands.entity(entity).despawn();
     }
 
     let class = CharacterClass::ALL[viewer.selected_class_index];
@@ -1630,7 +1691,8 @@ fn handle_class_change(
     viewer.selected_animation = idle_action_for_class(class);
 
     // Get selected equipment set
-    let equipment_set = viewer.available_sets
+    let equipment_set = viewer
+        .available_sets
         .get(viewer.selected_set_index)
         .copied()
         .unwrap_or(EquipmentSet::ClassDefault);
@@ -1667,7 +1729,7 @@ fn handle_class_change(
         let part = commands
             .spawn((
                 SceneBundle {
-                    scene: scene_handle,
+                    scene: SceneRoot(scene_handle),
                     ..default()
                 },
                 BodyPartMarker { slot },
@@ -1683,7 +1745,7 @@ fn handle_class_change(
     let skeleton = commands
         .spawn((
             SceneBundle {
-                scene: skeleton_scene,
+                scene: SceneRoot(skeleton_scene),
                 ..default()
             },
             SkeletonMarker,
@@ -1692,7 +1754,11 @@ fn handle_class_change(
     commands.entity(root).add_child(skeleton);
 
     viewer.character_entity = Some(root);
-    let remaster_tag = if viewer.use_remaster { " [Remaster]" } else { "" };
+    let remaster_tag = if viewer.use_remaster {
+        " [Remaster]"
+    } else {
+        ""
+    };
     viewer.status = format!(
         "Spawned {} ({} body, {}){}",
         class.name(),
@@ -1804,9 +1870,11 @@ fn bind_anim_players(
                 player.pause_all();
             }
 
-            commands
-                .entity(entity)
-                .insert((graph_handle.clone(), transitions, AnimBound));
+            commands.entity(entity).insert((
+                AnimationGraphHandle(graph_handle.clone()),
+                transitions,
+                AnimBound,
+            ));
         }
     }
 }
@@ -1913,28 +1981,28 @@ fn handle_click_to_move(
     mut viewer: ResMut<ViewerState>,
     _library: Res<PlayerAnimLib>,
     mut characters: Query<(&mut CharacterController, &mut CharacterAnimState), With<CharacterRoot>>,
-    mut egui_contexts: EguiContexts,
+    egui_wants_input: Res<EguiWantsInput>,
     heightmap: Res<HeightmapResource>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
 
-    if egui_contexts.ctx_mut().wants_pointer_input() {
+    if egui_wants_input.wants_any_pointer_input() {
         return;
     }
 
-    let Ok(window) = windows.get_single() else {
+    let Ok(window) = windows.single() else {
         return;
     };
     let Some(cursor_pos) = window.cursor_position() else {
         return;
     };
-    let Ok((camera, camera_transform)) = cameras.get_single() else {
+    let Ok((camera, camera_transform)) = cameras.single() else {
         return;
     };
 
-    let Some(ray) = camera.viewport_to_world(camera_transform, cursor_pos) else {
+    let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_pos) else {
         return;
     };
 
@@ -1988,7 +2056,7 @@ fn advance_movement(
     >,
     heightmap: Res<HeightmapResource>,
 ) {
-    let dt = time.delta_seconds();
+    let dt = time.delta_secs();
 
     for (mut transform, mut controller, mut anim_state) in &mut characters {
         let (target, speed) = match controller.state {
@@ -2038,7 +2106,8 @@ fn advance_movement(
             viewer.pending_animation_change = true;
             viewer.status = "Walking (close to target)".to_string();
             let direction = diff / distance;
-            let target_yaw = direction.x.atan2(direction.z) + std::f32::consts::PI + MODEL_YAW_OFFSET;
+            let target_yaw =
+                direction.x.atan2(direction.z) + std::f32::consts::PI + MODEL_YAW_OFFSET;
             let target_rot = Quat::from_rotation_y(target_yaw);
             transform.rotation = transform
                 .rotation
@@ -2080,23 +2149,23 @@ fn rotate_idle_to_mouse(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     mut characters: Query<(&mut Transform, &CharacterController), With<CharacterRoot>>,
-    mut egui_contexts: EguiContexts,
+    egui_wants_input: Res<EguiWantsInput>,
     heightmap: Res<HeightmapResource>,
 ) {
-    if egui_contexts.ctx_mut().wants_pointer_input() {
+    if egui_wants_input.wants_any_pointer_input() {
         return;
     }
 
-    let Ok(window) = windows.get_single() else {
+    let Ok(window) = windows.single() else {
         return;
     };
     let Some(cursor_pos) = window.cursor_position() else {
         return;
     };
-    let Ok((camera, cam_gt)) = cameras.get_single() else {
+    let Ok((camera, cam_gt)) = cameras.single() else {
         return;
     };
-    let Some(ray) = camera.viewport_to_world(cam_gt, cursor_pos) else {
+    let Ok(ray) = camera.viewport_to_world(cam_gt, cursor_pos) else {
         return;
     };
     if ray.direction.y.abs() < 1e-6 {
@@ -2111,7 +2180,7 @@ fn rotate_idle_to_mouse(
     }
     let hit = ray.origin + ray.direction * t;
 
-    let dt = time.delta_seconds();
+    let dt = time.delta_secs();
 
     for (mut transform, controller) in &mut characters {
         if !matches!(controller.state, CharacterState::Idle) {
@@ -2189,10 +2258,10 @@ fn idle_action_for_class(class: CharacterClass) -> usize {
         CharacterClass::DarkKnight
         | CharacterClass::DarkWizard
         | CharacterClass::MagicGladiator => 1, // StopMale
-        CharacterClass::FairyElf => 2,         // StopFemale
-        CharacterClass::Summoner => 3,          // StopSummoner
-        CharacterClass::DarkLord => 76,         // DarklordStand
-        CharacterClass::RageFighter => 286,     // StopRagefighter
+        CharacterClass::FairyElf => 2,      // StopFemale
+        CharacterClass::Summoner => 3,      // StopSummoner
+        CharacterClass::DarkLord => 76,     // DarklordStand
+        CharacterClass::RageFighter => 286, // StopRagefighter
     }
 }
 

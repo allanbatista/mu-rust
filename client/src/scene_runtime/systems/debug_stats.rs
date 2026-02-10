@@ -1,14 +1,16 @@
 use super::frame_limiter::DebugFrameLimiter;
 use super::objects::SceneObjectDistanceCullingConfig;
 use super::shadow_quality::DebugShadowQuality;
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use bevy::asset::AssetId;
+use bevy::camera::visibility::VisibleEntities;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::ecs::system::SystemParam;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::renderer::RenderAdapterInfo;
-use bevy::render::view::{VisibleEntities, WithMesh};
+use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 
 #[derive(SystemParam)]
@@ -164,10 +166,10 @@ pub fn update_debug_scene_stats(
     meshes: Res<Assets<Mesh>>,
     login_entities: Query<Entity, With<RuntimeSceneEntity>>,
     scene_objects: Query<(), With<SceneObject>>,
-    parent_query: Query<&Parent>,
+    parent_query: Query<&ChildOf>,
     children_query: Query<&Children>,
     camera_visible_meshes: Query<&VisibleEntities, With<Camera3d>>,
-    mesh_handles: Query<&Handle<Mesh>>,
+    mesh_handles: Query<&Mesh3d>,
     distance_culling: Option<Res<SceneObjectDistanceCullingConfig>>,
     mut debug_stats: ResMut<DebugSceneStats>,
     overlay_state: Res<DebugOverlayState>,
@@ -201,8 +203,13 @@ pub fn update_debug_scene_stats(
         let mut mesh_triangles_by_id = HashMap::<AssetId<Mesh>, u64>::new();
         let mut visible_objects = HashSet::<Entity>::new();
         let visible_mesh_entities: HashSet<Entity> = camera_visible_meshes
-            .get_single()
-            .map(|visible_entities| visible_entities.iter::<WithMesh>().copied().collect())
+            .single()
+            .map(|visible_entities| {
+                visible_entities
+                    .iter(TypeId::of::<Mesh3d>())
+                    .copied()
+                    .collect()
+            })
             .unwrap_or_default();
         let mut mesh_count = 0usize;
         let mut visible_mesh_count = 0usize;
@@ -216,8 +223,8 @@ pub fn update_debug_scene_stats(
 
             if let Ok(mesh_handle) = mesh_handles.get(entity) {
                 mesh_count += 1;
-                let triangle_count = if let Some(mesh) = meshes.get(mesh_handle) {
-                    let mesh_id = mesh_handle.id();
+                let triangle_count = if let Some(mesh) = meshes.get(&mesh_handle.0) {
+                    let mesh_id = mesh_handle.0.id();
                     *mesh_triangles_by_id
                         .entry(mesh_id)
                         .or_insert_with(|| triangles_for_mesh(mesh))
@@ -239,7 +246,7 @@ pub fn update_debug_scene_stats(
 
             if let Ok(children) = children_query.get(entity) {
                 for child in children.iter() {
-                    stack.push(*child);
+                    stack.push(child);
                 }
             }
         }
@@ -282,7 +289,7 @@ pub fn update_debug_scene_stats(
         ("n/a".to_string(), "n/a".to_string(), "n/a".to_string())
     };
 
-    let elapsed_text = format!("{:.1}", time.elapsed_seconds());
+    let elapsed_text = format!("{:.1}", time.elapsed_secs());
     let distance_culling_text = if let Some(config) = distance_culling {
         if config.enabled {
             format!("{:.0}", config.max_distance)
@@ -293,7 +300,7 @@ pub fn update_debug_scene_stats(
         "n/a".to_string()
     };
     for mut text in &mut perf_text_query {
-        text.sections[0].value = if cfg!(debug_assertions) {
+        text.0 = if cfg!(debug_assertions) {
             format!(
                 "FPS: {fps_text}\nFrame: {frame_text} ms\nTempo: {elapsed_text} s\nCull dist: {distance_culling_text}\nObjetos render: {}/{}\nMeshes render: {}/{}\nPoligonos render: {}/{}",
                 debug_stats.visible_object_count,
@@ -320,7 +327,7 @@ pub fn update_debug_scene_stats(
         .unwrap_or_else(|| "n/a".to_string());
 
     for mut text in &mut gpu_text_query {
-        text.sections[0].value = format!(
+        text.0 = format!(
             "GPU: {gpu_name}\nVideo API: {graphics_api}\nVersao: {graphics_version}\n[F4] FPS Limit: {frame_limit_text}\n[F5] Sombra: {shadow_text}",
         );
     }
@@ -351,7 +358,7 @@ fn sanitize_info_text(value: &str) -> String {
 
 fn find_scene_object_ancestor(
     start: Entity,
-    parents: &Query<&Parent>,
+    parents: &Query<&ChildOf>,
     scene_objects: &Query<(), With<SceneObject>>,
 ) -> Option<Entity> {
     if scene_objects.contains(start) {
@@ -360,7 +367,7 @@ fn find_scene_object_ancestor(
 
     let mut current = start;
     while let Ok(parent) = parents.get(current) {
-        let parent_entity = parent.get();
+        let parent_entity = parent.parent();
         if scene_objects.contains(parent_entity) {
             return Some(parent_entity);
         }

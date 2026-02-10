@@ -1,4 +1,5 @@
 use super::particles::particle_emitter_from_definition;
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::scene_loader::{SceneObjectsMetadata, SceneRotationEncoding};
 use crate::scene_runtime::state::RuntimeSceneAssets;
@@ -289,7 +290,7 @@ pub fn apply_scene_object_distance_culling(
     mut scene_objects: Query<(&Transform, &mut Visibility), With<SceneObject>>,
     mut last_camera_pos: Local<Option<Vec3>>,
 ) {
-    let Ok(camera_transform) = camera_query.get_single() else {
+    let Ok(camera_transform) = camera_query.single() else {
         return;
     };
     let camera_position = camera_transform.translation;
@@ -423,7 +424,10 @@ fn spawn_scene_object(
         }
         let scene: Handle<Scene> = asset_server.load(scene_path);
         entity_cmd.with_children(|parent| {
-            parent.spawn(SceneBundle { scene, ..default() });
+            parent.spawn(SceneBundle {
+                scene: SceneRoot(scene),
+                ..default()
+            });
         });
     } else {
         spawn_model_proxy(
@@ -600,8 +604,8 @@ fn spawn_model_proxy(
 
     entity_cmd.with_children(|parent| {
         parent.spawn(PbrBundle {
-            mesh: mesh_handle,
-            material: material_handle,
+            mesh: Mesh3d(mesh_handle),
+            material: MeshMaterial3d(material_handle),
             transform: Transform::from_xyz(0.0, 210.0, 0.0),
             ..default()
         });
@@ -767,7 +771,10 @@ fn fallback_scene_objects() -> Vec<SceneObjectDef> {
 
 pub fn apply_legacy_gltf_material_overrides(
     mut materials: ResMut<Assets<StandardMaterial>>,
-    query: Query<(&Handle<StandardMaterial>, &GltfMaterialExtras), Added<GltfMaterialExtras>>,
+    query: Query<
+        (&MeshMaterial3d<StandardMaterial>, &GltfMaterialExtras),
+        Added<GltfMaterialExtras>,
+    >,
 ) {
     for (material_handle, extras) in &query {
         let parsed = serde_json::from_str::<Value>(&extras.value);
@@ -783,7 +790,7 @@ pub fn apply_legacy_gltf_material_overrides(
             continue;
         }
 
-        let Some(material) = materials.get_mut(material_handle) else {
+        let Some(material) = materials.get_mut(&material_handle.0) else {
             continue;
         };
 
@@ -803,8 +810,11 @@ pub fn apply_legacy_gltf_material_overrides(
 /// entities with the `SceneObject` component).
 pub fn fix_scene_object_backface_culling(
     mut materials: ResMut<Assets<StandardMaterial>>,
-    new_material_query: Query<(Entity, &Handle<StandardMaterial>), Added<Handle<StandardMaterial>>>,
-    parent_query: Query<&Parent>,
+    new_material_query: Query<
+        (Entity, &MeshMaterial3d<StandardMaterial>),
+        Added<MeshMaterial3d<StandardMaterial>>,
+    >,
+    parent_query: Query<&ChildOf>,
     scene_object_query: Query<(), With<SceneObject>>,
 ) {
     for (entity, mat_handle) in &new_material_query {
@@ -817,7 +827,7 @@ pub fn fix_scene_object_backface_culling(
                 break;
             }
             match parent_query.get(current) {
-                Ok(parent) => current = parent.get(),
+                Ok(parent) => current = parent.parent(),
                 Err(_) => break,
             }
         }
@@ -826,7 +836,7 @@ pub fn fix_scene_object_backface_culling(
             continue;
         }
 
-        let Some(material) = materials.get_mut(mat_handle) else {
+        let Some(material) = materials.get_mut(&mat_handle.0) else {
             continue;
         };
 

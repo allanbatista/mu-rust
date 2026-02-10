@@ -1,4 +1,5 @@
 use super::{SceneObjectsSpawned, SkyboxSpawned};
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::math::primitives::Cuboid;
@@ -167,18 +168,18 @@ pub fn initialize_world_56_login_fx(
 pub fn animate_world_56_skybox(
     assets: Res<RuntimeSceneAssets>,
     time: Res<Time>,
-    mut skyboxes: Query<(&Handle<StandardMaterial>, &mut Transform), With<SkyboxSpawned>>,
+    mut skyboxes: Query<(&MeshMaterial3d<StandardMaterial>, &mut Transform), With<SkyboxSpawned>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if !is_world_56(&assets) {
         return;
     }
 
-    let elapsed = time.elapsed_seconds();
+    let elapsed = time.elapsed_secs();
     for (material_handle, mut transform) in &mut skyboxes {
-        transform.rotate_local_y(0.02 * time.delta_seconds());
+        transform.rotate_local_y(0.02 * time.delta_secs());
 
-        if let Some(material) = materials.get_mut(material_handle) {
+        if let Some(material) = materials.get_mut(&material_handle.0) {
             let pulse = (elapsed * 0.22).sin() * 0.5 + 0.5;
             let red = 0.76 + pulse * 0.2;
             let green = 0.08 + pulse * 0.09;
@@ -199,9 +200,9 @@ pub fn animate_world_56_sky_vortex_objects(
         return;
     }
 
-    let elapsed = time.elapsed_seconds();
+    let elapsed = time.elapsed_secs();
     for (kind, mut transform, vortex) in &mut query {
-        transform.rotate_local_z(-vortex.angular_speed_radians * time.delta_seconds());
+        transform.rotate_local_z(-vortex.angular_speed_radians * time.delta_secs());
 
         if kind.0 == 86 {
             let wobble = (elapsed * vortex.pulse_speed + vortex.pulse_phase).sin();
@@ -220,8 +221,8 @@ pub fn animate_world_56_flying_monsters(
         return;
     }
 
-    let elapsed = time.elapsed_seconds();
-    let delta = time.delta_seconds();
+    let elapsed = time.elapsed_secs();
+    let delta = time.delta_secs();
     for (mut transform, mut monster) in &mut monsters {
         monster.phase = (monster.phase + monster.angular_speed * delta).rem_euclid(TAU);
 
@@ -300,8 +301,8 @@ pub fn spawn_world_56_meteors(
                 },
                 meteor_trail_emitter(),
                 PbrBundle {
-                    mesh: meteor_mesh.clone(),
-                    material: meteor_material.clone(),
+                    mesh: Mesh3d(meteor_mesh.clone()),
+                    material: MeshMaterial3d(meteor_material.clone()),
                     transform,
                     ..default()
                 },
@@ -321,7 +322,7 @@ pub fn update_world_56_meteors(
         return;
     }
 
-    let dt = time.delta_seconds();
+    let dt = time.delta_secs();
     for (entity, mut transform, mut meteor) in &mut meteors {
         meteor.lifetime -= dt;
         meteor.velocity.y -= 70.0 * dt;
@@ -333,7 +334,7 @@ pub fn update_world_56_meteors(
         }
 
         if meteor.lifetime <= 0.0 || transform.translation.y < -400.0 {
-            commands.entity(entity).despawn_recursive();
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -348,7 +349,7 @@ pub fn animate_world_56_dark_lord(
         return;
     }
 
-    let elapsed = time.elapsed_seconds();
+    let elapsed = time.elapsed_secs();
     for (mut transform, idle) in &mut dark_lord {
         transform.translation =
             idle.base_position + Vec3::Y * (elapsed * 0.7 + idle.phase).sin() * 8.0;
@@ -401,7 +402,10 @@ fn spawn_world_56_dark_lord(commands: &mut Commands, asset_server: &AssetServer)
     commands.entity(root).with_children(|parent| {
         for scene_path in dark_lord_parts {
             let scene: Handle<Scene> = asset_server.load(scene_path);
-            parent.spawn(SceneBundle { scene, ..default() });
+            parent.spawn(SceneBundle {
+                scene: SceneRoot(scene),
+                ..default()
+            });
         }
     });
 }
@@ -449,5 +453,6 @@ fn meteor_trail_emitter() -> ParticleEmitter {
 }
 
 fn phase_from_entity(entity: Entity) -> f32 {
-    ((entity.index() as f32 * 0.131) + (entity.generation() as f32 * 0.071)).rem_euclid(TAU)
+    ((entity.index_u32() as f32 * 0.131) + (entity.generation().to_bits() as f32 * 0.071))
+        .rem_euclid(TAU)
 }

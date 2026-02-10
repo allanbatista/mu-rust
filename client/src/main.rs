@@ -1,3 +1,4 @@
+mod bevy_compat;
 mod character;
 mod scene_runtime;
 mod scenes;
@@ -32,7 +33,7 @@ fn main() {
             focused_mode: UpdateMode::reactive(Duration::from_secs_f64(1.0 / 60.0)),
             unfocused_mode: UpdateMode::reactive(Duration::from_secs_f64(1.0 / 60.0)),
         })
-        .add_plugins(FrameTimeDiagnosticsPlugin)
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(SceneLoaderPlugin)
         .add_plugins(WorldPlugin)
         .init_state::<AppState>()
@@ -57,7 +58,7 @@ fn build_bevy_plugins() -> PluginGroupBuilder {
 fn create_window_settings() -> Window {
     Window {
         title: "Mu".into(),
-        resolution: WindowResolution::new(1280.0, 720.0),
+        resolution: WindowResolution::new(1280, 720),
         resizable: false,
         present_mode: PresentMode::AutoVsync,
         ..Default::default()

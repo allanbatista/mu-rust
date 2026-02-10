@@ -1,15 +1,14 @@
 use super::grass::find_grass_slots;
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::world_coordinates::{
     WorldMirrorAxis, mirror_map_xz_with_axis, world_mirror_axis,
 };
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
-use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::Face;
-use bevy::render::texture::{
-    ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
-};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -200,8 +199,8 @@ pub fn spawn_terrain_when_ready(
                 RuntimeSceneEntity,
                 Terrain,
                 PbrBundle {
-                    mesh: mesh_handle,
-                    material: material_handle,
+                    mesh: Mesh3d(mesh_handle),
+                    material: MeshMaterial3d(material_handle),
                     transform: Transform::IDENTITY,
                     ..default()
                 },

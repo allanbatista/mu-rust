@@ -1,10 +1,9 @@
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
-use bevy::pbr::{NotShadowCaster, NotShadowReceiver};
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
+use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
-use bevy::render::mesh::PrimitiveTopology;
-use bevy::render::texture::{
-    ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
-};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
@@ -130,7 +129,7 @@ pub fn ensure_particle_render_batches(
 
     for (batch, entity) in &existing_batches {
         if !desired_batches.contains(batch) {
-            commands.entity(*entity).despawn_recursive();
+            commands.entity(*entity).despawn();
         }
     }
 
@@ -175,8 +174,8 @@ pub fn ensure_particle_render_batches(
             NotShadowCaster,
             NotShadowReceiver,
             PbrBundle {
-                mesh: mesh_handle,
-                material: material_handle,
+                mesh: Mesh3d(mesh_handle),
+                material: MeshMaterial3d(material_handle),
                 transform: Transform::IDENTITY,
                 visibility: Visibility::Hidden,
                 ..default()
@@ -191,11 +190,8 @@ pub fn update_particle_emitters(
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
     time: Res<Time>,
 ) {
-    let camera_position = camera_query
-        .get_single()
-        .ok()
-        .map(GlobalTransform::translation);
-    let delta_seconds = time.delta_seconds();
+    let camera_position = camera_query.single().ok().map(GlobalTransform::translation);
+    let delta_seconds = time.delta_secs();
 
     for (mut emitter, transform) in &mut emitters {
         if !emitter.active {
@@ -241,11 +237,11 @@ pub fn update_particle_emitters(
 /// Update render batches with one mesh per particle batch key.
 pub fn update_particle_render_batches(
     emitters: Query<&ParticleEmitter>,
-    mut batches: Query<(&ParticleRenderBatch, &Handle<Mesh>, &mut Visibility)>,
+    mut batches: Query<(&ParticleRenderBatch, &Mesh3d, &mut Visibility)>,
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let Ok(camera_transform) = camera_query.get_single() else {
+    let Ok(camera_transform) = camera_query.single() else {
         return;
     };
     let (_, camera_rotation, camera_position) = camera_transform.to_scale_rotation_translation();
@@ -255,7 +251,7 @@ pub fn update_particle_render_batches(
     let mut remaining_budget = MAX_RENDERED_PARTICLES_PER_FRAME;
 
     for (batch, mesh_handle, mut visibility) in &mut batches {
-        let Some(mesh) = meshes.get_mut(mesh_handle) else {
+        let Some(mesh) = meshes.get_mut(&mesh_handle.0) else {
             continue;
         };
 

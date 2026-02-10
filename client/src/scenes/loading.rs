@@ -41,27 +41,25 @@ impl SceneBuilder for LoadingScene {
 fn setup_loading_scene(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    mut world_requests: EventWriter<WorldRequest>,
+    mut world_requests: MessageWriter<WorldRequest>,
 ) {
-    world_requests.send(WorldRequest(WorldId::Loading));
+    world_requests.write(WorldRequest(WorldId::Loading));
 
     let texture = asset_server.load("wallpapers/entry.png");
 
     commands
-        .spawn((LoadingSceneRoot, SpatialBundle::default()))
+        .spawn((LoadingSceneRoot, Transform::default()))
         .with_children(|parent| {
             parent.spawn((
                 LoadingImage {
                     handle: texture.clone(),
                 },
-                SpriteBundle {
-                    texture,
-                    sprite: Sprite {
-                        anchor: Anchor::Center,
-                        ..Default::default()
-                    },
+                Sprite {
+                    image: texture,
+                    custom_size: None,
                     ..Default::default()
                 },
+                Anchor::CENTER,
             ));
         });
 }
@@ -88,11 +86,11 @@ fn fit_loading_image(
     images: Res<Assets<Image>>,
     mut query: Query<(&LoadingImage, &mut Sprite, &mut Transform)>,
 ) {
-    let Ok(window) = windows.get_single() else {
+    let Ok(window) = windows.single() else {
         return;
     };
 
-    let Ok((loading_image, mut sprite, mut transform)) = query.get_single_mut() else {
+    let Ok((loading_image, mut sprite, mut transform)) = query.single_mut() else {
         return;
     };
 
@@ -110,8 +108,8 @@ fn fit_loading_image(
 }
 
 fn cleanup_loading_scene(mut commands: Commands, query: Query<Entity, With<LoadingSceneRoot>>) {
-    if let Ok(entity) = query.get_single() {
-        commands.entity(entity).despawn_recursive();
+    if let Ok(entity) = query.single() {
+        commands.entity(entity).despawn();
     }
     commands.remove_resource::<LoadingTimer>();
 }

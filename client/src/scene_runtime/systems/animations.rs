@@ -1,9 +1,9 @@
 use crate::scene_runtime::components::{
     SceneObject, SceneObjectAnimationInitialized, SceneObjectAnimationSource,
 };
+use bevy::camera::visibility::ViewVisibility;
 use bevy::gltf::Gltf;
 use bevy::prelude::*;
-use bevy::render::view::ViewVisibility;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -120,7 +120,7 @@ pub fn ensure_scene_object_animation_players(
 
                         commands
                             .entity(*player_entity)
-                            .insert((graph.clone(), transitions));
+                            .insert((AnimationGraphHandle(graph.clone()), transitions));
                     }
                 }
 
@@ -227,7 +227,7 @@ fn set_subtree_animations(
         }
     }
     if let Ok(children) = children_query.get(entity) {
-        for &child in children.iter() {
+        for child in children.iter() {
             set_subtree_animations(child, children_query, players, should_animate);
         }
     }
@@ -244,7 +244,7 @@ fn any_descendant_view_visible(
         }
     }
     if let Ok(children) = children_query.get(entity) {
-        for &child in children.iter() {
+        for child in children.iter() {
             if any_descendant_view_visible(child, children_query, view_vis) {
                 return true;
             }

@@ -1,5 +1,6 @@
 use super::controller::{CharacterAnimState, CharacterController, CharacterState};
 use super::types::{BodyPartMarker, BodySlot, CharacterClass, CharacterRoot};
+use crate::bevy_compat::*;
 use bevy::prelude::*;
 
 pub struct CharacterFactory;
@@ -42,7 +43,7 @@ impl CharacterFactory {
             let part = commands
                 .spawn((
                     SceneBundle {
-                        scene: scene_handle,
+                        scene: SceneRoot(scene_handle),
                         ..default()
                     },
                     BodyPartMarker { slot },

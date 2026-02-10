@@ -1,9 +1,10 @@
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::world_coordinates::{mirror_map_position_with_axis, world_mirror_axis};
+use bevy::camera::Projection;
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
-use bevy::render::camera::Projection;
 
 /// Marker for camera tour setup
 #[derive(Component)]
@@ -85,7 +86,7 @@ pub fn update_debug_free_camera_hint(
 ) {
     let mode = if controller.enabled { "ON" } else { "OFF" };
     for mut text in &mut hints {
-        text.sections[0].value = format!(
+        text.0 = format!(
             "[DEBUG] Ctrl+W: Free Camera {mode} | F3: Toggle HUD | WASD mover | Botao direito + mouse olhar | Scroll zoom"
         );
     }
@@ -101,7 +102,7 @@ pub fn toggle_debug_free_camera(
         return;
     }
 
-    let Ok((transform, maybe_tour)) = camera_query.get_single_mut() else {
+    let Ok((transform, maybe_tour)) = camera_query.single_mut() else {
         return;
     };
 
@@ -135,8 +136,8 @@ pub fn control_debug_free_camera(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
-    mut mouse_motion: EventReader<MouseMotion>,
-    mut mouse_wheel: EventReader<MouseWheel>,
+    mut mouse_motion: MessageReader<MouseMotion>,
+    mut mouse_wheel: MessageReader<MouseWheel>,
     mut controller: ResMut<DebugFreeCameraController>,
     mut camera_query: Query<&mut Transform, With<Camera3d>>,
 ) {
@@ -147,7 +148,7 @@ pub fn control_debug_free_camera(
         return;
     }
 
-    let Ok(mut transform) = camera_query.get_single_mut() else {
+    let Ok(mut transform) = camera_query.single_mut() else {
         return;
     };
 
@@ -188,7 +189,7 @@ pub fn control_debug_free_camera(
             1.0
         };
         transform.translation +=
-            move_dir.normalize() * controller.move_speed * sprint * time.delta_seconds();
+            move_dir.normalize() * controller.move_speed * sprint * time.delta_secs();
     }
 
     let mut zoom_units = 0.0;
@@ -276,7 +277,7 @@ pub fn setup_camera_tour(
     }
 
     // Add camera tour to the main 3D camera
-    if let Ok((camera_entity, mut projection)) = camera_query.get_single_mut() {
+    if let Ok((camera_entity, mut projection)) = camera_query.single_mut() {
         if let Some(fov_radians) = login_camera_fov_for_world(&assets.world_name) {
             if let Projection::Perspective(perspective) = projection.as_mut() {
                 perspective.fov = fov_radians;
@@ -322,7 +323,7 @@ pub fn update_camera_tour(
         return;
     }
 
-    let delta_seconds = time.delta_seconds();
+    let delta_seconds = time.delta_secs();
 
     for (mut transform, mut tour, mut state) in camera_query.iter_mut() {
         if !tour.active {
@@ -336,7 +337,7 @@ pub fn update_camera_tour(
         // Check if we're in a delay
         if let Some(ref mut timer) = state.delay_timer {
             timer.tick(time.delta());
-            if !timer.finished() {
+            if !timer.is_finished() {
                 continue;
             } else {
                 state.delay_timer = None;

@@ -2,7 +2,7 @@ use crate::scene_runtime::components::*;
 use crate::scene_runtime::scene_loader::SceneLoader;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::asset::io::Reader;
-use bevy::asset::{AssetLoader, AsyncReadExt, LoadContext};
+use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
 use thiserror::Error;
 
@@ -58,7 +58,7 @@ pub fn load_scene_runtime_assets(
 // PARTICLE DEFINITIONS LOADER
 // ============================================================================
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct ParticleDefinitionsLoader;
 
 #[derive(Debug, Error)]
@@ -74,11 +74,11 @@ impl AssetLoader for ParticleDefinitionsLoader {
     type Settings = ();
     type Error = ParticleDefinitionsLoaderError;
 
-    async fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader<'_>,
-        _settings: &'a (),
-        _load_context: &'a mut LoadContext<'_>,
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;

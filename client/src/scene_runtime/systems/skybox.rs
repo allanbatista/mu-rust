@@ -1,13 +1,12 @@
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::math::primitives::Cuboid;
-use bevy::pbr::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
 use bevy::render::render_resource::Face;
 use bevy::render::render_resource::FilterMode;
-use bevy::render::texture::{
-    ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
-};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -31,7 +30,7 @@ pub fn spawn_skybox_when_ready(
         return;
     }
 
-    let Ok(camera_entity) = camera_query.get_single() else {
+    let Ok(camera_entity) = camera_query.single() else {
         return;
     };
 
@@ -89,8 +88,8 @@ pub fn spawn_skybox_when_ready(
             NotShadowCaster,
             NotShadowReceiver,
             PbrBundle {
-                mesh: mesh_handle,
-                material: material_handle,
+                mesh: Mesh3d(mesh_handle),
+                material: MeshMaterial3d(material_handle),
                 transform: Transform::IDENTITY,
                 ..default()
             },

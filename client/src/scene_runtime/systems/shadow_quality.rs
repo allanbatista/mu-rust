@@ -1,5 +1,5 @@
 use crate::scene_runtime::systems::RuntimeSunLight;
-use bevy::pbr::{
+use bevy::light::{
     CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap,
     ShadowFilteringMethod,
 };

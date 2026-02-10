@@ -78,6 +78,7 @@ Make it more realist. Remove Noise when possible. Keep the same shape! Dark Fant
 Must keep UV layout and preserving composition!!!!
 If the source has black background (RGB 0,0,0), keep black background in output.
 Never replace black background with white/gray.
+Must keep the same visual style
 """
 )
 

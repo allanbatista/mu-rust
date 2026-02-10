@@ -242,7 +242,7 @@ fn default_particle_definitions() -> ParticleDefinitions {
 fn setup_login_scene(
     mut commands: Commands,
     mut particle_definitions_assets: ResMut<Assets<ParticleDefinitions>>,
-    mut world_requests: EventWriter<WorldRequest>,
+    mut world_requests: MessageWriter<WorldRequest>,
 ) {
     let login_world = get_login_world();
     let world_name = format!("world_{}", login_world as u8);
@@ -254,7 +254,7 @@ fn setup_login_scene(
     );
 
     // Send world request with the login world map
-    world_requests.send(WorldRequest(WorldId::Login(login_world)));
+    world_requests.write(WorldRequest(WorldId::Login(login_world)));
 
     let particle_defs = particle_definitions_assets.add(default_particle_definitions());
     commands.insert_resource(RuntimeSceneAssets {
@@ -264,14 +264,14 @@ fn setup_login_scene(
         loaded: false,
     });
 
-    commands.spawn((LoginSceneRoot, RuntimeSceneEntity, SpatialBundle::default()));
+    commands.spawn((LoginSceneRoot, RuntimeSceneEntity, Transform::default()));
 }
 
 fn cleanup_login_scene(mut commands: Commands, query: Query<Entity, With<RuntimeSceneEntity>>) {
     info!("Cleaning up login scene");
 
     for entity in &query {
-        commands.entity(entity).despawn_recursive();
+        commands.entity(entity).despawn();
     }
 
     commands.remove_resource::<RuntimeSceneAssets>();

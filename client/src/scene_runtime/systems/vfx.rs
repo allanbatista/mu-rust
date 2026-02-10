@@ -1,12 +1,11 @@
 use super::particles::particle_emitter_from_definition;
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::math::primitives::Rectangle;
-use bevy::pbr::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
-use bevy::render::texture::{
-    ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
-};
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 use std::path::Path;
@@ -264,8 +263,8 @@ pub fn apply_map_vfx_profile_to_scene_objects(
                     NotShadowCaster,
                     NotShadowReceiver,
                     PbrBundle {
-                        mesh: quad_mesh.clone(),
-                        material: material_handle,
+                        mesh: Mesh3d(quad_mesh.clone()),
+                        material: MeshMaterial3d(material_handle),
                         transform: Transform::from_scale(Vec3::splat(rule.size.max(1.0))),
                         visibility: Visibility::Hidden,
                         ..default()
@@ -293,11 +292,11 @@ pub fn update_map_vfx_billboard_sprites(
     anchors: Query<&GlobalTransform, With<SceneObject>>,
     mut sprites: Query<(&MapVfxBillboardSprite, &mut Transform, &mut Visibility)>,
 ) {
-    let Ok(camera_transform) = camera_query.get_single() else {
+    let Ok(camera_transform) = camera_query.single() else {
         return;
     };
     let (_, camera_rotation, camera_position) = camera_transform.to_scale_rotation_translation();
-    let elapsed = time.elapsed_seconds();
+    let elapsed = time.elapsed_secs();
 
     for (sprite, mut transform, mut visibility) in &mut sprites {
         let Ok(anchor_transform) = anchors.get(sprite.anchor) else {
@@ -363,7 +362,7 @@ fn quantize_color(color: [f32; 4]) -> [u8; 4] {
 
 fn phase_from_entity(entity: Entity, salt: u32) -> f32 {
     let seed = entity
-        .index()
+        .index_u32()
         .wrapping_mul(1103515245)
         .wrapping_add(12345 ^ salt);
     (seed % 10_000) as f32 * (TAU / 10_000.0)

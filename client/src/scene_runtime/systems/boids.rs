@@ -7,7 +7,7 @@ pub fn update_boids(
     time: Res<Time>,
 ) {
     for (mut transform, mut boid, mut pattern) in boids.iter_mut() {
-        pattern.time += time.delta_seconds();
+        pattern.time += time.delta_secs();
 
         match &pattern.pattern_type {
             FlightPattern::Circular { radius, speed } => {

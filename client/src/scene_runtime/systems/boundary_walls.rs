@@ -1,8 +1,9 @@
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::systems::terrain::TerrainSpawned;
+use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
-use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::Face;
 
 /// Height of the boundary walls in world units.
@@ -139,8 +140,8 @@ pub fn spawn_boundary_walls_when_ready(
             parent.spawn((
                 RuntimeSceneEntity,
                 PbrBundle {
-                    mesh: mesh_handle,
-                    material: wall_material.clone(),
+                    mesh: Mesh3d(mesh_handle),
+                    material: MeshMaterial3d(wall_material.clone()),
                     transform: Transform::IDENTITY,
                     ..default()
                 },
@@ -175,6 +176,6 @@ fn build_quad_mesh(a: Vec3, b: Vec3, c: Vec3, d: Vec3) -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
+    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
     mesh
 }

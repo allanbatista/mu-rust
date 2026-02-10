@@ -90,7 +90,7 @@ pub fn bind_character_animation_players(
     mut commands: Commands,
     library: Res<PlayerAnimationLibrary>,
     character_query: Query<&CharacterAnimState, With<CharacterRoot>>,
-    body_parts: Query<(Entity, &Parent), With<BodyPartMarker>>,
+    body_parts: Query<(Entity, &ChildOf), With<BodyPartMarker>>,
     children_query: Query<&Children>,
     mut players: Query<(Entity, &mut AnimationPlayer), Without<CharacterAnimationBound>>,
 ) {
@@ -99,7 +99,7 @@ pub fn bind_character_animation_players(
     };
 
     for (part_entity, parent) in &body_parts {
-        let Ok(anim_state) = character_query.get(parent.get()) else {
+        let Ok(anim_state) = character_query.get(parent.parent()) else {
             continue;
         };
 
@@ -127,7 +127,7 @@ pub fn bind_character_animation_players(
                     .repeat();
 
                 commands.entity(entity).insert((
-                    graph_handle.clone(),
+                    AnimationGraphHandle(graph_handle.clone()),
                     transitions,
                     CharacterAnimationBound,
                 ));

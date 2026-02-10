@@ -49,7 +49,7 @@ pub fn cycle_debug_frame_limit(
         FrameLimitMode::Disabled => FrameLimitMode::Default,
     };
 
-    if let Ok(mut window) = windows.get_single_mut() {
+    if let Ok(mut window) = windows.single_mut() {
         match limiter.mode {
             FrameLimitMode::Default => {
                 window.present_mode = PresentMode::AutoVsync;
@@ -74,7 +74,7 @@ pub fn cycle_debug_frame_limit(
 }
 
 pub fn handle_window_occlusion(
-    mut events: EventReader<WindowOccluded>,
+    mut events: MessageReader<WindowOccluded>,
     mut winit_settings: ResMut<WinitSettings>,
 ) {
     for event in events.read() {

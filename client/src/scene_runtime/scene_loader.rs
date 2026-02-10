@@ -1,5 +1,5 @@
 use bevy::asset::io::Reader;
-use bevy::asset::{AssetLoader, AsyncReadExt, LoadContext};
+use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -316,7 +316,7 @@ fn default_pulse_speed() -> f32 {
     1.0
 }
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct TerrainConfigLoader;
 
 #[derive(Debug, Error)]
@@ -332,11 +332,11 @@ impl AssetLoader for TerrainConfigLoader {
     type Settings = ();
     type Error = TerrainConfigLoaderError;
 
-    async fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader<'_>,
-        _settings: &'a (),
-        _load_context: &'a mut LoadContext<'_>,
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
@@ -349,7 +349,7 @@ impl AssetLoader for TerrainConfigLoader {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct HeightmapLoader;
 
 #[derive(Debug, Error)]
@@ -365,11 +365,11 @@ impl AssetLoader for HeightmapLoader {
     type Settings = ();
     type Error = HeightmapLoaderError;
 
-    async fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader<'_>,
-        _settings: &'a (),
-        _load_context: &'a mut LoadContext<'_>,
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
@@ -382,7 +382,7 @@ impl AssetLoader for HeightmapLoader {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct TerrainMapLoader;
 
 #[derive(Debug, Error)]
@@ -398,11 +398,11 @@ impl AssetLoader for TerrainMapLoader {
     type Settings = ();
     type Error = TerrainMapLoaderError;
 
-    async fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader<'_>,
-        _settings: &'a (),
-        _load_context: &'a mut LoadContext<'_>,
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
@@ -415,7 +415,7 @@ impl AssetLoader for TerrainMapLoader {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct TerrainTextureSlotsLoader;
 
 #[derive(Debug, Error)]
@@ -431,11 +431,11 @@ impl AssetLoader for TerrainTextureSlotsLoader {
     type Settings = ();
     type Error = TerrainTextureSlotsLoaderError;
 
-    async fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader<'_>,
-        _settings: &'a (),
-        _load_context: &'a mut LoadContext<'_>,
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
@@ -448,7 +448,7 @@ impl AssetLoader for TerrainTextureSlotsLoader {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct SceneObjectsLoader;
 
 #[derive(Debug, Error)]
@@ -464,11 +464,11 @@ impl AssetLoader for SceneObjectsLoader {
     type Settings = ();
     type Error = SceneObjectsLoaderError;
 
-    async fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader<'_>,
-        _settings: &'a (),
-        _load_context: &'a mut LoadContext<'_>,
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
@@ -481,7 +481,7 @@ impl AssetLoader for SceneObjectsLoader {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct CameraTourLoader;
 
 #[derive(Debug, Error)]
@@ -497,11 +497,11 @@ impl AssetLoader for CameraTourLoader {
     type Settings = ();
     type Error = CameraTourLoaderError;
 
-    async fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader<'_>,
-        _settings: &'a (),
-        _load_context: &'a mut LoadContext<'_>,
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
@@ -514,7 +514,7 @@ impl AssetLoader for CameraTourLoader {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct MapVfxLoader;
 
 #[derive(Debug, Error)]
@@ -530,11 +530,11 @@ impl AssetLoader for MapVfxLoader {
     type Settings = ();
     type Error = MapVfxLoaderError;
 
-    async fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader<'_>,
-        _settings: &'a (),
-        _load_context: &'a mut LoadContext<'_>,
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;

@@ -1,6 +1,10 @@
+use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
-use bevy::pbr::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod};
+use bevy::light::{
+    CascadeShadowConfigBuilder, DirectionalLightShadowMap, GlobalAmbientLight,
+    ShadowFilteringMethod,
+};
 use bevy::prelude::*;
 use std::cmp::Ordering;
 
@@ -58,7 +62,7 @@ pub fn spawn_runtime_sun_light(
     mut commands: Commands,
     assets: Res<RuntimeSceneAssets>,
     terrain_configs: Res<Assets<TerrainConfig>>,
-    mut ambient_light: ResMut<AmbientLight>,
+    mut ambient_light: ResMut<GlobalAmbientLight>,
     query: Query<Entity, With<RuntimeSunLight>>,
     camera_query: Query<Entity, With<Camera3d>>,
 ) {
@@ -122,6 +126,7 @@ pub fn spawn_runtime_sun_light(
     // Lift shadowed areas so terrain/object shadows remain visible but not crushed to black.
     ambient_light.color = Color::srgb(0.96, 0.97, 1.0);
     ambient_light.brightness = 0.55;
+    ambient_light.affects_lightmapped_meshes = true;
 
     // Set initial shadow quality to Low
     commands.insert_resource(DirectionalLightShadowMap { size: 1024 });
@@ -158,7 +163,7 @@ pub fn spawn_dynamic_lights(
 
     if existing.len() > budget.max_active_lights {
         for (entity, _) in existing.iter().skip(budget.max_active_lights) {
-            commands.entity(*entity).despawn_recursive();
+            commands.entity(*entity).despawn();
         }
         existing.truncate(budget.max_active_lights);
     }
@@ -205,7 +210,7 @@ pub fn update_dynamic_lights(
     >,
     time: Res<Time>,
 ) {
-    let Ok(camera_transform) = camera_query.get_single() else {
+    let Ok(camera_transform) = camera_query.single() else {
         return;
     };
     let (_, camera_rotation, camera_position) = camera_transform.to_scale_rotation_translation();
@@ -263,7 +268,7 @@ pub fn update_dynamic_lights(
             point_light.color = dynamic_light.color;
             point_light.range = dynamic_light.range;
             point_light.intensity = if let Some(flicker) = &dynamic_light.flicker {
-                let flicker_value = ((time.elapsed_seconds() * flicker.speed).sin() + 1.0) / 2.0;
+                let flicker_value = ((time.elapsed_secs() * flicker.speed).sin() + 1.0) / 2.0;
                 let intensity = flicker.min_intensity
                     + (flicker.max_intensity - flicker.min_intensity) * flicker_value;
                 dynamic_light.intensity * intensity

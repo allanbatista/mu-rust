@@ -1,7 +1,7 @@
+use bevy::camera::{ClearColorConfig, PerspectiveProjection, Projection};
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::pbr::AmbientLight;
+use bevy::light::GlobalAmbientLight;
 use bevy::prelude::*;
-use bevy::render::camera::{ClearColorConfig, PerspectiveProjection, Projection};
 use common::WorldMap;
 
 /// Represents the current world/map being displayed in the client
@@ -15,10 +15,10 @@ pub enum WorldId {
     Game(WorldMap),
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct WorldRequest(pub WorldId);
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct WorldReady;
 
 #[derive(Component)]
@@ -34,11 +34,12 @@ pub struct WorldPlugin;
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CurrentWorld>()
-            .add_event::<WorldRequest>()
-            .add_event::<WorldReady>()
-            .insert_resource(AmbientLight {
+            .add_message::<WorldRequest>()
+            .add_message::<WorldReady>()
+            .insert_resource(GlobalAmbientLight {
                 color: Color::WHITE,
                 brightness: 0.3,
+                affects_lightmapped_meshes: true,
             })
             .add_systems(Update, process_world_requests)
             .add_systems(Startup, setup_world_camera);
@@ -48,8 +49,8 @@ impl Plugin for WorldPlugin {
 fn process_world_requests(
     mut commands: Commands,
     mut current_world: ResMut<CurrentWorld>,
-    mut requests: EventReader<WorldRequest>,
-    mut ready_writer: EventWriter<WorldReady>,
+    mut requests: MessageReader<WorldRequest>,
+    mut ready_writer: MessageWriter<WorldReady>,
     roots: Query<Entity, With<WorldRoot>>,
 ) {
     for WorldRequest(requested) in requests.read() {
@@ -60,7 +61,7 @@ fn process_world_requests(
 
         spawn_world(&mut commands, *requested);
         current_world.0 = Some(*requested);
-        ready_writer.send(WorldReady);
+        ready_writer.write(WorldReady);
     }
 }
 
@@ -68,15 +69,15 @@ fn spawn_world(commands: &mut Commands, world_id: WorldId) {
     match world_id {
         WorldId::Loading => {
             info!("Spawning loading world");
-            commands.spawn((WorldRoot, SpatialBundle::default()));
+            commands.spawn(WorldRoot);
         }
         WorldId::Login(map) => {
             info!("Spawning login world: {} (ID: {})", map.name(), map as u8);
-            commands.spawn((WorldRoot, SpatialBundle::default()));
+            commands.spawn(WorldRoot);
         }
         WorldId::Game(map) => {
             info!("Spawning game world: {} (ID: {})", map.name(), map as u8);
-            commands.spawn((WorldRoot, SpatialBundle::default()));
+            commands.spawn(WorldRoot);
         }
     }
 }
@@ -85,32 +86,29 @@ fn setup_world_camera(mut commands: Commands) {
     // 3D Camera for world rendering
     commands.spawn((
         WorldCamera,
-        Camera3dBundle {
-            camera: Camera {
-                order: 0, // Render 3D world first
-                clear_color: ClearColorConfig::Custom(Color::srgb(0.1, 0.1, 0.15)),
-                ..Default::default()
-            },
-            tonemapping: Tonemapping::None,
-            projection: Projection::Perspective(PerspectiveProjection {
-                near: 10.0,
-                far: 50_000.0,
-                ..default()
-            }),
-            transform: Transform::from_xyz(24_920.0, 520.0, 2_500.0)
-                .looking_at(Vec3::new(24_056.0, 170.0, 2_500.0), Vec3::Y),
+        Camera3d::default(),
+        Camera {
+            order: 0, // Render 3D world first
+            clear_color: ClearColorConfig::Custom(Color::srgb(0.1, 0.1, 0.15)),
             ..Default::default()
         },
+        Tonemapping::None,
+        Projection::Perspective(PerspectiveProjection {
+            near: 10.0,
+            far: 50_000.0,
+            ..default()
+        }),
+        Transform::from_xyz(24_920.0, 520.0, 2_500.0)
+            .looking_at(Vec3::new(24_056.0, 170.0, 2_500.0), Vec3::Y),
     ));
 
     // 2D Camera for UI overlay
-    commands.spawn(Camera2dBundle {
-        camera: Camera {
+    commands.spawn((
+        Camera2d,
+        Camera {
             order: 1,                            // Render UI on top
             clear_color: ClearColorConfig::None, // Don't clear, draw over 3D
             ..Default::default()
         },
-        tonemapping: Tonemapping::None,
-        ..Default::default()
-    });
+    ));
 }

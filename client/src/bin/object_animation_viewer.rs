@@ -2,10 +2,15 @@ use bevy::asset::{AssetId, AssetPlugin};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gltf::Gltf;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+use bevy::light::GlobalAmbientLight;
+use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-use bevy::render::mesh::VertexAttributeValues;
 use bevy::window::WindowResolution;
-use bevy_egui::{EguiClipboard, EguiContexts, EguiPlugin, egui};
+use bevy_egui::input::EguiWantsInput;
+use bevy_egui::{EguiClipboard, EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+#[path = "../bevy_compat.rs"]
+mod bevy_compat;
+use bevy_compat::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -87,9 +92,10 @@ struct MeshBoundsCache {
 
 fn main() {
     App::new()
-        .insert_resource(AmbientLight {
+        .insert_resource(GlobalAmbientLight {
             color: Color::WHITE,
             brightness: 250.0,
+            affects_lightmapped_meshes: true,
         })
         .insert_resource(MeshBoundsCache::default())
         .insert_resource(ViewerState::default())
@@ -98,7 +104,7 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "MU Object Animation Viewer".to_string(),
-                        resolution: WindowResolution::new(1440.0, 900.0),
+                        resolution: WindowResolution::new(1440, 900),
                         resizable: true,
                         ..default()
                     }),
@@ -109,12 +115,12 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_plugins(EguiPlugin)
+        .add_plugins(EguiPlugin::default())
         .add_systems(Startup, setup_viewer_scene)
+        .add_systems(EguiPrimaryContextPass, draw_ui_panel)
         .add_systems(
             Update,
             (
-                draw_ui_panel,
                 handle_load_request,
                 initialize_animation_graph,
                 bind_animation_players,
@@ -170,13 +176,13 @@ fn setup_viewer_scene(
 
     commands
         .spawn(PbrBundle {
-            mesh: meshes.add(Plane3d::default().mesh().size(5000.0, 5000.0)),
-            material: materials.add(StandardMaterial {
+            mesh: Mesh3d(meshes.add(Plane3d::default().mesh().size(5000.0, 5000.0))),
+            material: MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.08, 0.09, 0.1),
                 perceptual_roughness: 0.95,
                 metallic: 0.0,
                 ..default()
-            }),
+            })),
             ..default()
         })
         .insert(GroundPlane);
@@ -188,7 +194,9 @@ fn draw_ui_panel(
     keys: Res<ButtonInput<KeyCode>>,
     mut clipboard: ResMut<EguiClipboard>,
 ) {
-    let ctx = contexts.ctx_mut();
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
     egui::Window::new("Object Loader")
         .default_pos(egui::pos2(12.0, 12.0))
         .default_width(520.0)
@@ -204,14 +212,14 @@ fn draw_ui_panel(
                 command_modifier_pressed(&keys) || ctx.input(|i| i.modifiers.command);
             if path_edit.response.has_focus() && command_pressed {
                 if keys.just_pressed(KeyCode::KeyC) {
-                    clipboard.set_contents(&viewer.input_path);
+                    clipboard.set_text(&viewer.input_path);
                     // Prevent stray "c" insertion when some platforms don't emit Copy/Paste events.
                     viewer.input_path = previous_path.clone();
                 } else if keys.just_pressed(KeyCode::KeyX) {
-                    clipboard.set_contents(&viewer.input_path);
+                    clipboard.set_text(&viewer.input_path);
                     viewer.input_path.clear();
                 } else if keys.just_pressed(KeyCode::KeyV) {
-                    if let Some(contents) = clipboard.get_contents() {
+                    if let Some(contents) = clipboard.get_text() {
                         viewer.input_path = contents;
                     } else {
                         viewer.input_path = previous_path.clone();
@@ -223,7 +231,7 @@ fn draw_ui_panel(
 
             ui.horizontal(|ui| {
                 if ui.button("Paste").clicked() {
-                    if let Some(contents) = clipboard.get_contents() {
+                    if let Some(contents) = clipboard.get_text() {
                         viewer.input_path = contents;
                     } else {
                         viewer.status =
@@ -231,7 +239,7 @@ fn draw_ui_panel(
                     }
                 }
                 if ui.button("Copy").clicked() {
-                    clipboard.set_contents(&viewer.input_path);
+                    clipboard.set_text(&viewer.input_path);
                 }
             });
 
@@ -306,10 +314,10 @@ fn handle_load_request(
     viewer.pending_load = false;
 
     if let Some(entity) = viewer.scene_entity.take() {
-        commands.entity(entity).despawn_recursive();
+        commands.entity(entity).despawn();
     }
     for entity in &existing_roots {
-        commands.entity(entity).despawn_recursive();
+        commands.entity(entity).despawn();
     }
 
     viewer.graph_handle = None;
@@ -335,7 +343,7 @@ fn handle_load_request(
     let scene_entity = commands
         .spawn((
             SceneBundle {
-                scene: scene_handle,
+                scene: SceneRoot(scene_handle),
                 ..default()
             },
             LoadedSceneRoot,
@@ -427,9 +435,11 @@ fn bind_animation_players(
             player.pause_all();
         }
 
-        commands
-            .entity(entity)
-            .insert((graph_handle.clone(), transitions, ViewerAnimationBound));
+        commands.entity(entity).insert((
+            AnimationGraphHandle(graph_handle.clone()),
+            transitions,
+            ViewerAnimationBound,
+        ));
     }
 }
 
@@ -499,7 +509,7 @@ fn apply_animation_controls(
 fn sync_ground_below_loaded_object(
     viewer: Res<ViewerState>,
     mut grounds: Query<&mut Transform, With<GroundPlane>>,
-    mesh_entities: Query<(Entity, &GlobalTransform, &Handle<Mesh>), Without<GroundPlane>>,
+    mesh_entities: Query<(Entity, &GlobalTransform, &Mesh3d), Without<GroundPlane>>,
     children_query: Query<&Children>,
     meshes: Res<Assets<Mesh>>,
     mut bounds_cache: ResMut<MeshBoundsCache>,
@@ -507,7 +517,7 @@ fn sync_ground_below_loaded_object(
     let Some(scene_root) = viewer.scene_entity else {
         return;
     };
-    let Ok(mut ground_transform) = grounds.get_single_mut() else {
+    let Ok(mut ground_transform) = grounds.single_mut() else {
         return;
     };
 
@@ -521,10 +531,11 @@ fn sync_ground_below_loaded_object(
             continue;
         }
 
-        let bounds = if let Some(bounds) = bounds_cache.local_aabb_by_mesh.get(&mesh_handle.id()) {
+        let bounds = if let Some(bounds) = bounds_cache.local_aabb_by_mesh.get(&mesh_handle.0.id())
+        {
             Some(*bounds)
         } else {
-            let Some(mesh) = meshes.get(mesh_handle) else {
+            let Some(mesh) = meshes.get(&mesh_handle.0) else {
                 continue;
             };
             let Some(bounds) = compute_local_aabb(mesh) else {
@@ -532,7 +543,7 @@ fn sync_ground_below_loaded_object(
             };
             bounds_cache
                 .local_aabb_by_mesh
-                .insert(mesh_handle.id(), bounds);
+                .insert(mesh_handle.0.id(), bounds);
             Some(bounds)
         };
 
@@ -553,8 +564,8 @@ fn collect_descendants(root: Entity, children_query: &Query<&Children>, out: &mu
         return;
     };
     for child in children.iter() {
-        if out.insert(*child) {
-            collect_descendants(*child, children_query, out);
+        if out.insert(child) {
+            collect_descendants(child, children_query, out);
         }
     }
 }
@@ -601,17 +612,12 @@ fn transformed_aabb_min_y(transform: &GlobalTransform, local_min: Vec3, local_ma
 fn update_orbit_camera(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut egui_contexts: EguiContexts,
-    mut mouse_wheel_events: EventReader<MouseWheel>,
+    egui_wants_input: Res<EguiWantsInput>,
+    mut mouse_wheel_events: MessageReader<MouseWheel>,
     mut cameras: Query<(&mut Transform, &mut OrbitCamera)>,
 ) {
-    let wants_keyboard_input;
-    let wants_pointer_input;
-    {
-        let ctx = egui_contexts.ctx_mut();
-        wants_keyboard_input = ctx.wants_keyboard_input();
-        wants_pointer_input = ctx.wants_pointer_input();
-    }
+    let wants_keyboard_input = egui_wants_input.wants_any_keyboard_input();
+    let wants_pointer_input = egui_wants_input.wants_any_pointer_input();
 
     let mut yaw_input = 0.0f32;
     if !wants_keyboard_input {
@@ -649,7 +655,7 @@ fn update_orbit_camera(
         return;
     }
 
-    let dt = time.delta_seconds();
+    let dt = time.delta_secs();
     for (mut transform, mut orbit) in &mut cameras {
         orbit.distance = (orbit.distance - zoom_input * orbit.zoom_speed)
             .clamp(orbit.min_distance, orbit.max_distance);
