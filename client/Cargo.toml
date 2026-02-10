@@ -40,6 +40,9 @@ rand = "0.8"
 thiserror = "1.0"
 bevy_egui = "0.39.1"
 
+[features]
+solari = ["bevy/bevy_solari"]
+
 [[bin]]
 name = "character_viewer"
 path = "src/bin/character_viewer.rs"

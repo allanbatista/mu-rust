@@ -37,7 +37,7 @@ use super::SceneBuilder;
 // - C++ logical IDs: 55, 73, 77
 // - Asset world IDs: 56, 74, 78
 // - Aliases: LoginScene, NewLoginScene1, NewLoginScene2
-const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::LoginScene;
+const DEFAULT_LOGIN_WORLD: WorldMap = WorldMap::Noria;
 const DEFAULT_FIRE_PARTICLE_TEXTURE: &str = "data/effect/flame_chrom2.png";
 const DEFAULT_CLOUD_PARTICLE_TEXTURE: &str = "data/effect/hart_particle02.png";
 

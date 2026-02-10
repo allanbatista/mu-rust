@@ -5,6 +5,12 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::light::GlobalAmbientLight;
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
+#[cfg(feature = "solari")]
+use bevy::camera::CameraMainTextureUsages;
+#[cfg(feature = "solari")]
+use bevy::render::render_resource::TextureUsages;
+#[cfg(feature = "solari")]
+use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
 use bevy::window::WindowResolution;
 use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiClipboard, EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
@@ -38,6 +44,10 @@ struct ViewerState {
     pending_toggle_playback: bool,
     animations_initialized: bool,
     status: String,
+    #[cfg(feature = "solari")]
+    use_raytracing: bool,
+    #[cfg(feature = "solari")]
+    pending_rt_change: bool,
 }
 
 impl Default for ViewerState {
@@ -59,6 +69,10 @@ impl Default for ViewerState {
             pending_toggle_playback: false,
             animations_initialized: false,
             status: "Ready. Enter a .glb path and click Load.".to_string(),
+            #[cfg(feature = "solari")]
+            use_raytracing: true,
+            #[cfg(feature = "solari")]
+            pending_rt_change: false,
         }
     }
 }
@@ -91,8 +105,8 @@ struct MeshBoundsCache {
 }
 
 fn main() {
-    App::new()
-        .insert_resource(GlobalAmbientLight {
+    let mut app = App::new();
+    app.insert_resource(GlobalAmbientLight {
             color: Color::WHITE,
             brightness: 250.0,
             affects_lightmapped_meshes: true,
@@ -115,8 +129,12 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_plugins(EguiPlugin::default())
-        .add_systems(Startup, setup_viewer_scene)
+        .add_plugins(EguiPlugin::default());
+
+    #[cfg(feature = "solari")]
+    app.add_plugins(bevy::solari::SolariPlugins);
+
+    app.add_systems(Startup, setup_viewer_scene)
         .add_systems(EguiPrimaryContextPass, draw_ui_panel)
         .add_systems(
             Update,
@@ -128,8 +146,12 @@ fn main() {
                 sync_ground_below_loaded_object,
                 update_orbit_camera,
             ),
-        )
-        .run();
+        );
+
+    #[cfg(feature = "solari")]
+    app.add_systems(Update, toggle_raytracing);
+
+    app.run();
 }
 
 fn asset_root_path() -> String {
@@ -155,7 +177,7 @@ fn setup_viewer_scene(
     };
     apply_orbit_transform(&mut camera_transform, &orbit_camera);
 
-    commands.spawn((
+    let mut camera = commands.spawn((
         Camera3dBundle {
             transform: camera_transform,
             tonemapping: Tonemapping::ReinhardLuminance,
@@ -164,9 +186,19 @@ fn setup_viewer_scene(
         orbit_camera,
     ));
 
+    #[cfg(feature = "solari")]
+    camera.insert((
+        SolariLighting::default(),
+        Msaa::Off,
+        CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
+    ));
+
     commands.spawn(DirectionalLightBundle {
         directional_light: DirectionalLight {
             illuminance: 18_000.0,
+            #[cfg(feature = "solari")]
+            shadows_enabled: false,
+            #[cfg(not(feature = "solari"))]
             shadows_enabled: true,
             ..default()
         },
@@ -286,6 +318,15 @@ fn draw_ui_panel(
                 if selected_animation != viewer.selected_animation {
                     viewer.selected_animation = selected_animation;
                     viewer.pending_apply_selection = true;
+                }
+            }
+
+            #[cfg(feature = "solari")]
+            {
+                let prev_rt = viewer.use_raytracing;
+                ui.checkbox(&mut viewer.use_raytracing, "Raytracing (Solari)");
+                if viewer.use_raytracing != prev_rt {
+                    viewer.pending_rt_change = true;
                 }
             }
 
@@ -607,6 +648,40 @@ fn transformed_aabb_min_y(transform: &GlobalTransform, local_min: Vec3, local_ma
         }
     }
     min_world_y
+}
+
+#[cfg(feature = "solari")]
+fn toggle_raytracing(
+    mut commands: Commands,
+    mut viewer: ResMut<ViewerState>,
+    new_meshes: Query<(Entity, &Mesh3d), Added<Mesh3d>>,
+    all_meshes: Query<(Entity, &Mesh3d)>,
+    rt_query: Query<Entity, With<RaytracingMesh3d>>,
+) {
+    let toggled = std::mem::take(&mut viewer.pending_rt_change);
+
+    if viewer.use_raytracing {
+        // Auto-tag newly spawned meshes with RaytracingMesh3d
+        for (entity, mesh3d) in &new_meshes {
+            commands
+                .entity(entity)
+                .insert(RaytracingMesh3d(mesh3d.0.clone()));
+        }
+        // When just toggled on, tag ALL existing meshes
+        if toggled {
+            for (entity, mesh3d) in &all_meshes {
+                commands
+                    .entity(entity)
+                    .insert(RaytracingMesh3d(mesh3d.0.clone()));
+            }
+            viewer.status = "Raytracing enabled (Solari)".to_string();
+        }
+    } else if toggled {
+        for entity in &rt_query {
+            commands.entity(entity).remove::<RaytracingMesh3d>();
+        }
+        viewer.status = "Raytracing disabled".to_string();
+    }
 }
 
 fn update_orbit_camera(

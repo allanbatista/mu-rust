@@ -8,7 +8,14 @@ use bevy::light::GlobalAmbientLight;
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod};
 use bevy::mesh::Indices;
 use bevy::mesh::PrimitiveTopology;
+use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
+#[cfg(feature = "solari")]
+use bevy::camera::CameraMainTextureUsages;
+#[cfg(feature = "solari")]
+use bevy::render::render_resource::TextureUsages;
+#[cfg(feature = "solari")]
+use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
 use bevy::window::WindowResolution;
 use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
@@ -1043,6 +1050,10 @@ struct ViewerState {
     selected_set_index: usize,
     available_sets: Vec<EquipmentSet>,
     use_remaster: bool,
+    #[cfg(feature = "solari")]
+    use_raytracing: bool,
+    #[cfg(feature = "solari")]
+    pending_rt_change: bool,
 }
 
 impl Default for ViewerState {
@@ -1062,6 +1073,10 @@ impl Default for ViewerState {
             selected_set_index: 0,
             available_sets: EquipmentSet::available_for(body_type),
             use_remaster: false,
+            #[cfg(feature = "solari")]
+            use_raytracing: true,
+            #[cfg(feature = "solari")]
+            pending_rt_change: false,
         }
     }
 }
@@ -1117,8 +1132,8 @@ fn main() {
         heightmap.width, heightmap.height, heightmap_path
     );
 
-    App::new()
-        .insert_resource(GlobalAmbientLight {
+    let mut app = App::new();
+    app.insert_resource(GlobalAmbientLight {
             color: Color::WHITE,
             brightness: 250.0,
             affects_lightmapped_meshes: true,
@@ -1142,8 +1157,12 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_plugins(EguiPlugin::default())
-        .add_systems(Startup, setup_viewer)
+        .add_plugins(EguiPlugin::default());
+
+    #[cfg(feature = "solari")]
+    app.add_plugins(bevy::solari::SolariPlugins);
+
+    app.add_systems(Startup, (setup_viewer, configure_gizmos))
         .add_systems(
             EguiPrimaryContextPass,
             (draw_character_viewer_ui, draw_bottom_info_bar),
@@ -1169,8 +1188,12 @@ fn main() {
         .add_systems(
             PostUpdate,
             sync_bone_transforms.before(bevy::transform::TransformSystems::Propagate),
-        )
-        .run();
+        );
+
+    #[cfg(feature = "solari")]
+    app.add_systems(Update, toggle_raytracing);
+
+    app.run();
 }
 
 fn asset_root_path() -> String {
@@ -1196,7 +1219,7 @@ fn setup_viewer(
     };
     let cam_transform = compute_mu_camera_transform(&mu_cam, Vec3::ZERO);
 
-    commands.spawn((
+    let mut camera = commands.spawn((
         Camera3dBundle {
             transform: cam_transform,
             tonemapping: Tonemapping::ReinhardLuminance,
@@ -1206,10 +1229,20 @@ fn setup_viewer(
         ShadowFilteringMethod::Gaussian,
     ));
 
+    #[cfg(feature = "solari")]
+    camera.insert((
+        SolariLighting::default(),
+        Msaa::Off,
+        CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
+    ));
+
     // Directional light with high-quality shadow cascades
     commands.spawn(DirectionalLightBundle {
         directional_light: DirectionalLight {
             illuminance: 18_000.0,
+            #[cfg(feature = "solari")]
+            shadows_enabled: false, // Solari replaces shadow mapping
+            #[cfg(not(feature = "solari"))]
             shadows_enabled: true,
             ..default()
         },
@@ -1328,6 +1361,45 @@ fn build_terrain_mesh(heightmap: &HeightmapResource) -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
     mesh
+}
+
+fn configure_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
+    let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
+    config.depth_bias = -0.01;
+}
+
+#[cfg(feature = "solari")]
+fn toggle_raytracing(
+    mut commands: Commands,
+    mut viewer: ResMut<ViewerState>,
+    new_meshes: Query<(Entity, &Mesh3d), Added<Mesh3d>>,
+    all_meshes: Query<(Entity, &Mesh3d)>,
+    rt_query: Query<Entity, With<RaytracingMesh3d>>,
+) {
+    let toggled = std::mem::take(&mut viewer.pending_rt_change);
+
+    if viewer.use_raytracing {
+        // Auto-tag newly spawned meshes with RaytracingMesh3d
+        for (entity, mesh3d) in &new_meshes {
+            commands
+                .entity(entity)
+                .insert(RaytracingMesh3d(mesh3d.0.clone()));
+        }
+        // When just toggled on, tag ALL existing meshes
+        if toggled {
+            for (entity, mesh3d) in &all_meshes {
+                commands
+                    .entity(entity)
+                    .insert(RaytracingMesh3d(mesh3d.0.clone()));
+            }
+            viewer.status = "Raytracing enabled (Solari)".to_string();
+        }
+    } else if toggled {
+        for entity in &rt_query {
+            commands.entity(entity).remove::<RaytracingMesh3d>();
+        }
+        viewer.status = "Raytracing disabled".to_string();
+    }
 }
 
 /// Once the ground texture is loaded, set its sampler to Repeat for tiling.
@@ -1559,6 +1631,15 @@ fn draw_character_viewer_ui(
             ui.checkbox(&mut viewer.use_remaster, "Use Remaster models");
             if viewer.use_remaster != prev_remaster {
                 viewer.pending_class_change = true; // Respawn with new paths
+            }
+
+            #[cfg(feature = "solari")]
+            {
+                let prev_rt = viewer.use_raytracing;
+                ui.checkbox(&mut viewer.use_raytracing, "Raytracing (Solari)");
+                if viewer.use_raytracing != prev_rt {
+                    viewer.pending_rt_change = true;
+                }
             }
 
             ui.separator();
