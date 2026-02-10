@@ -18,9 +18,9 @@ struct GrassVertexOutput {
     @location(0) uv: vec2<f32>,
 };
 
-// Material bindings (group 2, set by AsBindGroup derive)
-@group(2) @binding(0) var grass_texture: texture_2d<f32>;
-@group(2) @binding(1) var grass_sampler: sampler;
+// Material bindings (set by AsBindGroup derive)
+@group(#{MATERIAL_BIND_GROUP}) @binding(0) var grass_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(1) var grass_sampler: sampler;
 
 struct GrassParams {
     alpha_cutoff: f32,
@@ -29,7 +29,7 @@ struct GrassParams {
     _padding: f32,
 };
 
-@group(2) @binding(2) var<uniform> params: GrassParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(2) var<uniform> params: GrassParams;
 
 @vertex
 fn vertex(vertex: GrassVertex) -> GrassVertexOutput {
