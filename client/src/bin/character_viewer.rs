@@ -985,6 +985,7 @@ const WEAPON_BLUR_MAX_SAMPLES: usize = 24;
 const WEAPON_BLUR_NEAR_OFFSET: f32 = 20.0;
 const WEAPON_BLUR_FAR_OFFSET: f32 = 120.0;
 const SKILL_VFX_LOAD_GRACE_SECONDS: f32 = 0.6;
+const SKILL_VFX_READINESS_TIMEOUT_SECONDS: f32 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SkillType {
@@ -1255,7 +1256,9 @@ struct SkillVfx;
 
 #[derive(Component)]
 struct SkillVfxLifetime {
-    timer: Timer,
+    effective_timer: Timer,
+    readiness_timer: Timer,
+    ready: bool,
 }
 
 #[derive(Component)]
@@ -1281,6 +1284,109 @@ struct PendingSkillVfxSpawn {
     uniform_scale: f32,
     ttl_seconds: f32,
     follow: Option<(Entity, Vec3)>,
+}
+
+#[derive(Resource, Default)]
+struct SkillVfxPreloadCache {
+    loaded_paths: HashSet<&'static str>,
+    gltf_handles: Vec<Handle<Gltf>>,
+    scene_handles: Vec<Handle<Scene>>,
+}
+
+// ============================================================================
+// WEAPON TRAIL + SKILL EFFECT COMPONENTS
+// ============================================================================
+
+/// A mesh-based weapon trail ribbon that replaces debug gizmo lines.
+#[derive(Component)]
+struct WeaponTrail {
+    config: WeaponTrailConfig,
+    samples: VecDeque<WeaponTrailSample>,
+    time_since_last_sample: f32,
+    mesh_entity: Option<Entity>,
+    mesh_handle: Option<Handle<Mesh>>,
+    active_duration: f32,
+    elapsed: f32,
+}
+
+struct WeaponTrailConfig {
+    hand_bone: Entity,
+    tip_bone: Entity,
+    max_samples: usize,
+    sample_lifetime: f32,
+    min_sample_distance_sq: f32,
+    max_sample_interval: f32,
+    near_offset: f32,
+    far_offset: f32,
+    color_new: [f32; 4],
+    color_old: [f32; 4],
+    texture_path: String,
+    additive: bool,
+}
+
+struct WeaponTrailSample {
+    near: Vec3,
+    far: Vec3,
+    age: f32,
+}
+
+/// One-shot particle burst spawned at a delayed time (e.g. impact moment).
+#[derive(Component)]
+struct SkillImpactBurst {
+    delay: f32,
+    elapsed: f32,
+    fired: bool,
+    burst_count: u32,
+    emitter_config: SkillBurstEmitterConfig,
+    lifetime_after_burst: f32,
+}
+
+/// Lightweight config for burst particles (avoids needing full ParticleEmitter from scene_runtime).
+#[derive(Clone)]
+struct SkillBurstEmitterConfig {
+    lifetime_range: (f32, f32),
+    initial_velocity: Vec3,
+    velocity_variance: Vec3,
+    scale_range: (f32, f32),
+    scale_variance: f32,
+    color_start: Vec4,
+    color_end: Vec4,
+    texture_path: String,
+    additive: bool,
+    rotation_speed: f32,
+}
+
+/// Temporary dynamic light that ramps to a peak and then fades out.
+#[derive(Component)]
+struct SkillTimedLight {
+    elapsed: f32,
+    lifetime: f32,
+    peak_time: f32,
+    peak_intensity: f32,
+    base_intensity: f32,
+    color: Color,
+    range: f32,
+}
+
+/// Marker for burst particle entities spawned by SkillImpactBurst.
+#[derive(Component)]
+struct SkillBurstParticle {
+    position: Vec3,
+    velocity: Vec3,
+    lifetime: f32,
+    max_lifetime: f32,
+    scale: f32,
+    rotation: f32,
+    rotation_speed: f32,
+    color_start: Vec4,
+    color_end: Vec4,
+}
+
+/// Render entity for burst particles of a given batch key.
+#[derive(Component)]
+struct SkillBurstRenderBatch {
+    texture_path: String,
+    additive: bool,
 }
 
 /// Marker for the invisible animated skeleton scene (player.glb).
@@ -1340,6 +1446,7 @@ fn main() {
         affects_lightmapped_meshes: true,
     })
     .insert_resource(ViewerState::default())
+    .insert_resource(SkillVfxPreloadCache::default())
     .insert_resource(heightmap)
     .insert_resource(DirectionalLightShadowMap { size: 4096 })
     .add_plugins(
@@ -1394,6 +1501,11 @@ fn main() {
             ),
         )
         .add_systems(Update, update_weapon_blur_vfx)
+        .add_systems(Update, update_weapon_trails)
+        .add_systems(Update, update_skill_impact_bursts)
+        .add_systems(Update, update_skill_burst_particles)
+        .add_systems(Update, render_skill_burst_particles)
+        .add_systems(Update, update_skill_timed_lights)
         .add_systems(Update, update_pending_skill_vfx)
         .add_systems(
             Update,
@@ -2050,6 +2162,7 @@ fn remaster_asset_exists(path: &str) -> bool {
 fn handle_class_change(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
+    mut preload_cache: ResMut<SkillVfxPreloadCache>,
     mut viewer: ResMut<ViewerState>,
     heightmap: Res<HeightmapResource>,
 ) {
@@ -2094,7 +2207,9 @@ fn handle_class_change(
         .min(viewer.available_skills.len().saturating_sub(1));
     viewer.pending_skill_cast = false;
     viewer.active_skill = None;
+    viewer.active_weapon_blur = None;
     viewer.rmb_press_cursor = None;
+    preload_class_skill_vfx_assets(&viewer.available_skills, &asset_server, &mut preload_cache);
 
     // Spawn position at center of map with terrain height
     let spawn_x = GRID_CELL_SIZE * 128.5;
@@ -2550,6 +2665,9 @@ fn trigger_selected_skill(
         ),
         With<CharacterRoot>,
     >,
+    skeleton_query: Query<(Entity, &ChildOf), With<SkeletonMarker>>,
+    children_query_bones: Query<&Children>,
+    name_query_bones: Query<&Name>,
 ) {
     if !std::mem::take(&mut viewer.pending_skill_cast) {
         return;
@@ -2628,11 +2746,16 @@ fn trigger_selected_skill(
         return_action,
         remaining_seconds: skill_duration,
     });
-    if skill.vfx == SkillVfxProfile::Lunge {
-        viewer.active_weapon_blur = Some(ActiveWeaponBlur::for_lunge(skill_duration));
+    // Resolve weapon bones eagerly for Lunge trail
+    let weapon_bones = if skill.vfx == SkillVfxProfile::Lunge {
+        viewer.active_weapon_blur = None;
+        find_character_skeleton(character_entity, &skeleton_query).and_then(|skel| {
+            resolve_weapon_blur_bones(skel, &children_query_bones, &name_query_bones)
+        })
     } else {
         viewer.active_weapon_blur = None;
-    }
+        None
+    };
 
     spawn_skill_vfx_for_entry(
         &mut commands,
@@ -2643,6 +2766,7 @@ fn trigger_selected_skill(
         target_pos,
         skill_duration,
         skill,
+        weapon_bones,
     );
 
     viewer.status = format!("Casting {} (Skill {})", skill.name, skill.skill_id);
@@ -2695,6 +2819,7 @@ fn spawn_skill_vfx_for_entry(
     target_pos: Vec3,
     skill_duration: f32,
     skill: SkillEntry,
+    weapon_bones: Option<WeaponBlurBones>,
 ) {
     match skill.vfx {
         SkillVfxProfile::DefensiveAura => {
@@ -2726,6 +2851,7 @@ fn spawn_skill_vfx_for_entry(
                 caster_pos,
                 caster_rotation,
                 skill_duration,
+                weapon_bones,
             );
         }
         SkillVfxProfile::TwistingSlash => {
@@ -3020,6 +3146,7 @@ fn spawn_lunge_vfx(
     caster_pos: Vec3,
     caster_rotation: Quat,
     skill_duration: f32,
+    weapon_bones: Option<WeaponBlurBones>,
 ) {
     let mut forward = caster_rotation.mul_vec3(Vec3::NEG_Z);
     forward.y = 0.0;
@@ -3029,11 +3156,119 @@ fn spawn_lunge_vfx(
         forward = forward.normalize();
     }
 
-    let strike_delay = (skill_duration * 0.22).clamp(0.05, 0.42);
-    // Lunge (skill 20) in classic client is mostly weapon blur.
-    // Keep only a compact contact flash and avoid large Rush-like VFX.
+    let strike_time = (skill_duration * 0.22).clamp(0.05, 0.42);
     let impact_offset = forward * 45.0 + Vec3::new(0.0, 18.0, 0.0);
 
+    // 1) Weapon Trail (mesh ribbon replacing gizmo lines)
+    if let Some(bones) = weapon_bones {
+        commands.spawn((
+            SkillVfx,
+            WeaponTrail {
+                config: WeaponTrailConfig {
+                    hand_bone: bones.hand,
+                    tip_bone: bones.tip,
+                    max_samples: WEAPON_BLUR_MAX_SAMPLES,
+                    sample_lifetime: 0.18,
+                    min_sample_distance_sq: 36.0,
+                    max_sample_interval: 0.035,
+                    near_offset: WEAPON_BLUR_NEAR_OFFSET,
+                    far_offset: WEAPON_BLUR_FAR_OFFSET,
+                    color_new: [0.8, 0.9, 1.0, 0.95],
+                    color_old: [1.0, 0.82, 0.55, 0.0],
+                    texture_path: "data/effect/sword_blur.png".into(),
+                    additive: true,
+                },
+                samples: VecDeque::new(),
+                time_since_last_sample: 0.0,
+                mesh_entity: None,
+                mesh_handle: None,
+                active_duration: skill_duration,
+                elapsed: 0.0,
+            },
+            Transform::from_translation(caster_pos),
+        ));
+    }
+
+    // 2) Swing light (follows caster, peaks at impact)
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration,
+            peak_time: strike_time,
+            peak_intensity: 8000.0,
+            base_intensity: 1500.0,
+            color: Color::srgb(0.7, 0.85, 1.0),
+            range: 200.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 200.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 60.0,
+        },
+    ));
+
+    // 3) Impact sparks (burst at contact moment)
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 12,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.08, 0.25),
+                initial_velocity: Vec3::new(0.0, 80.0, 0.0),
+                velocity_variance: Vec3::new(60.0, 40.0, 60.0),
+                scale_range: (3.0, 8.0),
+                scale_variance: 2.0,
+                color_start: Vec4::new(1.0, 0.9, 0.6, 1.0),
+                color_end: Vec4::new(1.0, 0.5, 0.1, 0.0),
+                texture_path: "data/effect/spark_01.png".into(),
+                additive: true,
+                rotation_speed: 4.0,
+            },
+            lifetime_after_burst: 0.5,
+        },
+        Transform::from_translation(caster_pos + impact_offset),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: impact_offset,
+        },
+    ));
+
+    // 4) Impact light flash (bright flash at contact)
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: 0.3,
+            peak_time: strike_time,
+            peak_intensity: 15000.0,
+            base_intensity: 0.0,
+            color: Color::srgb(1.0, 0.85, 0.55),
+            range: 150.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 150.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + impact_offset),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: impact_offset,
+        },
+    ));
+
+    // 5) Contact flash GLB (keep existing)
     if vfx_asset_exists("data/skill/flashing.glb") {
         queue_skill_vfx_scene(
             commands,
@@ -3041,7 +3276,7 @@ fn spawn_lunge_vfx(
             caster_pos + impact_offset,
             0.38,
             0.12,
-            strike_delay,
+            strike_time,
             Some((caster_entity, impact_offset)),
         );
     }
@@ -3070,10 +3305,15 @@ fn spawn_skill_vfx_scene(
             playback_speed: 1.0,
         },
         SkillVfxLifetime {
-            timer: Timer::from_seconds(
+            effective_timer: Timer::from_seconds(
                 (ttl_seconds + SKILL_VFX_LOAD_GRACE_SECONDS).max(0.2),
                 TimerMode::Once,
             ),
+            readiness_timer: Timer::from_seconds(
+                SKILL_VFX_READINESS_TIMEOUT_SECONDS,
+                TimerMode::Once,
+            ),
+            ready: false,
         },
     ));
 
@@ -3209,6 +3449,42 @@ fn vfx_asset_exists(path: &str) -> bool {
     asset_path_exists(path)
 }
 
+fn preload_class_skill_vfx_assets(
+    skills: &[SkillEntry],
+    asset_server: &AssetServer,
+    preload_cache: &mut SkillVfxPreloadCache,
+) {
+    if skills
+        .iter()
+        .any(|skill| skill.vfx == SkillVfxProfile::Lunge)
+    {
+        preload_skill_vfx_asset("data/skill/flashing.glb", asset_server, preload_cache);
+        // Preload trail and spark textures used by the Lunge VFX
+        let _: Handle<Image> = asset_server.load("data/effect/sword_blur.png");
+        let _: Handle<Image> = asset_server.load("data/effect/spark_01.png");
+    }
+}
+
+fn preload_skill_vfx_asset(
+    glb_path: &'static str,
+    asset_server: &AssetServer,
+    preload_cache: &mut SkillVfxPreloadCache,
+) {
+    if !vfx_asset_exists(glb_path) {
+        return;
+    }
+    if !preload_cache.loaded_paths.insert(glb_path) {
+        return;
+    }
+
+    preload_cache
+        .gltf_handles
+        .push(asset_server.load(glb_path.to_string()));
+    preload_cache
+        .scene_handles
+        .push(asset_server.load(format!("{glb_path}#Scene0")));
+}
+
 fn resolve_world_ground_texture_path() -> String {
     [
         "prototype/2x2-gray-with-central-position.png",
@@ -3240,6 +3516,8 @@ fn update_skill_vfx(
         With<SkillVfx>,
     >,
     targets: Query<&GlobalTransform>,
+    children_query: Query<&Children>,
+    meshes: Query<(), With<Mesh3d>>,
 ) {
     for (entity, mut lifetime, follow, mut transform) in &mut vfx_entities {
         if let Some(follow) = follow {
@@ -3251,18 +3529,447 @@ fn update_skill_vfx(
             }
         }
 
-        lifetime.timer.tick(time.delta());
-        if lifetime.timer.is_finished() {
+        if !lifetime.ready {
+            lifetime.readiness_timer.tick(time.delta());
+            lifetime.ready = subtree_contains_mesh(entity, &children_query, &meshes)
+                || lifetime.readiness_timer.is_finished();
+            if !lifetime.ready {
+                continue;
+            }
+        }
+
+        lifetime.effective_timer.tick(time.delta());
+        if lifetime.effective_timer.is_finished() {
             commands.entity(entity).despawn();
         }
     }
 }
 
+fn subtree_contains_mesh(
+    root: Entity,
+    children_query: &Query<&Children>,
+    meshes: &Query<(), With<Mesh3d>>,
+) -> bool {
+    let mut queue = vec![root];
+    while let Some(entity) = queue.pop() {
+        if meshes.contains(entity) {
+            return true;
+        }
+
+        if let Ok(children) = children_query.get(entity) {
+            queue.extend(children.iter());
+        }
+    }
+
+    false
+}
+
+// ============================================================================
+// WEAPON TRAIL SYSTEM
+// ============================================================================
+
+/// Cached trail materials keyed by (texture_path, additive).
+#[derive(Default)]
+struct TrailMaterialCache {
+    materials: HashMap<(String, bool), Handle<StandardMaterial>>,
+}
+
+fn update_weapon_trails(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut trails: Query<(Entity, &mut WeaponTrail)>,
+    global_transforms: Query<&GlobalTransform>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+    mut material_cache: Local<TrailMaterialCache>,
+) {
+    let dt = time.delta_secs();
+
+    for (trail_entity, mut trail) in &mut trails {
+        trail.elapsed += dt;
+
+        // Age and cull expired samples
+        for sample in trail.samples.iter_mut() {
+            sample.age += dt;
+        }
+        while trail
+            .samples
+            .front()
+            .is_some_and(|s| s.age >= trail.config.sample_lifetime)
+        {
+            trail.samples.pop_front();
+        }
+
+        trail.time_since_last_sample += dt;
+
+        // Sample new positions while still within active duration
+        if trail.elapsed <= trail.active_duration {
+            let bone_result = global_transforms
+                .get(trail.config.hand_bone)
+                .ok()
+                .zip(global_transforms.get(trail.config.tip_bone).ok());
+
+            if let Some((hand_gt, tip_gt)) = bone_result {
+                let hand_pos = hand_gt.translation();
+                let tip_pos = tip_gt.translation();
+                let mut blade_dir = tip_pos - hand_pos;
+                if blade_dir.length_squared() <= f32::EPSILON {
+                    blade_dir = hand_gt.rotation().mul_vec3(Vec3::NEG_Y);
+                }
+                if blade_dir.length_squared() <= f32::EPSILON {
+                    blade_dir = Vec3::NEG_Z;
+                }
+                blade_dir = blade_dir.normalize();
+
+                let near = hand_pos + blade_dir * trail.config.near_offset;
+                let far = hand_pos + blade_dir * trail.config.far_offset;
+                push_trail_sample(&mut trail, near, far);
+            }
+        }
+
+        // Despawn entire trail when done and all samples expired
+        if trail.elapsed > trail.active_duration + trail.config.sample_lifetime
+            && trail.samples.is_empty()
+        {
+            if let Some(mesh_entity) = trail.mesh_entity {
+                commands.entity(mesh_entity).despawn();
+            }
+            commands.entity(trail_entity).despawn();
+            continue;
+        }
+
+        // Ensure render entity exists
+        if trail.mesh_entity.is_none() {
+            let cache_key = (trail.config.texture_path.clone(), trail.config.additive);
+            let material_handle =
+                material_cache
+                    .materials
+                    .entry(cache_key.clone())
+                    .or_insert_with(|| {
+                        let texture = asset_server.load_with_settings(
+                            cache_key.0.clone(),
+                            |settings: &mut _| {
+                                *settings = bevy::image::ImageLoaderSettings {
+                                    is_srgb: true,
+                                    sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
+                                        address_mode_u: ImageAddressMode::ClampToEdge,
+                                        address_mode_v: ImageAddressMode::ClampToEdge,
+                                        ..default()
+                                    }),
+                                    ..default()
+                                };
+                            },
+                        );
+                        materials.add(StandardMaterial {
+                            base_color_texture: Some(texture),
+                            base_color: Color::WHITE,
+                            alpha_mode: if cache_key.1 {
+                                AlphaMode::Add
+                            } else {
+                                AlphaMode::Blend
+                            },
+                            unlit: true,
+                            double_sided: true,
+                            cull_mode: None,
+                            perceptual_roughness: 1.0,
+                            metallic: 0.0,
+                            reflectance: 0.0,
+                            ..default()
+                        })
+                    });
+
+            let mesh_handle = meshes.add(empty_trail_mesh());
+            trail.mesh_handle = Some(mesh_handle.clone());
+            let mesh_entity = commands
+                .spawn((
+                    NotShadowCaster,
+                    NotShadowReceiver,
+                    PbrBundle {
+                        mesh: Mesh3d(mesh_handle),
+                        material: MeshMaterial3d(material_handle.clone()),
+                        transform: Transform::IDENTITY,
+                        ..default()
+                    },
+                ))
+                .id();
+            trail.mesh_entity = Some(mesh_entity);
+        }
+
+        // Rebuild mesh from samples
+        if let Some(ref mesh_handle) = trail.mesh_handle {
+            if let Some(mesh) = meshes.get_mut(mesh_handle) {
+                *mesh = build_trail_mesh(&trail);
+            }
+        }
+    }
+}
+
+fn push_trail_sample(trail: &mut WeaponTrail, near: Vec3, far: Vec3) {
+    let should_sample = match trail.samples.back() {
+        Some(last) => {
+            let movement = last
+                .near
+                .distance_squared(near)
+                .max(last.far.distance_squared(far));
+            movement >= trail.config.min_sample_distance_sq
+                || trail.time_since_last_sample >= trail.config.max_sample_interval
+        }
+        None => true,
+    };
+
+    if !should_sample {
+        return;
+    }
+
+    if trail.samples.len() >= trail.config.max_samples {
+        trail.samples.pop_front();
+    }
+    trail.samples.push_back(WeaponTrailSample {
+        near,
+        far,
+        age: 0.0,
+    });
+    trail.time_since_last_sample = 0.0;
+}
+
+fn build_trail_mesh(trail: &WeaponTrail) -> Mesh {
+    let sample_count = trail.samples.len();
+    if sample_count < 2 {
+        return empty_trail_mesh();
+    }
+
+    let quad_count = sample_count - 1;
+    let vertex_count = quad_count * 6;
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(vertex_count);
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(vertex_count);
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(vertex_count);
+    let mut colors: Vec<[f32; 4]> = Vec::with_capacity(vertex_count);
+
+    let samples: Vec<&WeaponTrailSample> = trail.samples.iter().collect();
+
+    for i in 0..quad_count {
+        let s0 = samples[i];
+        let s1 = samples[i + 1];
+
+        let u0 = i as f32 / (sample_count - 1) as f32;
+        let u1 = (i + 1) as f32 / (sample_count - 1) as f32;
+
+        let life0 = (1.0 - s0.age / trail.config.sample_lifetime).clamp(0.0, 1.0);
+        let life1 = (1.0 - s1.age / trail.config.sample_lifetime).clamp(0.0, 1.0);
+
+        let c0 = lerp_rgba(trail.config.color_old, trail.config.color_new, life0);
+        let c1 = lerp_rgba(trail.config.color_old, trail.config.color_new, life1);
+
+        let edge_along = s1.near - s0.near;
+        let edge_across = s0.far - s0.near;
+        let face_normal = edge_along.cross(edge_across).normalize_or_zero();
+        let n: [f32; 3] = face_normal.into();
+
+        let p0_near: [f32; 3] = s0.near.into();
+        let p0_far: [f32; 3] = s0.far.into();
+        let p1_near: [f32; 3] = s1.near.into();
+        let p1_far: [f32; 3] = s1.far.into();
+
+        // Triangle 1: s0.near, s1.near, s1.far
+        positions.extend_from_slice(&[p0_near, p1_near, p1_far]);
+        normals.extend_from_slice(&[n, n, n]);
+        uvs.extend_from_slice(&[[u0, 0.0], [u1, 0.0], [u1, 1.0]]);
+        colors.extend_from_slice(&[c0, c1, c1]);
+
+        // Triangle 2: s0.near, s1.far, s0.far
+        positions.extend_from_slice(&[p0_near, p1_far, p0_far]);
+        normals.extend_from_slice(&[n, n, n]);
+        uvs.extend_from_slice(&[[u0, 0.0], [u1, 1.0], [u0, 1.0]]);
+        colors.extend_from_slice(&[c0, c1, c0]);
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh
+}
+
+fn lerp_rgba(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+    ]
+}
+
+fn empty_trail_mesh() -> Mesh {
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, Vec::<[f32; 3]>::new());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, Vec::<[f32; 2]>::new());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, Vec::<[f32; 4]>::new());
+    mesh
+}
+
+// ============================================================================
+// SKILL IMPACT BURST SYSTEM
+// ============================================================================
+
+/// Cached burst particle materials.
+#[derive(Default)]
+struct BurstMaterialCache {
+    materials: HashMap<(String, bool), Handle<StandardMaterial>>,
+}
+
+fn update_skill_impact_bursts(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut bursts: Query<(Entity, &mut SkillImpactBurst, &GlobalTransform)>,
+) {
+    use rand::Rng;
+    use std::f32::consts::TAU;
+    let dt = time.delta_secs();
+
+    for (entity, mut burst, transform) in &mut bursts {
+        burst.elapsed += dt;
+
+        if burst.elapsed >= burst.delay && !burst.fired {
+            burst.fired = true;
+            let position = transform.translation();
+            let mut rng = rand::thread_rng();
+
+            for _ in 0..burst.burst_count {
+                let cfg = &burst.emitter_config;
+                let lifetime = rng.gen_range(cfg.lifetime_range.0..=cfg.lifetime_range.1);
+                let velocity_offset = Vec3::new(
+                    rng.gen_range(-cfg.velocity_variance.x..=cfg.velocity_variance.x),
+                    rng.gen_range(-cfg.velocity_variance.y..=cfg.velocity_variance.y),
+                    rng.gen_range(-cfg.velocity_variance.z..=cfg.velocity_variance.z),
+                );
+                let base_scale = rng.gen_range(cfg.scale_range.0..=cfg.scale_range.1);
+                let scale_jitter = if cfg.scale_variance > 0.0 {
+                    rng.gen_range(-cfg.scale_variance..=cfg.scale_variance)
+                } else {
+                    0.0
+                };
+                let rotation = rng.gen_range(0.0..TAU);
+                let rotation_speed_jitter = rng.gen_range(0.75_f32..=1.25);
+
+                commands.spawn((
+                    SkillVfx,
+                    SkillBurstParticle {
+                        position,
+                        velocity: cfg.initial_velocity + velocity_offset,
+                        lifetime: 0.0,
+                        max_lifetime: lifetime,
+                        scale: (base_scale + scale_jitter).max(0.01),
+                        rotation,
+                        rotation_speed: cfg.rotation_speed * rotation_speed_jitter,
+                        color_start: cfg.color_start,
+                        color_end: cfg.color_end,
+                    },
+                    Transform::from_translation(position),
+                ));
+            }
+        }
+
+        if burst.fired && burst.elapsed >= burst.delay + burst.lifetime_after_burst {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+fn update_skill_burst_particles(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut particles: Query<(Entity, &mut SkillBurstParticle)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut p) in &mut particles {
+        p.lifetime += dt;
+        if p.lifetime >= p.max_lifetime {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let vel = p.velocity;
+        p.position += vel * dt;
+        p.velocity.y -= 9.8 * dt;
+        p.rotation += p.rotation_speed * dt;
+    }
+}
+
+fn render_skill_burst_particles(
+    particles: Query<&SkillBurstParticle>,
+    mut gizmos: Gizmos,
+) {
+    for p in &particles {
+        let age = (p.lifetime / p.max_lifetime).clamp(0.0, 1.0);
+        let color = p.color_start.lerp(p.color_end, age);
+        if color.w <= 0.01 {
+            continue;
+        }
+        let size = (p.scale * (1.0 - age * 0.35)).max(0.01);
+        // Draw a small cross at the particle position as a simple gizmo representation
+        let right = Vec3::X * size;
+        let up = Vec3::Y * size;
+        let c = Color::srgba(color.x, color.y, color.z, color.w);
+        gizmos.line(p.position - right, p.position + right, c);
+        gizmos.line(p.position - up, p.position + up, c);
+    }
+}
+
+// ============================================================================
+// SKILL TIMED LIGHT SYSTEM
+// ============================================================================
+
+fn update_skill_timed_lights(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut lights: Query<(Entity, &mut SkillTimedLight, &mut PointLight, &mut Visibility)>,
+) {
+    let dt = time.delta_secs();
+
+    for (entity, mut light, mut point_light, mut visibility) in &mut lights {
+        light.elapsed += dt;
+
+        if light.elapsed >= light.lifetime {
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        // Compute intensity: ramp up to peak at peak_time, then fade to 0 by lifetime
+        let intensity = if light.elapsed < light.peak_time {
+            let t = if light.peak_time > 0.0 {
+                light.elapsed / light.peak_time
+            } else {
+                1.0
+            };
+            light.base_intensity + (light.peak_intensity - light.base_intensity) * t
+        } else {
+            let remaining = light.lifetime - light.peak_time;
+            let t = if remaining > 0.0 {
+                1.0 - (light.elapsed - light.peak_time) / remaining
+            } else {
+                0.0
+            };
+            light.peak_intensity * t.clamp(0.0, 1.0)
+        };
+
+        point_light.color = light.color;
+        point_light.intensity = intensity;
+        point_light.range = light.range;
+        *visibility = Visibility::Inherited;
+    }
+}
+
+// ============================================================================
+// EXISTING WEAPON BLUR (gizmo-based, kept for SlashTrail etc.)
+// ============================================================================
+
 fn update_weapon_blur_vfx(
     time: Res<Time>,
     mut viewer: ResMut<ViewerState>,
     mut gizmos: Gizmos,
-    skeleton_query: Query<Entity, With<SkeletonMarker>>,
+    skeleton_query: Query<(Entity, &ChildOf), With<SkeletonMarker>>,
     children_query: Query<&Children>,
     name_query: Query<&Name>,
     global_transforms: Query<&GlobalTransform>,
@@ -3291,9 +3998,11 @@ fn update_weapon_blur_vfx(
             blur.samples.pop_front();
         }
 
+        let mut fallback_origin = Vec3::ZERO;
         let mut fallback_forward = Vec3::NEG_Z;
         if let Some(root_entity) = character_entity {
             if let Ok(root_transform) = character_roots.get(root_entity) {
+                fallback_origin = root_transform.translation();
                 fallback_forward = root_transform.rotation().mul_vec3(Vec3::NEG_Z);
             }
         }
@@ -3305,59 +4014,52 @@ fn update_weapon_blur_vfx(
 
         if blur.elapsed_seconds >= blur.start_seconds && blur.elapsed_seconds <= blur.end_seconds {
             if blur.bones.is_none() {
-                if let Ok(skeleton_entity) = skeleton_query.single() {
-                    blur.bones =
-                        resolve_weapon_blur_bones(skeleton_entity, &children_query, &name_query);
-                } else {
-                    clear_blur = true;
+                if let Some(root_entity) = character_entity {
+                    if let Some(skeleton_entity) =
+                        find_character_skeleton(root_entity, &skeleton_query)
+                    {
+                        blur.bones = resolve_weapon_blur_bones(
+                            skeleton_entity,
+                            &children_query,
+                            &name_query,
+                        );
+                    }
                 }
             }
 
-            if !clear_blur {
-                if let Some(bones) = blur.bones {
-                    if let (Ok(hand_transform), Ok(tip_transform)) = (
-                        global_transforms.get(bones.hand),
-                        global_transforms.get(bones.tip),
-                    ) {
-                        let hand = hand_transform.translation();
-                        let mut blade_dir = tip_transform.translation() - hand;
-                        if blade_dir.length_squared() <= f32::EPSILON {
-                            blade_dir = hand_transform.rotation().mul_vec3(Vec3::NEG_Y);
-                        }
-                        if blade_dir.length_squared() <= f32::EPSILON {
-                            blade_dir = fallback_forward;
-                        }
-                        blade_dir = blade_dir.normalize();
-
-                        let near = hand + blade_dir * WEAPON_BLUR_NEAR_OFFSET;
-                        let tip = hand + blade_dir * WEAPON_BLUR_FAR_OFFSET;
-
-                        let should_sample = match blur.samples.back() {
-                            Some(last) => {
-                                let movement = last
-                                    .hand
-                                    .distance_squared(near)
-                                    .max(last.tip.distance_squared(tip));
-                                movement >= blur.min_sample_distance_sq
-                                    || blur.time_since_last_sample_seconds
-                                        >= blur.max_sample_interval_seconds
-                            }
-                            None => true,
-                        };
-
-                        if should_sample {
-                            if blur.samples.len() >= WEAPON_BLUR_MAX_SAMPLES {
-                                blur.samples.pop_front();
-                            }
-                            blur.samples.push_back(WeaponBlurSample {
-                                hand: near,
-                                tip,
-                                age: 0.0,
-                            });
-                            blur.time_since_last_sample_seconds = 0.0;
-                        }
+            let mut sampled = false;
+            if let Some(bones) = blur.bones {
+                if let (Ok(hand_transform), Ok(tip_transform)) = (
+                    global_transforms.get(bones.hand),
+                    global_transforms.get(bones.tip),
+                ) {
+                    let hand = hand_transform.translation();
+                    let mut blade_dir = tip_transform.translation() - hand;
+                    if blade_dir.length_squared() <= f32::EPSILON {
+                        blade_dir = hand_transform.rotation().mul_vec3(Vec3::NEG_Y);
                     }
+                    if blade_dir.length_squared() <= f32::EPSILON {
+                        blade_dir = fallback_forward;
+                    }
+                    blade_dir = blade_dir.normalize();
+
+                    let near = hand + blade_dir * WEAPON_BLUR_NEAR_OFFSET;
+                    let tip = hand + blade_dir * WEAPON_BLUR_FAR_OFFSET;
+                    push_weapon_blur_sample(blur, near, tip);
+                    sampled = true;
                 }
+            }
+
+            if !sampled && character_entity.is_some() {
+                let span = (blur.end_seconds - blur.start_seconds).max(0.001);
+                let phase = ((blur.elapsed_seconds - blur.start_seconds) / span).clamp(0.0, 1.0);
+                let sweep_angle = (phase - 0.5) * 1.25;
+                let sweep_dir = Quat::from_rotation_y(sweep_angle).mul_vec3(fallback_forward);
+                let right = sweep_dir.cross(Vec3::Y).normalize_or_zero();
+                let hand =
+                    fallback_origin + Vec3::new(0.0, 56.0, 0.0) + sweep_dir * 10.0 - right * 6.0;
+                let tip = hand + sweep_dir * WEAPON_BLUR_FAR_OFFSET + Vec3::new(0.0, 6.0, 0.0);
+                push_weapon_blur_sample(blur, hand, tip);
             }
         }
 
@@ -3391,6 +4093,47 @@ fn update_weapon_blur_vfx(
     if clear_blur {
         viewer.active_weapon_blur = None;
     }
+}
+
+fn find_character_skeleton(
+    character_root: Entity,
+    skeleton_query: &Query<(Entity, &ChildOf), With<SkeletonMarker>>,
+) -> Option<Entity> {
+    skeleton_query.iter().find_map(|(entity, parent)| {
+        if parent.parent() == character_root {
+            Some(entity)
+        } else {
+            None
+        }
+    })
+}
+
+fn push_weapon_blur_sample(blur: &mut ActiveWeaponBlur, near: Vec3, tip: Vec3) {
+    let should_sample = match blur.samples.back() {
+        Some(last) => {
+            let movement = last
+                .hand
+                .distance_squared(near)
+                .max(last.tip.distance_squared(tip));
+            movement >= blur.min_sample_distance_sq
+                || blur.time_since_last_sample_seconds >= blur.max_sample_interval_seconds
+        }
+        None => true,
+    };
+
+    if !should_sample {
+        return;
+    }
+
+    if blur.samples.len() >= WEAPON_BLUR_MAX_SAMPLES {
+        blur.samples.pop_front();
+    }
+    blur.samples.push_back(WeaponBlurSample {
+        hand: near,
+        tip,
+        age: 0.0,
+    });
+    blur.time_since_last_sample_seconds = 0.0;
 }
 
 fn resolve_weapon_blur_bones(

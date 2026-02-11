@@ -6,6 +6,7 @@ pub use crate::scene_runtime::scene_loader::{
 use bevy::gltf::Gltf;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 /// Marker applied to every entity owned by the runtime scene lifecycle.
 #[derive(Component)]
@@ -185,4 +186,68 @@ pub struct BoidFlightPattern {
 #[derive(Clone)]
 pub enum FlightPattern {
     Circular { radius: f32, speed: f32 },
+}
+
+// ============================================================================
+// WEAPON TRAIL COMPONENTS
+// ============================================================================
+
+/// A mesh-based weapon trail ribbon that replaces debug gizmo lines.
+#[derive(Component)]
+pub struct WeaponTrail {
+    pub config: WeaponTrailConfig,
+    pub samples: VecDeque<WeaponTrailSample>,
+    pub time_since_last_sample: f32,
+    pub mesh_entity: Option<Entity>,
+    pub mesh_handle: Option<Handle<Mesh>>,
+    pub active_duration: f32,
+    pub elapsed: f32,
+}
+
+pub struct WeaponTrailConfig {
+    pub hand_bone: Entity,
+    pub tip_bone: Entity,
+    pub max_samples: usize,
+    pub sample_lifetime: f32,
+    pub min_sample_distance_sq: f32,
+    pub max_sample_interval: f32,
+    pub near_offset: f32,
+    pub far_offset: f32,
+    pub color_new: [f32; 4],
+    pub color_old: [f32; 4],
+    pub texture_path: String,
+    pub additive: bool,
+}
+
+pub struct WeaponTrailSample {
+    pub near: Vec3,
+    pub far: Vec3,
+    pub age: f32,
+}
+
+// ============================================================================
+// SKILL EFFECT COMPONENTS
+// ============================================================================
+
+/// One-shot particle burst spawned at a delayed time (e.g. impact moment).
+#[derive(Component)]
+pub struct SkillImpactBurst {
+    pub delay: f32,
+    pub elapsed: f32,
+    pub fired: bool,
+    pub burst_count: u32,
+    pub emitter_config: ParticleEmitterConfig,
+    pub lifetime_after_burst: f32,
+}
+
+/// Temporary dynamic light that ramps to a peak and then fades out.
+#[derive(Component)]
+pub struct SkillTimedLight {
+    pub elapsed: f32,
+    pub lifetime: f32,
+    pub peak_time: f32,
+    pub peak_intensity: f32,
+    pub base_intensity: f32,
+    pub color: Color,
+    pub range: f32,
 }
