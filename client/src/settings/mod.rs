@@ -47,6 +47,8 @@ impl Default for WindowModeSetting {
 }
 
 impl WindowModeSetting {
+    pub const ALL: [Self; 2] = [Self::Windowed, Self::Fullscreen];
+
     pub fn next(self) -> Self {
         match self {
             Self::Windowed => Self::Fullscreen,
@@ -85,6 +87,8 @@ impl Default for ShadowQualitySetting {
 }
 
 impl ShadowQualitySetting {
+    pub const ALL: [Self; 4] = [Self::Off, Self::Low, Self::Medium, Self::High];
+
     pub fn next(self) -> Self {
         match self {
             Self::Off => Self::Low,
@@ -119,6 +123,8 @@ impl Default for FpsLimitSetting {
 }
 
 impl FpsLimitSetting {
+    pub const ALL: [Self; 3] = [Self::Default60, Self::Monitor, Self::Unlimited];
+
     pub fn next(self) -> Self {
         match self {
             Self::Default60 => Self::Monitor,
@@ -159,6 +165,8 @@ impl Default for RenderDistanceSetting {
 }
 
 impl RenderDistanceSetting {
+    pub const ALL: [Self; 4] = [Self::Low, Self::Medium, Self::High, Self::Ultra];
+
     pub fn next(self) -> Self {
         match self {
             Self::Low => Self::Medium,
@@ -204,6 +212,10 @@ impl Default for ResolutionSetting {
 }
 
 impl ResolutionSetting {
+    pub fn presets() -> &'static [Self] {
+        &RESOLUTION_PRESETS
+    }
+
     pub fn next(self) -> Self {
         let index = RESOLUTION_PRESETS
             .iter()
@@ -226,6 +238,7 @@ pub struct GraphicsSettings {
     pub vsync: bool,
     pub fps_limit: FpsLimitSetting,
     pub render_distance: RenderDistanceSetting,
+    pub show_grass: bool,
 }
 
 impl Default for GraphicsSettings {
@@ -237,6 +250,7 @@ impl Default for GraphicsSettings {
             vsync: true,
             fps_limit: FpsLimitSetting::Default60,
             render_distance: RenderDistanceSetting::Medium,
+            show_grass: true,
         }
     }
 }
@@ -395,11 +409,18 @@ fn apply_runtime_settings(
     }
 
     if let Ok(mut window) = windows.single_mut() {
-        window.mode = settings.current.graphics.window_mode.to_bevy();
-        window.resolution = WindowResolution::new(
-            settings.current.graphics.resolution.width,
-            settings.current.graphics.resolution.height,
-        );
+        let target_mode = settings.current.graphics.window_mode.to_bevy();
+        window.mode = target_mode;
+
+        // In borderless fullscreen, forcing a custom logical resolution can
+        // produce a top-left viewport offset. Keep monitor/native size there.
+        if matches!(target_mode, WindowMode::Windowed) {
+            window.resolution = WindowResolution::new(
+                settings.current.graphics.resolution.width,
+                settings.current.graphics.resolution.height,
+            );
+        }
+
         window.present_mode = present_mode_for(&settings.current.graphics);
     }
 

@@ -101,5 +101,4 @@ fn setup_world_camera(mut commands: Commands) {
         Transform::from_xyz(24_920.0, 520.0, 2_500.0)
             .looking_at(Vec3::new(24_056.0, 170.0, 2_500.0), Vec3::Y),
     ));
-
 }

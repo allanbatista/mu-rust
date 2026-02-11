@@ -195,7 +195,7 @@ fn setup_viewer_scene(
 
     commands.spawn(DirectionalLightBundle {
         directional_light: DirectionalLight {
-            illuminance: 18_000.0,
+            illuminance: 5000.0,
             #[cfg(feature = "solari")]
             shadows_enabled: false,
             #[cfg(not(feature = "solari"))]

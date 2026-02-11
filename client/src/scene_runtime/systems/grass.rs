@@ -3,6 +3,7 @@ use crate::bevy_compat::*;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::world_coordinates::{mirror_map_xz_with_axis, world_mirror_axis};
+use crate::settings::SettingsResource;
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::mesh::{MeshVertexBufferLayoutRef, PrimitiveTopology};
@@ -93,6 +94,7 @@ impl Material for GrassMaterial {
 pub fn spawn_terrain_grass_when_ready(
     mut commands: Commands,
     assets: Res<RuntimeSceneAssets>,
+    settings: Res<SettingsResource>,
     terrain_configs: Res<Assets<TerrainConfig>>,
     heightmaps: Res<Assets<HeightmapData>>,
     terrain_maps: Res<Assets<TerrainMapData>>,
@@ -103,6 +105,8 @@ pub fn spawn_terrain_grass_when_ready(
     terrain_query: Query<&TerrainSpawned>,
     grass_query: Query<&TerrainGrassSpawned>,
 ) {
+    let show_grass = settings.current.graphics.show_grass;
+
     // Guard: grass already spawned or terrain not ready yet
     if !grass_query.is_empty() || terrain_query.is_empty() || !assets.loaded {
         return;
@@ -120,12 +124,11 @@ pub fn spawn_terrain_grass_when_ready(
         return;
     };
 
-    let terrain_map = terrain_maps.get(&world.terrain_map).or_else(|| {
-        world
-            .legacy_terrain_map
-            .as_ref()
-            .and_then(|fallback| terrain_maps.get(fallback))
-    });
+    let terrain_map = world
+        .legacy_terrain_map
+        .as_ref()
+        .and_then(|handle| terrain_maps.get(handle))
+        .or_else(|| terrain_maps.get(&world.terrain_map));
     let Some(terrain_map) = terrain_map else {
         return;
     };
@@ -142,7 +145,11 @@ pub fn spawn_terrain_grass_when_ready(
             "No grass texture slots found for '{}', skipping grass",
             world.world_name
         );
-        commands.spawn((RuntimeSceneEntity, TerrainGrassSpawned));
+        commands.spawn((
+            RuntimeSceneEntity,
+            TerrainGrassSpawned,
+            visibility_for_show_grass(show_grass),
+        ));
         return;
     }
 
@@ -154,7 +161,11 @@ pub fn spawn_terrain_grass_when_ready(
             "Could not resolve grass texture for '{}', skipping grass",
             world.world_name
         );
-        commands.spawn((RuntimeSceneEntity, TerrainGrassSpawned));
+        commands.spawn((
+            RuntimeSceneEntity,
+            TerrainGrassSpawned,
+            visibility_for_show_grass(show_grass),
+        ));
         return;
     };
 
@@ -169,7 +180,11 @@ pub fn spawn_terrain_grass_when_ready(
             "Grass texture '{}' is not billboard-like, skipping grass billboards for '{}'",
             grass_texture_path, world.world_name
         );
-        commands.spawn((RuntimeSceneEntity, TerrainGrassSpawned));
+        commands.spawn((
+            RuntimeSceneEntity,
+            TerrainGrassSpawned,
+            visibility_for_show_grass(show_grass),
+        ));
         return;
     }
 
@@ -293,7 +308,11 @@ pub fn spawn_terrain_grass_when_ready(
             "No grass cells found in '{}', skipping grass mesh",
             world.world_name
         );
-        commands.spawn((RuntimeSceneEntity, TerrainGrassSpawned));
+        commands.spawn((
+            RuntimeSceneEntity,
+            TerrainGrassSpawned,
+            visibility_for_show_grass(show_grass),
+        ));
         return;
     }
 
@@ -325,7 +344,10 @@ pub fn spawn_terrain_grass_when_ready(
             RuntimeSceneEntity,
             TerrainGrassSpawned,
             Terrain,
-            SpatialBundle::default(),
+            SpatialBundle {
+                visibility: visibility_for_show_grass(show_grass),
+                ..default()
+            },
         ))
         .id();
 
@@ -390,6 +412,14 @@ pub fn spawn_terrain_grass_when_ready(
     );
 }
 
+fn visibility_for_show_grass(show_grass: bool) -> Visibility {
+    if show_grass {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    }
+}
+
 /// Distance culling for grass chunks. Reuses the same config as scene objects.
 /// Uses distance to the nearest edge of the chunk AABB (not center) so chunks
 /// that are partially in range are still shown.
@@ -438,6 +468,22 @@ pub fn apply_grass_distance_culling(
             Visibility::Hidden
         };
 
+        if *visibility != target_visibility {
+            *visibility = target_visibility;
+        }
+    }
+}
+
+pub fn apply_grass_visibility_from_settings(
+    settings: Res<SettingsResource>,
+    mut grass_roots: Query<&mut Visibility, With<TerrainGrassSpawned>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+
+    let target_visibility = visibility_for_show_grass(settings.current.graphics.show_grass);
+    for mut visibility in &mut grass_roots {
         if *visibility != target_visibility {
             *visibility = target_visibility;
         }

@@ -90,7 +90,7 @@ pub fn spawn_runtime_sun_light(
         DirectionalLightBundle {
             directional_light: DirectionalLight {
                 color: Color::srgb(1.0, 0.98, 0.94),
-                illuminance: 9000.0,
+                illuminance: 5000.0,
                 shadows_enabled: true,
                 ..default()
             },

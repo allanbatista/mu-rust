@@ -1,5 +1,6 @@
 mod bevy_compat;
 mod character;
+mod grid_overlay;
 mod scene_runtime;
 mod scenes;
 mod settings;
@@ -14,6 +15,7 @@ use bevy::render::pipelined_rendering::PipelinedRenderingPlugin;
 use bevy::state::app::AppExtStates;
 use bevy::window::WindowResolution;
 use bevy::winit::WinitSettings;
+use bevy_egui::EguiPlugin;
 use scene_runtime::registration::register_scene_runtime;
 use scene_runtime::scene_loader::SceneLoaderPlugin;
 use scenes::ScenePlugin;
@@ -46,6 +48,7 @@ fn main() {
         .add_plugins(build_bevy_plugins(&startup_settings))
         .insert_resource(create_winit_settings(&startup_settings))
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
+        .add_plugins(EguiPlugin::default())
         .add_plugins(SceneLoaderPlugin)
         .add_plugins(WorldPlugin)
         .add_plugins(SettingsPlugin)

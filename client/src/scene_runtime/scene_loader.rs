@@ -593,12 +593,12 @@ impl SceneLoader {
         let world_name = normalize_world_name(world_name);
         let world = self.ensure_requested(&world_name, asset_server);
 
-        let terrain_map_ready = terrain_maps.get(&world.terrain_map).is_some()
-            || world
-                .legacy_terrain_map
-                .as_ref()
-                .and_then(|fallback| terrain_maps.get(fallback))
-                .is_some();
+        let terrain_map_ready = world
+            .legacy_terrain_map
+            .as_ref()
+            .and_then(|handle| terrain_maps.get(handle))
+            .is_some()
+            || terrain_maps.get(&world.terrain_map).is_some();
 
         let is_ready = terrain_configs.get(&world.terrain_config).is_some()
             && heightmaps.get(&world.heightmap).is_some()
@@ -630,7 +630,7 @@ impl SceneLoader {
         }
 
         let world_number = world_name
-            .strip_prefix("world")
+            .strip_prefix("world_")
             .and_then(|value| value.parse::<u32>().ok());
 
         let scene_objects_path = scene_objects_asset_path(world_name);

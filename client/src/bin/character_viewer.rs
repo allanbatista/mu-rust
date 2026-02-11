@@ -1,3 +1,4 @@
+use bevy::animation::{AnimatedBy, AnimationTargetId};
 use bevy::asset::AssetPlugin;
 use bevy::asset::RenderAssetUsages;
 #[cfg(feature = "solari")]
@@ -8,7 +9,10 @@ use bevy::gltf::Gltf;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::light::GlobalAmbientLight;
-use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod};
+use bevy::light::{
+    CascadeShadowConfigBuilder, DirectionalLightShadowMap, NotShadowCaster, NotShadowReceiver,
+    ShadowFilteringMethod,
+};
 use bevy::mesh::Indices;
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
@@ -21,8 +25,13 @@ use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 #[path = "../bevy_compat.rs"]
 mod bevy_compat;
+#[path = "../grid_overlay.rs"]
+mod grid_overlay;
 use bevy_compat::*;
-use std::collections::HashMap;
+use grid_overlay::{
+    GRID_OVERLAY_COLOR, GridOverlayConfig, build_grid_segments, grid_line_count, segment_transform,
+};
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 // Import character modules from the client crate.
@@ -936,6 +945,8 @@ const HEIGHT_MULTIPLIER: f32 = 1.5;
 
 /// Number of grid cells visible in each direction from the character.
 const GRID_VISIBLE_HALF_CELLS: i32 = 25;
+const GRID_LINE_THICKNESS: f32 = 1.0;
+const GRID_Y_OFFSET: f32 = 1.0;
 
 /// MU Camera parameters (from MuClient5.2 ZzzScene.cpp).
 const MU_CAMERA_PITCH_DEG: f32 = 48.5;
@@ -1265,6 +1276,7 @@ impl Default for ViewerState {
 struct PlayerAnimLib {
     gltf_handle: Handle<Gltf>,
     graph_handle: Option<Handle<AnimationGraph>>,
+    animation_handles: Vec<Handle<AnimationClip>>,
     animation_nodes: Vec<AnimationNodeIndex>,
     animation_names: Vec<String>,
     animation_durations: Vec<f32>,
@@ -1299,6 +1311,14 @@ struct SkillVfxFollow {
 /// Marker for the invisible animated skeleton scene (player.glb).
 #[derive(Component)]
 struct SkeletonMarker;
+
+#[derive(Component)]
+struct ViewerGridLine {
+    index: usize,
+}
+
+#[derive(Component, Clone, Copy)]
+struct RestLocalTransform(Transform);
 
 /// MU-style follow camera with fixed pitch/yaw and adjustable distance.
 #[derive(Component)]
@@ -1377,6 +1397,7 @@ fn main() {
                 handle_class_change,
                 init_player_animation_lib,
                 bind_anim_players,
+                capture_rest_local_transforms,
                 handle_skill_trigger_input,
                 trigger_selected_skill,
                 update_active_skill_cast,
@@ -1394,7 +1415,11 @@ fn main() {
         )
         .add_systems(
             PostUpdate,
-            sync_bone_transforms.before(bevy::transform::TransformSystems::Propagate),
+            (
+                restore_unanimated_targets.after(bevy::app::AnimationSystems),
+                sync_bone_transforms.before(bevy::transform::TransformSystems::Propagate),
+            )
+                .chain(),
         );
 
     #[cfg(feature = "solari")]
@@ -1418,6 +1443,8 @@ fn setup_viewer(
     mut materials: ResMut<Assets<StandardMaterial>>,
     heightmap: Res<HeightmapResource>,
 ) {
+    spawn_viewer_grid_lines(&mut commands, &mut meshes, &mut materials);
+
     // MU-style follow camera with Gaussian shadow filtering
     let mu_cam = MuCamera {
         pitch_deg: MU_CAMERA_PITCH_DEG,
@@ -1430,6 +1457,11 @@ fn setup_viewer(
         Camera3dBundle {
             transform: cam_transform,
             tonemapping: Tonemapping::ReinhardLuminance,
+            projection: Projection::Perspective(PerspectiveProjection {
+                near: 10.0,
+                far: 50_000.0,
+                ..default()
+            }),
             ..default()
         },
         mu_cam,
@@ -1446,7 +1478,7 @@ fn setup_viewer(
     // Directional light with high-quality shadow cascades
     commands.spawn(DirectionalLightBundle {
         directional_light: DirectionalLight {
-            illuminance: 18_000.0,
+            illuminance: 5000.0,
             #[cfg(feature = "solari")]
             shadows_enabled: false, // Solari replaces shadow mapping
             #[cfg(not(feature = "solari"))]
@@ -1493,11 +1525,42 @@ fn setup_viewer(
     commands.insert_resource(PlayerAnimLib {
         gltf_handle,
         graph_handle: None,
+        animation_handles: Vec::new(),
         animation_nodes: Vec::new(),
         animation_names: Vec::new(),
         animation_durations: Vec::new(),
         initialized: false,
     });
+}
+
+fn spawn_viewer_grid_lines(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    let line_mesh = meshes.add(Mesh::from(Cuboid::new(1.0, 1.0, 1.0)));
+    let line_material = materials.add(StandardMaterial {
+        base_color: GRID_OVERLAY_COLOR,
+        emissive: LinearRgba::rgb(1.0, 1.0, 1.0),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    });
+
+    for index in 0..grid_line_count(GRID_VISIBLE_HALF_CELLS) {
+        commands.spawn((
+            ViewerGridLine { index },
+            NotShadowCaster,
+            NotShadowReceiver,
+            PbrBundle {
+                mesh: Mesh3d(line_mesh.clone()),
+                material: MeshMaterial3d(line_material.clone()),
+                transform: Transform::from_scale(Vec3::splat(0.001)),
+                ..default()
+            },
+        ));
+    }
 }
 
 /// Build a 256x256 vertex terrain mesh from the heightmap.
@@ -1573,7 +1636,9 @@ fn build_terrain_mesh(heightmap: &HeightmapResource) -> Mesh {
 
 fn configure_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
-    config.depth_bias = -0.01;
+    config.enabled = true;
+    config.depth_bias = -1.0;
+    config.line.width = 3.0;
 }
 
 #[cfg(feature = "solari")]
@@ -1695,49 +1760,39 @@ fn handle_camera_rotation(
 // ============================================================================
 
 fn draw_grid_lines(
-    mut gizmos: Gizmos,
-    characters: Query<&Transform, With<CharacterRoot>>,
+    characters: Query<&Transform, (With<CharacterRoot>, Without<ViewerGridLine>)>,
     heightmap: Res<HeightmapResource>,
+    mut grid_lines: Query<(&ViewerGridLine, &mut Transform), Without<CharacterRoot>>,
 ) {
     let char_pos = characters
-        .single()
+        .iter()
+        .next()
         .map(|t| t.translation)
-        .unwrap_or(Vec3::ZERO);
+        .unwrap_or(Vec3::new(
+            GRID_CELL_SIZE * 128.5,
+            0.0,
+            GRID_CELL_SIZE * 128.5,
+        ));
 
-    let cx = (char_pos.x / GRID_CELL_SIZE).round() * GRID_CELL_SIZE;
-    let cz = (char_pos.z / GRID_CELL_SIZE).round() * GRID_CELL_SIZE;
+    let segments = build_grid_segments(
+        char_pos,
+        GridOverlayConfig {
+            cell_size: GRID_CELL_SIZE,
+            visible_half_cells: GRID_VISIBLE_HALF_CELLS,
+            y_offset: GRID_Y_OFFSET,
+            color: GRID_OVERLAY_COLOR,
+        },
+        |world_x, world_z| terrain_height_at(&heightmap, world_x, world_z),
+    );
 
-    let half = GRID_VISIBLE_HALF_CELLS;
-    let extent = half as f32 * GRID_CELL_SIZE;
-    let color = Color::srgb(0.3, 0.3, 0.3);
-    let y_offset = 0.5;
-
-    for i in -half..=half {
-        let pos = i as f32 * GRID_CELL_SIZE;
-
-        // Lines along X axis (varying Z)
-        let z_world = cz + pos;
-        let x_start = cx - extent;
-        let x_end = cx + extent;
-        let y_start = terrain_height_at(&heightmap, x_start, z_world) + y_offset;
-        let y_end = terrain_height_at(&heightmap, x_end, z_world) + y_offset;
-        gizmos.line(
-            Vec3::new(x_start, y_start, z_world),
-            Vec3::new(x_end, y_end, z_world),
-            color,
-        );
-
-        // Lines along Z axis (varying X)
-        let x_world = cx + pos;
-        let z_start = cz - extent;
-        let z_end = cz + extent;
-        let y_start2 = terrain_height_at(&heightmap, x_world, z_start) + y_offset;
-        let y_end2 = terrain_height_at(&heightmap, x_world, z_end) + y_offset;
-        gizmos.line(
-            Vec3::new(x_world, y_start2, z_start),
-            Vec3::new(x_world, y_end2, z_end),
-            color,
-        );
+    for (line, mut transform) in &mut grid_lines {
+        if let Some(segment) = segments.get(line.index).copied() {
+            if let Some(next_transform) = segment_transform(segment, GRID_LINE_THICKNESS) {
+                *transform = next_transform;
+                continue;
+            }
+        }
+        transform.scale = Vec3::splat(0.001);
     }
 }
 
@@ -1987,6 +2042,12 @@ fn resolve_asset_path(path: &str, use_remaster: bool) -> String {
     }
 }
 
+fn remaster_asset_exists(path: &str) -> bool {
+    let asset_root = asset_root_path();
+    let full = format!("{}/remaster/{}", asset_root, path);
+    std::path::Path::new(&full).exists()
+}
+
 // ============================================================================
 // Class change -> despawn/respawn character
 // ============================================================================
@@ -2011,6 +2072,23 @@ fn handle_class_change(
     let body_type = class.body_type();
     let slots = BodySlot::slots_for(body_type);
 
+    // Get selected equipment set
+    let equipment_set = viewer
+        .available_sets
+        .get(viewer.selected_set_index)
+        .copied()
+        .unwrap_or(EquipmentSet::ClassDefault);
+
+    // Keep body parts + animation skeleton on the same asset variant.
+    // Mixing remaster body parts with base `player.glb` causes bone mismatch/distortion.
+    let requested_remaster = viewer.use_remaster;
+    let remaster_ready = requested_remaster
+        && remaster_asset_exists("data/player/player.glb")
+        && slots
+            .iter()
+            .all(|slot| remaster_asset_exists(&equipment_set.glb_path(*slot, body_type, class)));
+    let use_remaster_assets = requested_remaster && remaster_ready;
+
     // Set default idle animation for the class
     viewer.selected_animation = idle_action_for_class(class);
     viewer.playback_speed = idle_playback_speed(class);
@@ -2022,13 +2100,6 @@ fn handle_class_change(
     viewer.pending_skill_cast = false;
     viewer.active_skill = None;
     viewer.rmb_press_cursor = None;
-
-    // Get selected equipment set
-    let equipment_set = viewer
-        .available_sets
-        .get(viewer.selected_set_index)
-        .copied()
-        .unwrap_or(EquipmentSet::ClassDefault);
 
     // Spawn position at center of map with terrain height
     let spawn_x = GRID_CELL_SIZE * 128.5;
@@ -2055,7 +2126,7 @@ fn handle_class_change(
 
     for &slot in slots {
         let base_path = equipment_set.glb_path(slot, body_type, class);
-        let glb_path = resolve_asset_path(&base_path, viewer.use_remaster);
+        let glb_path = resolve_asset_path(&base_path, use_remaster_assets);
         let scene_path = format!("{glb_path}#Scene0");
         let scene_handle: Handle<Scene> = asset_server.load(scene_path);
 
@@ -2073,7 +2144,7 @@ fn handle_class_change(
     }
 
     // Spawn the animated skeleton (player.glb has animations, 0 meshes).
-    let skeleton_glb = resolve_asset_path("data/player/player.glb", viewer.use_remaster);
+    let skeleton_glb = resolve_asset_path("data/player/player.glb", use_remaster_assets);
     let skeleton_scene: Handle<Scene> = asset_server.load(format!("{}#Scene0", skeleton_glb));
     let skeleton = commands
         .spawn((
@@ -2087,18 +2158,27 @@ fn handle_class_change(
     commands.entity(root).add_child(skeleton);
 
     viewer.character_entity = Some(root);
-    let remaster_tag = if viewer.use_remaster {
-        " [Remaster]"
+    if requested_remaster && !use_remaster_assets {
+        viewer.status = format!(
+            "Spawned {} ({} body, {}) [Base assets: remaster pack incomplete]",
+            class.name(),
+            body_type.slug(),
+            equipment_set.display_name(),
+        );
     } else {
-        ""
-    };
-    viewer.status = format!(
-        "Spawned {} ({} body, {}){}",
-        class.name(),
-        body_type.slug(),
-        equipment_set.display_name(),
-        remaster_tag
-    );
+        let remaster_tag = if use_remaster_assets {
+            " [Remaster]"
+        } else {
+            ""
+        };
+        viewer.status = format!(
+            "Spawned {} ({} body, {}){}",
+            class.name(),
+            body_type.slug(),
+            equipment_set.display_name(),
+            remaster_tag
+        );
+    }
 }
 
 // ============================================================================
@@ -2157,6 +2237,7 @@ fn init_player_animation_lib(
 
     viewer.status = format!("Loaded {} animations from player.glb", nodes.len());
     library.graph_handle = Some(graphs.add(graph));
+    library.animation_handles = gltf.animations.clone();
     library.animation_nodes = nodes;
     library.animation_names = names;
     library.animation_durations = gltf
@@ -2241,6 +2322,28 @@ fn find_unbound_players(
     result
 }
 
+fn capture_rest_local_transforms(
+    mut commands: Commands,
+    bound_players: Query<Entity, With<AnimBound>>,
+    targets: Query<
+        (Entity, &AnimatedBy, &Transform),
+        (With<AnimationTargetId>, Without<RestLocalTransform>),
+    >,
+) {
+    let bound_player_entities: HashSet<Entity> = bound_players.iter().collect();
+    if bound_player_entities.is_empty() {
+        return;
+    }
+
+    for (entity, animated_by, transform) in &targets {
+        if bound_player_entities.contains(&animated_by.0) {
+            commands
+                .entity(entity)
+                .insert(RestLocalTransform(*transform));
+        }
+    }
+}
+
 fn request_animation_change(viewer: &mut ViewerState, action: usize, speed: f32, repeat: bool) {
     viewer.selected_animation = action;
     viewer.playback_speed = speed;
@@ -2255,7 +2358,12 @@ fn request_animation_change(viewer: &mut ViewerState, action: usize, speed: f32,
 fn apply_animation_changes(
     mut viewer: ResMut<ViewerState>,
     library: Res<PlayerAnimLib>,
+    bound_player_entities: Query<Entity, With<AnimBound>>,
     mut bound_players: Query<(&mut AnimationPlayer, &mut AnimationTransitions), With<AnimBound>>,
+    mut target_transforms: Query<
+        (&AnimatedBy, &RestLocalTransform, &mut Transform),
+        With<AnimationTargetId>,
+    >,
     mut anim_state_query: Query<&mut CharacterAnimState, With<CharacterRoot>>,
 ) {
     let anim_changed = std::mem::take(&mut viewer.pending_animation_change);
@@ -2288,6 +2396,15 @@ fn apply_animation_changes(
     let Some(animation_node) = animation_node else {
         return;
     };
+
+    if anim_changed {
+        let player_entities: HashSet<Entity> = bound_player_entities.iter().collect();
+        for (animated_by, rest_transform, mut transform) in &mut target_transforms {
+            if player_entities.contains(&animated_by.0) {
+                *transform = rest_transform.0;
+            }
+        }
+    }
 
     for (mut player, mut transitions) in &mut bound_players {
         if anim_changed {
@@ -3063,6 +3180,43 @@ fn run_playback_speed(class: CharacterClass) -> f32 {
     match class {
         CharacterClass::RageFighter => 0.28,
         _ => 0.34,
+    }
+}
+
+fn restore_unanimated_targets(
+    viewer: Res<ViewerState>,
+    library: Res<PlayerAnimLib>,
+    animation_clips: Res<Assets<AnimationClip>>,
+    bound_players: Query<Entity, With<AnimBound>>,
+    mut targets: Query<
+        (
+            &AnimationTargetId,
+            &AnimatedBy,
+            &RestLocalTransform,
+            &mut Transform,
+        ),
+        With<AnimationTargetId>,
+    >,
+) {
+    let Some(clip_handle) = library.animation_handles.get(viewer.selected_animation) else {
+        return;
+    };
+    let Some(clip) = animation_clips.get(clip_handle) else {
+        return;
+    };
+
+    let bound_player_entities: HashSet<Entity> = bound_players.iter().collect();
+    if bound_player_entities.is_empty() {
+        return;
+    }
+
+    for (target_id, animated_by, rest_transform, mut transform) in &mut targets {
+        if !bound_player_entities.contains(&animated_by.0) {
+            continue;
+        }
+        if clip.curves_for_target(*target_id).is_none() {
+            *transform = rest_transform.0;
+        }
     }
 }
 

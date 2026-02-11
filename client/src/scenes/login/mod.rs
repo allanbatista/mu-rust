@@ -31,7 +31,7 @@ fn setup_login_scene(
     // Keep login lightweight: no world/runtime assets.
     world_requests.write(WorldRequest(WorldId::Loading));
 
-    if let Ok(mut camera) = camera_query.single_mut() {
+    for mut camera in &mut camera_query {
         camera.clear_color = ClearColorConfig::Custom(LOGIN_BACKGROUND);
     }
 

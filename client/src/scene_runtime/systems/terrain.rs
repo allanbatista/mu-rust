@@ -93,12 +93,11 @@ pub fn spawn_terrain_when_ready(
         return;
     };
 
-    let terrain_map = terrain_maps.get(&world.terrain_map).or_else(|| {
-        world
-            .legacy_terrain_map
-            .as_ref()
-            .and_then(|fallback| terrain_maps.get(fallback))
-    });
+    let terrain_map = world
+        .legacy_terrain_map
+        .as_ref()
+        .and_then(|handle| terrain_maps.get(handle))
+        .or_else(|| terrain_maps.get(&world.terrain_map));
     let Some(terrain_map) = terrain_map else {
         return;
     };

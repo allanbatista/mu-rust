@@ -1217,6 +1217,34 @@ def _build_player_canonical_bone_remap(
     return remap
 
 
+def _inplace_root_bone_indices(model: BmdModel) -> List[int]:
+    """Return root-bone indices (or fallback to bone 0) for in-place motion locking."""
+    if model.num_bones <= 0:
+        return []
+
+    root_indices: List[int] = []
+    for bone_index, bone in enumerate(model.bones):
+        parent_index = bone.parent
+        if parent_index < 0 or parent_index >= model.num_bones or parent_index == bone_index:
+            root_indices.append(bone_index)
+
+    if root_indices:
+        return root_indices
+    return [0]
+
+
+def _apply_player_inplace_root_motion(
+    pos_mu: Tuple[float, float, float],
+    bone_index: int,
+    root_start_positions_by_bone: Dict[int, Tuple[float, float, float]],
+) -> Tuple[float, float, float]:
+    """Lock root horizontal motion in MU space (X,Y plane), keep vertical (Z)."""
+    start_pos = root_start_positions_by_bone.get(bone_index)
+    if start_pos is None:
+        return pos_mu
+    return (start_pos[0], start_pos[1], pos_mu[2])
+
+
 def _texture_name_to_candidate_uris(texture_name: str) -> List[str]:
     """Normalize a BMD texture name to candidate texture URIs in output assets."""
     cleaned = texture_name.strip().replace("\\", "/")
@@ -1741,6 +1769,7 @@ def bmd_to_glb(
     texture_resolver: Optional[TextureResolver] = None,
     source_path: Optional[Path] = None,
     canonical_player_skeleton: Optional[CanonicalSkeleton] = None,
+    force_player_inplace: bool = True,
 ) -> Optional[bytes]:
     """Convert a parsed BMD model to GLB (GLTF Binary) bytes.
 
@@ -1767,6 +1796,7 @@ def bmd_to_glb(
     ] = None
 
     if export_skinning:
+        force_inplace_for_this_model = force_player_inplace and _is_player_source_path(source_path)
         canonical_remap = _build_player_canonical_bone_remap(
             model=model,
             source_path=source_path,
@@ -2369,6 +2399,16 @@ def bmd_to_glb(
             if key_count <= 0:
                 continue
 
+            root_start_positions_by_bone: Dict[int, Tuple[float, float, float]] = {}
+            if force_inplace_for_this_model:
+                for root_bone_index in _inplace_root_bone_indices(model):
+                    root_start_positions_by_bone[root_bone_index], _ = _bone_local_pose(
+                        model,
+                        bone_index=root_bone_index,
+                        action_index=action_index,
+                        key_index=0,
+                    )
+
             time_values = [float(key) / 30.0 for key in range(key_count)]
             time_accessor: Optional[int] = None
 
@@ -2386,14 +2426,21 @@ def bmd_to_glb(
                         action_index=action_index,
                         key_index=key_index,
                     )
+                    if root_start_positions_by_bone:
+                        pos_mu = _apply_player_inplace_root_motion(
+                            pos_mu=pos_mu,
+                            bone_index=bone_index,
+                            root_start_positions_by_bone=root_start_positions_by_bone,
+                        )
                     translation, quaternion = _mu_local_pose_to_gltf_trs(pos_mu, rot_mu)
                     translation_values.append(translation)
                     rotation_values.append(quaternion)
 
-                translation_varies = _track_values_vary(translation_values)
-                rotation_varies = _track_values_vary(rotation_values)
-                if not translation_varies and not rotation_varies:
-                    continue
+                # Always emit TR tracks per bone for every action.
+                # Omitting constant tracks causes pose leakage when switching clips
+                # (skill/action leaves transforms that idle clip never overrides).
+                emit_translation = True
+                emit_rotation = True
 
                 if time_accessor is None:
                     time_data = b''.join(struct.pack('<f', value) for value in time_values)
@@ -2410,7 +2457,7 @@ def bmd_to_glb(
                         }
                     )
 
-                if translation_varies:
+                if emit_translation:
                     translation_data = b''.join(
                         struct.pack('<3f', value[0], value[1], value[2])
                         for value in translation_values
@@ -2444,7 +2491,7 @@ def bmd_to_glb(
                         }
                     )
 
-                if rotation_varies:
+                if emit_rotation:
                     rotation_data = b''.join(
                         struct.pack('<4f', value[0], value[1], value[2], value[3])
                         for value in rotation_values
@@ -2540,6 +2587,7 @@ def bmd_to_glb(
 def bmd_to_skeleton_glb(
     model: BmdModel,
     source_path: Optional[Path] = None,
+    force_player_inplace: bool = True,
 ) -> Optional[bytes]:
     """Convert a parsed BMD model with bones+animations but 0 meshes to GLB.
 
@@ -2638,10 +2686,21 @@ def bmd_to_skeleton_glb(
 
     # Export animations (same logic as bmd_to_glb)
     animations: List[Dict[str, object]] = []
+    force_inplace_for_this_model = force_player_inplace and _is_player_source_path(source_path)
     for action_index, action in enumerate(model.actions):
         key_count = action.num_animation_keys
         if key_count <= 0:
             continue
+
+        root_start_positions_by_bone: Dict[int, Tuple[float, float, float]] = {}
+        if force_inplace_for_this_model:
+            for root_bone_index in _inplace_root_bone_indices(model):
+                root_start_positions_by_bone[root_bone_index], _ = _bone_local_pose(
+                    model,
+                    bone_index=root_bone_index,
+                    action_index=action_index,
+                    key_index=0,
+                )
 
         time_values = [float(key) / 30.0 for key in range(key_count)]
         time_accessor: Optional[int] = None
@@ -2660,14 +2719,21 @@ def bmd_to_skeleton_glb(
                     action_index=action_index,
                     key_index=key_index,
                 )
+                if root_start_positions_by_bone:
+                    pos_mu = _apply_player_inplace_root_motion(
+                        pos_mu=pos_mu,
+                        bone_index=bone_index,
+                        root_start_positions_by_bone=root_start_positions_by_bone,
+                    )
                 translation, quaternion = _mu_local_pose_to_gltf_trs(pos_mu, rot_mu)
                 translation_values.append(translation)
                 rotation_values.append(quaternion)
 
-            translation_varies = _track_values_vary(translation_values)
-            rotation_varies = _track_values_vary(rotation_values)
-            if not translation_varies and not rotation_varies:
-                continue
+            # Always emit TR tracks per bone for every action.
+            # Omitting constant tracks causes pose leakage when switching clips
+            # (skill/action leaves transforms that idle clip never overrides).
+            emit_translation = True
+            emit_rotation = True
 
             if time_accessor is None:
                 time_data = b''.join(struct.pack('<f', v) for v in time_values)
@@ -2682,7 +2748,7 @@ def bmd_to_skeleton_glb(
                     "max": [time_values[-1]],
                 })
 
-            if translation_varies:
+            if emit_translation:
                 translation_data = b''.join(
                     struct.pack('<3f', v[0], v[1], v[2])
                     for v in translation_values
@@ -2710,7 +2776,7 @@ def bmd_to_skeleton_glb(
                     },
                 })
 
-            if rotation_varies:
+            if emit_rotation:
                 rotation_data = b''.join(
                     struct.pack('<4f', v[0], v[1], v[2], v[3])
                     for v in rotation_values
@@ -2826,6 +2892,7 @@ def convert_single_bmd(
     force: bool,
     embed_textures: bool,
     canonical_player_skeleton_path: Optional[Path],
+    force_player_inplace: bool,
     stats: ConversionStats,
 ) -> None:
     """Convert a single BMD file to GLB."""
@@ -2881,6 +2948,7 @@ def convert_single_bmd(
             texture_resolver=texture_resolver,
             source_path=source,
             canonical_player_skeleton=canonical_player_skeleton,
+            force_player_inplace=force_player_inplace,
         )
     except Exception as exc:
         stats.failed += 1
@@ -2892,7 +2960,11 @@ def convert_single_bmd(
         # Try skeleton-only export for files like player.bmd (0 meshes, many bones+animations)
         if model.num_bones > 0 and model.num_actions > 1:
             try:
-                glb_bytes = bmd_to_skeleton_glb(model, source_path=source)
+                glb_bytes = bmd_to_skeleton_glb(
+                    model,
+                    source_path=source,
+                    force_player_inplace=force_player_inplace,
+                )
             except Exception as exc:
                 stats.failed += 1
                 stats.failures.append({"source": str(source), "error": str(exc), "type": "skeleton_convert"})
@@ -2931,6 +3003,7 @@ def _bmd_convert_worker(
     force: bool,
     embed_textures: bool,
     canonical_player_skeleton_path: Optional[Path],
+    force_player_inplace: bool,
 ) -> ConversionStats:
     """Worker function for parallel BMD conversion. Returns local stats."""
     stats = ConversionStats()
@@ -2942,6 +3015,7 @@ def _bmd_convert_worker(
             force,
             embed_textures,
             canonical_player_skeleton_path,
+            force_player_inplace,
             stats,
         )
     except Exception as exc:  # noqa: BLE001
@@ -3170,6 +3244,7 @@ def convert_all(
     embed_textures: bool,
     prune_embedded_textures: bool,
     canonical_player_skeleton_path: Optional[Path],
+    force_player_inplace: bool,
     workers: int = 1,
 ) -> ConversionStats:
     """Convert all BMD files found under bmd_root."""
@@ -3205,6 +3280,7 @@ def convert_all(
                 force,
                 embed_textures,
                 canonical_player_skeleton_path,
+                force_player_inplace,
                 stats,
             )
 
@@ -3230,6 +3306,7 @@ def convert_all(
                 [force] * total,
                 [embed_textures] * total,
                 [canonical_player_skeleton_path] * total,
+                [force_player_inplace] * total,
                 chunksize=chunksize,
             )
             for worker_stats in futures_iter:
@@ -3275,6 +3352,7 @@ def convert_all(
             "total_found": stats.total_found,
             "world_filter": sorted(world_filter) if world_filter else None,
             "embed_textures": embed_textures,
+            "force_player_inplace": force_player_inplace,
             "prune_embedded_textures": prune_embedded_textures,
             "converted": stats.converted,
             "skipped_no_geometry": stats.skipped_no_geometry,
@@ -3364,6 +3442,14 @@ def main() -> int:
         action="store_true",
         help="Disable canonical player skeleton rebasing for player-part models.",
     )
+    parser.add_argument(
+        "--disable-player-inplace",
+        action="store_true",
+        help=(
+            "Disable in-place root-motion locking for models under Player/. "
+            "By default, player animations are exported in-place (horizontal root motion removed)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -3419,6 +3505,12 @@ def main() -> int:
         logging.info("Canonical player skeleton mode: disabled by CLI flag")
 
     workers = max(1, args.workers)
+    force_player_inplace = not args.disable_player_inplace
+    if force_player_inplace:
+        logging.info("Player animation in-place mode: enabled")
+    else:
+        logging.info("Player animation in-place mode: disabled by CLI flag")
+
     stats = convert_all(
         bmd_root=args.bmd_root,
         output_root=args.output_root,
@@ -3431,6 +3523,7 @@ def main() -> int:
         embed_textures=embed_textures,
         prune_embedded_textures=prune_embedded_textures,
         canonical_player_skeleton_path=canonical_player_skeleton_path,
+        force_player_inplace=force_player_inplace,
         workers=workers,
     )
 

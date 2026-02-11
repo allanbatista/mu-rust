@@ -78,7 +78,7 @@ fn setup_gameplay_scene(
     );
 
     world_requests.write(WorldRequest(WorldId::Game(gameplay_world)));
-    if let Ok(mut camera) = camera_query.single_mut() {
+    for mut camera in &mut camera_query {
         camera.clear_color = ClearColorConfig::Custom(GAMEPLAY_CLEAR_COLOR);
     }
 
