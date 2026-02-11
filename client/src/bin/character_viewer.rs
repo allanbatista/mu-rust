@@ -25,9 +25,12 @@ use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 #[path = "../bevy_compat.rs"]
 mod bevy_compat;
+#[path = "character_viewer/skills.rs"]
+mod character_viewer_skills;
 #[path = "../grid_overlay.rs"]
 mod grid_overlay;
 use bevy_compat::*;
+use character_viewer_skills::skills_for_class;
 use grid_overlay::{
     GRID_OVERLAY_COLOR, GridOverlayConfig, build_grid_segments, grid_line_count, segment_transform,
 };
@@ -920,7 +923,7 @@ mod character {
     }
 }
 
-use character::animations::{PlayerAction, animation_display_name};
+use character::animations::animation_display_name;
 use character::controller::{CharacterAnimState, CharacterController, CharacterState};
 use character::equipment::EquipmentSet;
 use character::types::*;
@@ -994,6 +997,20 @@ enum SkillVfxProfile {
     Impale,
     FireBreath,
     Combo,
+    MagicProjectile,
+    MagicArea,
+    Teleport,
+    IceStorm,
+    ArrowRain,
+    DarkLordBurst,
+    SummonerCurse,
+    ChainLightning,
+    DrainLife,
+    RageImpact,
+    PhoenixShot,
+    GenericBuff,
+    GenericProjectile,
+    GenericArea,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1014,120 +1031,6 @@ impl SkillEntry {
             self.name,
             animation_display_name(self.action_id)
         )
-    }
-}
-
-const DK_SKILLS: &[SkillEntry] = &[
-    SkillEntry {
-        skill_id: 18,
-        name: "Defense",
-        action_id: PlayerAction::Defense1 as usize,
-        cast_speed: 0.22,
-        kind: SkillType::SelfCast,
-        vfx: SkillVfxProfile::DefensiveAura,
-    },
-    SkillEntry {
-        skill_id: 19,
-        name: "Falling Slash",
-        action_id: PlayerAction::AttackSkillSword1 as usize,
-        cast_speed: 0.25,
-        kind: SkillType::Target,
-        vfx: SkillVfxProfile::SlashTrail,
-    },
-    SkillEntry {
-        skill_id: 20,
-        name: "Lunge",
-        action_id: PlayerAction::AttackSkillSword2 as usize,
-        cast_speed: 0.25,
-        kind: SkillType::Target,
-        vfx: SkillVfxProfile::SlashTrail,
-    },
-    SkillEntry {
-        skill_id: 21,
-        name: "Uppercut",
-        action_id: PlayerAction::AttackSkillSword3 as usize,
-        cast_speed: 0.25,
-        kind: SkillType::Target,
-        vfx: SkillVfxProfile::SlashTrail,
-    },
-    SkillEntry {
-        skill_id: 22,
-        name: "Cyclone",
-        action_id: PlayerAction::AttackSkillSword4 as usize,
-        cast_speed: 0.24,
-        kind: SkillType::Target,
-        vfx: SkillVfxProfile::SlashTrail,
-    },
-    SkillEntry {
-        skill_id: 23,
-        name: "Slash",
-        action_id: PlayerAction::AttackSkillSword5 as usize,
-        cast_speed: 0.24,
-        kind: SkillType::Target,
-        vfx: SkillVfxProfile::SlashTrail,
-    },
-    SkillEntry {
-        skill_id: 41,
-        name: "Twisting Slash",
-        action_id: PlayerAction::AttackSkillWheel as usize,
-        cast_speed: 0.25,
-        kind: SkillType::Area,
-        vfx: SkillVfxProfile::TwistingSlash,
-    },
-    SkillEntry {
-        skill_id: 42,
-        name: "Rageful Blow",
-        action_id: PlayerAction::AttackSkillFuryStrike as usize,
-        cast_speed: 0.23,
-        kind: SkillType::Area,
-        vfx: SkillVfxProfile::RagefulBlow,
-    },
-    SkillEntry {
-        skill_id: 43,
-        name: "Death Stab",
-        action_id: PlayerAction::AttackOneToOne as usize,
-        cast_speed: 0.24,
-        kind: SkillType::Target,
-        vfx: SkillVfxProfile::DeathStab,
-    },
-    SkillEntry {
-        skill_id: 47,
-        name: "Impale",
-        action_id: PlayerAction::AttackSkillSpear as usize,
-        cast_speed: 0.24,
-        kind: SkillType::Target,
-        vfx: SkillVfxProfile::Impale,
-    },
-    SkillEntry {
-        skill_id: 48,
-        name: "Greater Fortitude",
-        action_id: PlayerAction::SkillVitality as usize,
-        cast_speed: 0.2,
-        kind: SkillType::SelfCast,
-        vfx: SkillVfxProfile::DefensiveAura,
-    },
-    SkillEntry {
-        skill_id: 49,
-        name: "Fire Breath",
-        action_id: PlayerAction::SkillRider as usize,
-        cast_speed: 0.22,
-        kind: SkillType::Target,
-        vfx: SkillVfxProfile::FireBreath,
-    },
-    SkillEntry {
-        skill_id: 59,
-        name: "Combo",
-        action_id: PlayerAction::AttackSkillSword1 as usize,
-        cast_speed: 0.26,
-        kind: SkillType::Target,
-        vfx: SkillVfxProfile::Combo,
-    },
-];
-
-fn skills_for_class(class: CharacterClass) -> &'static [SkillEntry] {
-    match class {
-        CharacterClass::DarkKnight => DK_SKILLS,
-        _ => &[],
     }
 }
 
@@ -2747,6 +2650,205 @@ fn spawn_skill_vfx_for_entry(
                 target_pos + Vec3::new(0.0, 10.0, 0.0),
                 1.1,
                 0.8,
+                None,
+            );
+        }
+        SkillVfxProfile::MagicProjectile => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/magic_01.glb",
+                target_pos + Vec3::new(0.0, 18.0, 0.0),
+                1.0,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::MagicArea => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/blast_01.glb",
+                target_pos + Vec3::new(0.0, 8.0, 0.0),
+                1.1,
+                1.0,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/storm_01.glb",
+                target_pos + Vec3::new(0.0, 12.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+        }
+        SkillVfxProfile::Teleport => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/magic_circle_01.glb",
+                caster_pos + Vec3::new(0.0, 5.0, 0.0),
+                1.0,
+                0.9,
+                Some((caster_entity, Vec3::new(0.0, 5.0, 0.0))),
+            );
+        }
+        SkillVfxProfile::IceStorm => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/blizzard.glb",
+                target_pos + Vec3::new(0.0, 30.0, 0.0),
+                1.0,
+                1.3,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/ice_01.glb",
+                target_pos + Vec3::new(0.0, 8.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+        }
+        SkillVfxProfile::ArrowRain => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/cw_bow_skill.glb",
+                target_pos + Vec3::new(0.0, 14.0, 0.0),
+                1.0,
+                1.2,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/sketbows_arrows.glb",
+                target_pos + Vec3::new(0.0, 20.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+        }
+        SkillVfxProfile::DarkLordBurst => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/dark_lord_skill.glb",
+                target_pos + Vec3::new(0.0, 12.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/darkfirescrem_01.glb",
+                target_pos + Vec3::new(0.0, 16.0, 0.0),
+                1.0,
+                0.9,
+                None,
+            );
+        }
+        SkillVfxProfile::SummonerCurse => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/darkspirit.glb",
+                target_pos + Vec3::new(0.0, 18.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/ring.glb",
+                target_pos + Vec3::new(0.0, 4.0, 0.0),
+                1.0,
+                0.9,
+                None,
+            );
+        }
+        SkillVfxProfile::ChainLightning => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/laser_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.0,
+                0.9,
+                None,
+            );
+        }
+        SkillVfxProfile::DrainLife => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/m_waves.glb",
+                target_pos + Vec3::new(0.0, 12.0, 0.0),
+                1.0,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::RageImpact => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/earth_quake_01.glb",
+                target_pos + Vec3::new(0.0, 6.0, 0.0),
+                1.2,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::PhoenixShot => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/phoenix.glb",
+                target_pos + Vec3::new(0.0, 12.0, 0.0),
+                1.0,
+                1.2,
+                None,
+            );
+        }
+        SkillVfxProfile::GenericBuff => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/protect_02.glb",
+                caster_pos + Vec3::new(0.0, 55.0, 0.0),
+                1.0,
+                1.8,
+                Some((caster_entity, Vec3::new(0.0, 55.0, 0.0))),
+            );
+        }
+        SkillVfxProfile::GenericProjectile => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/magic_02.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.0,
+                0.9,
+                None,
+            );
+        }
+        SkillVfxProfile::GenericArea => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/blast_01.glb",
+                target_pos + Vec3::new(0.0, 8.0, 0.0),
+                1.1,
+                1.0,
                 None,
             );
         }
