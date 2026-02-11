@@ -94,6 +94,12 @@ TERRAIN_COLOR_PREFERRED_PREFIXES = (
     "tilem",
 )
 
+TERRAIN_SLOT_ALIASES: Dict[str, Tuple[str, ...]] = {
+    # Some datasets expose TileGround01x as the usable ground diffuse when
+    # TileGround01 is an alpha mask-like strip.
+    "tileground01": ("TileGround01x",),
+}
+
 TERRAIN_HEIGHT_STEMS = {"terrainheight", "terrain_height"}
 TERRAIN_SIZE = 256
 LEGACY_OZB_TERRAIN_HEADER = 1080
@@ -2054,16 +2060,70 @@ def emit_canonical_terrain_map(
 def _world_texture_candidates(slot_texture_name: str) -> List[str]:
     base = Path(slot_texture_name).stem
     ext = Path(slot_texture_name).suffix or ".png"
-    lower = base.lower()
-    snake = _snake_case_name(base)
-    # Match normalize.py pattern: insert underscore before digit sequences
-    snake_digit_sep = re.sub(r'([a-zA-Z])(\d)', r'\1_\2', snake)
-    return [
-        f"{base}{ext}",
-        f"{snake}{ext}",
-        f"{lower}{ext}",
-        f"{snake_digit_sep}{ext}",
-    ]
+    names: List[str] = [base]
+    names.extend(TERRAIN_SLOT_ALIASES.get(base.lower(), ()))
+
+    candidates: List[str] = []
+    seen: set[str] = set()
+    for name in names:
+        lower = name.lower()
+        snake = _snake_case_name(name)
+        # Match normalize.py pattern: insert underscore before digit sequences
+        snake_digit_sep = re.sub(r'([a-zA-Z])(\d)', r'\1_\2', snake)
+        for stem in (name, snake, lower, snake_digit_sep):
+            entry = f"{stem}{ext}"
+            key = entry.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(entry)
+
+    return candidates
+
+
+def _terrain_slot_texture_looks_valid(slot_file: str, texture_path: Path) -> bool:
+    if texture_path.suffix.lower() != ".png":
+        return True
+    stem = Path(slot_file).stem.lower()
+    if not _terrain_prefers_color_texture(stem):
+        return True
+
+    if Image is not None:
+        try:
+            with Image.open(texture_path) as image:
+                image.load()
+                rgba = image.convert("RGBA")
+                alpha = rgba.getchannel("A")
+                min_alpha, max_alpha = alpha.getextrema()
+                if max_alpha <= 0:
+                    return False
+                if min_alpha == 0 and max_alpha == 0:
+                    return False
+        except Exception:  # noqa: BLE001
+            return True
+        return True
+
+    # Pillow-free fallback: use ImageMagick to detect fully transparent alpha.
+    try:
+        alpha_mean_raw = subprocess.check_output(
+            [
+                "magick",
+                "identify",
+                "-format",
+                "%[fx:mean.a]",
+                str(texture_path),
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if not alpha_mean_raw:
+            return True
+        alpha_mean = float(alpha_mean_raw)
+        if alpha_mean <= 0.0:
+            return False
+    except Exception:  # noqa: BLE001
+        return True
+    return True
 
 
 def emit_terrain_texture_slots_json(
@@ -2092,8 +2152,22 @@ def emit_terrain_texture_slots_json(
             found = find_case_insensitive_file(world_output_dir, candidate)
             if found is None:
                 continue
+            if not _terrain_slot_texture_looks_valid(slot_file, found):
+                logging.warning(
+                    "Skipping invalid terrain slot texture for world %s slot %d: %s",
+                    world_dir.name,
+                    slot_index,
+                    found,
+                )
+                continue
             slots[slot_index] = f"data/{world_dir.name}/{found.name}"
             break
+
+    # Guarantee slot coverage for core ground slots used in terrain map base pass.
+    first_ground = next((slots.get(slot) for slot in (2, 3, 4) if slot in slots), None)
+    if first_ground is not None:
+        for slot in (2, 3, 4):
+            slots.setdefault(slot, first_ground)
 
     for ext_index in range(1, 17):
         slot_index = 13 + ext_index

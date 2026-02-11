@@ -13,6 +13,7 @@ use crate::scene_runtime::world_coordinates::{
 use bevy::ecs::system::EntityCommands;
 use bevy::gltf::{Gltf, GltfMaterialExtras};
 use bevy::math::primitives::Cuboid;
+use bevy::mesh::skinning::SkinnedMesh;
 use bevy::prelude::*;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -792,17 +793,18 @@ fn fallback_scene_objects() -> Vec<SceneObjectDef> {
 pub fn apply_legacy_gltf_material_overrides(
     mut commands: Commands,
     mut legacy_materials: ResMut<Assets<LegacyAdditiveMaterial>>,
-    materials: Res<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     query: Query<
         (
             Entity,
             &MeshMaterial3d<StandardMaterial>,
             &GltfMaterialExtras,
+            Option<&SkinnedMesh>,
         ),
         Added<GltfMaterialExtras>,
     >,
 ) {
-    for (entity, material_handle, extras) in &query {
+    for (entity, material_handle, extras, skinned_mesh) in &query {
         let parsed = serde_json::from_str::<Value>(&extras.value);
         let Ok(payload) = parsed else {
             continue;
@@ -816,32 +818,65 @@ pub fn apply_legacy_gltf_material_overrides(
             continue;
         }
 
-        let Some(material) = materials.get(&material_handle.0) else {
+        let Some(material) = materials.get(&material_handle.0).cloned() else {
             continue;
         };
 
-        let mut legacy_material = legacy_additive_from_standard(material);
         let intensity = legacy_additive_intensity_from_extras(&payload);
-        legacy_material.params.intensity = intensity;
-        let has_texture = legacy_material.color_texture.is_some();
-        let legacy_material_handle = legacy_materials.add(legacy_material);
+        if skinned_mesh.is_some() {
+            // Custom legacy additive shader currently does not include Bevy skinning
+            // vertex path. Keep skinned meshes on StandardMaterial to preserve animation.
+            let mut additive_standard = material.clone();
+            additive_standard.alpha_mode = AlphaMode::Add;
+            additive_standard.double_sided = true;
+            additive_standard.cull_mode = None;
+            additive_standard.unlit = true;
+            additive_standard.emissive = LinearRgba::rgb(intensity, intensity, intensity);
+            additive_standard.emissive_texture = additive_standard
+                .emissive_texture
+                .clone()
+                .or_else(|| additive_standard.base_color_texture.clone());
+            let has_texture = additive_standard.base_color_texture.is_some()
+                || additive_standard.emissive_texture.is_some();
+            let additive_handle = materials.add(additive_standard);
+            commands
+                .entity(entity)
+                .insert(MeshMaterial3d(additive_handle));
 
-        commands
-            .entity(entity)
-            .remove::<MeshMaterial3d<StandardMaterial>>()
-            .insert(MeshMaterial3d(legacy_material_handle));
+            debug!(
+                "Applied legacy additive override (object={:?}/{:?}) texture={} intensity={:.2} material=StandardMaterial(Add, skinned)",
+                payload
+                    .get("mu_legacy_object_dir")
+                    .and_then(|value| value.as_i64()),
+                payload
+                    .get("mu_legacy_object_model")
+                    .and_then(|value| value.as_i64()),
+                has_texture,
+                intensity,
+            );
+        } else {
+            let mut legacy_material = legacy_additive_from_standard(&material);
+            legacy_material.params.intensity = intensity;
+            let has_texture = legacy_material.color_texture.is_some();
+            let legacy_material_handle = legacy_materials.add(legacy_material);
 
-        debug!(
-            "Applied legacy additive override (object={:?}/{:?}) texture={} intensity={:.2} material=LegacyAdditiveMaterial",
-            payload
-                .get("mu_legacy_object_dir")
-                .and_then(|value| value.as_i64()),
-            payload
-                .get("mu_legacy_object_model")
-                .and_then(|value| value.as_i64()),
-            has_texture,
-            intensity,
-        );
+            commands
+                .entity(entity)
+                .remove::<MeshMaterial3d<StandardMaterial>>()
+                .insert(MeshMaterial3d(legacy_material_handle));
+
+            debug!(
+                "Applied legacy additive override (object={:?}/{:?}) texture={} intensity={:.2} material=LegacyAdditiveMaterial",
+                payload
+                    .get("mu_legacy_object_dir")
+                    .and_then(|value| value.as_i64()),
+                payload
+                    .get("mu_legacy_object_model")
+                    .and_then(|value| value.as_i64()),
+                has_texture,
+                intensity,
+            );
+        }
     }
 }
 

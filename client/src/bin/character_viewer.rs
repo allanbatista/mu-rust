@@ -34,7 +34,7 @@ use character_viewer_skills::skills_for_class;
 use grid_overlay::{
     GRID_OVERLAY_COLOR, GridOverlayConfig, build_grid_segments, grid_line_count, segment_transform,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 // Import character modules from the client crate.
@@ -979,6 +979,7 @@ const RMB_CLICK_MAX_DRAG_PX: f32 = 8.0;
 const RMB_CLICK_MAX_SECONDS: f64 = 0.35;
 const SKILL_FALLBACK_TARGET_DISTANCE: f32 = 280.0;
 const SKILL_TRANSITION_DURATION: Duration = Duration::from_millis(100);
+const WEAPON_BLUR_MAX_SAMPLES: usize = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SkillType {
@@ -1128,6 +1129,7 @@ struct ViewerState {
     available_skills: Vec<SkillEntry>,
     pending_skill_cast: bool,
     active_skill: Option<ActiveSkillCast>,
+    active_weapon_blur: Option<ActiveWeaponBlur>,
     rmb_press_cursor: Option<Vec2>,
     rmb_press_time_seconds: f64,
     rmb_press_with_ctrl: bool,
@@ -1160,6 +1162,7 @@ impl Default for ViewerState {
             available_skills: skills_for_class(initial_class).to_vec(),
             pending_skill_cast: false,
             active_skill: None,
+            active_weapon_blur: None,
             rmb_press_cursor: None,
             rmb_press_time_seconds: 0.0,
             rmb_press_with_ctrl: false,
@@ -1193,6 +1196,50 @@ struct ActiveSkillCast {
     action_id: usize,
     return_action: usize,
     remaining_seconds: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WeaponBlurSample {
+    hand: Vec3,
+    tip: Vec3,
+    age: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WeaponBlurBones {
+    hand: Entity,
+    tip: Entity,
+}
+
+#[derive(Debug)]
+struct ActiveWeaponBlur {
+    elapsed_seconds: f32,
+    start_seconds: f32,
+    end_seconds: f32,
+    sample_lifetime_seconds: f32,
+    min_sample_distance_sq: f32,
+    max_sample_interval_seconds: f32,
+    time_since_last_sample_seconds: f32,
+    bones: Option<WeaponBlurBones>,
+    samples: VecDeque<WeaponBlurSample>,
+}
+
+impl ActiveWeaponBlur {
+    fn for_lunge(skill_duration: f32) -> Self {
+        let start_seconds = (skill_duration * 0.15).clamp(0.03, 0.24);
+        let end_seconds = (skill_duration * 0.94).clamp(start_seconds + 0.05, skill_duration);
+        Self {
+            elapsed_seconds: 0.0,
+            start_seconds,
+            end_seconds,
+            sample_lifetime_seconds: 0.18,
+            min_sample_distance_sq: 6.0 * 6.0,
+            max_sample_interval_seconds: 0.035,
+            time_since_last_sample_seconds: 0.0,
+            bones: None,
+            samples: VecDeque::with_capacity(WEAPON_BLUR_MAX_SAMPLES),
+        }
+    }
 }
 
 #[derive(Component)]
@@ -1327,6 +1374,7 @@ fn main() {
                 handle_camera_rotation,
                 apply_animation_changes,
                 update_skill_vfx,
+                update_weapon_blur_vfx,
                 update_mu_camera,
                 draw_grid_lines,
                 draw_movement_target,
@@ -2559,6 +2607,11 @@ fn trigger_selected_skill(
         return_action,
         remaining_seconds: skill_duration,
     });
+    if skill.vfx == SkillVfxProfile::Lunge {
+        viewer.active_weapon_blur = Some(ActiveWeaponBlur::for_lunge(skill_duration));
+    } else {
+        viewer.active_weapon_blur = None;
+    }
 
     spawn_skill_vfx_for_entry(
         &mut commands,
@@ -2646,7 +2699,13 @@ fn spawn_skill_vfx_for_entry(
             );
         }
         SkillVfxProfile::Lunge => {
-            spawn_lunge_vfx(commands, caster_pos, caster_rotation, skill_duration);
+            spawn_lunge_vfx(
+                commands,
+                caster_entity,
+                caster_pos,
+                caster_rotation,
+                skill_duration,
+            );
         }
         SkillVfxProfile::TwistingSlash => {
             spawn_skill_vfx_scene(
@@ -2936,6 +2995,7 @@ fn spawn_skill_vfx_for_entry(
 
 fn spawn_lunge_vfx(
     commands: &mut Commands,
+    caster_entity: Entity,
     caster_pos: Vec3,
     caster_rotation: Quat,
     skill_duration: f32,
@@ -2948,34 +3008,41 @@ fn spawn_lunge_vfx(
         forward = forward.normalize();
     }
 
-    let strike_origin = caster_pos + forward * 95.0 + Vec3::new(0.0, 26.0, 0.0);
-    let strike_delay = (skill_duration * 0.28).clamp(0.08, 0.55);
-    let trail_delay = (skill_duration * 0.40).clamp(strike_delay + 0.03, 0.75);
-    let sword_force_path = if vfx_asset_exists("data/skill/sword_force.glb") {
-        "data/skill/sword_force.glb"
-    } else {
-        warn!("Missing data/skill/sword_force.glb, using combo.glb fallback for Lunge.");
-        "data/skill/combo.glb"
-    };
+    let strike_delay = (skill_duration * 0.22).clamp(0.05, 0.42);
+    let impact_delay = (strike_delay + skill_duration * 0.08).clamp(strike_delay + 0.02, 0.65);
 
-    queue_skill_vfx_scene(
-        commands,
-        sword_force_path,
-        strike_origin,
-        0.85,
-        0.30,
-        strike_delay,
-        None,
-    );
+    if vfx_asset_exists("data/skill/sword_force.glb") {
+        queue_skill_vfx_scene(
+            commands,
+            "data/skill/sword_force.glb",
+            caster_pos + forward * 35.0 + Vec3::new(0.0, 34.0, 0.0),
+            0.62,
+            0.20,
+            strike_delay,
+            Some((caster_entity, forward * 35.0 + Vec3::new(0.0, 34.0, 0.0))),
+        );
+    }
 
     if vfx_asset_exists("data/skill/wave_force.glb") {
         queue_skill_vfx_scene(
             commands,
             "data/skill/wave_force.glb",
-            strike_origin + forward * 55.0 + Vec3::new(0.0, 2.0, 0.0),
-            0.72,
-            0.24,
-            trail_delay,
+            caster_pos + forward * 105.0 + Vec3::new(0.0, 18.0, 0.0),
+            0.60,
+            0.20,
+            impact_delay,
+            None,
+        );
+    }
+
+    if vfx_asset_exists("data/skill/flashing.glb") {
+        queue_skill_vfx_scene(
+            commands,
+            "data/skill/flashing.glb",
+            caster_pos + forward * 75.0 + Vec3::new(0.0, 14.0, 0.0),
+            0.55,
+            0.18,
+            impact_delay,
             None,
         );
     }
