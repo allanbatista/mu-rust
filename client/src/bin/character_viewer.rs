@@ -1223,6 +1223,9 @@ struct ViewerGridLine {
 #[derive(Component, Clone, Copy)]
 struct RestLocalTransform(Transform);
 
+#[derive(Component, Clone, Copy)]
+struct BodyPartRestLocalTransform(Transform);
+
 /// MU-style follow camera with fixed pitch/yaw and adjustable distance.
 #[derive(Component)]
 struct MuCamera {
@@ -1301,6 +1304,8 @@ fn main() {
                 init_player_animation_lib,
                 bind_anim_players,
                 capture_rest_local_transforms,
+                capture_body_part_rest_local_transforms,
+                pause_unbound_body_part_anim_players,
                 handle_skill_trigger_input,
                 trigger_selected_skill,
                 update_active_skill_cast,
@@ -1812,6 +1817,12 @@ fn draw_character_viewer_ui(
                 }
             }
 
+            if ui.button("Rebuild Player Objects").clicked() {
+                viewer.active_skill = None;
+                viewer.pending_skill_cast = false;
+                viewer.pending_class_change = true;
+            }
+
             ui.separator();
 
             // Skill selector
@@ -2164,13 +2175,17 @@ fn bind_anim_players(
     library: Res<PlayerAnimLib>,
     viewer: Res<ViewerState>,
     children_query: Query<&Children>,
+    skeleton_query: Query<Entity, With<SkeletonMarker>>,
     mut players: Query<(Entity, &mut AnimationPlayer), Without<AnimBound>>,
 ) {
     let Some(graph_handle) = library.graph_handle.clone() else {
         return;
     };
 
-    let Some(root_entity) = viewer.character_entity else {
+    let Some(_root_entity) = viewer.character_entity else {
+        return;
+    };
+    let Ok(skeleton_entity) = skeleton_query.single() else {
         return;
     };
 
@@ -2184,7 +2199,9 @@ fn bind_anim_players(
         return;
     };
 
-    let unbound = find_unbound_players(root_entity, &children_query, &players);
+    // Only animate the dedicated skeleton scene. Body-part scenes are driven by
+    // bone-copy sync and must not receive direct animation playback.
+    let unbound = find_unbound_players(skeleton_entity, &children_query, &players);
 
     for player_entity in unbound {
         if let Ok((entity, mut player)) = players.get_mut(player_entity) {
@@ -2243,6 +2260,49 @@ fn capture_rest_local_transforms(
             commands
                 .entity(entity)
                 .insert(RestLocalTransform(*transform));
+        }
+    }
+}
+
+fn capture_body_part_rest_local_transforms(
+    mut commands: Commands,
+    body_parts: Query<Entity, With<BodyPartMarker>>,
+    children_query: Query<&Children>,
+    names: Query<&Name>,
+    transforms: Query<&Transform>,
+    existing_rest: Query<(), With<BodyPartRestLocalTransform>>,
+) {
+    for root in &body_parts {
+        let mut queue = vec![root];
+        while let Some(entity) = queue.pop() {
+            if names.get(entity).is_ok() && existing_rest.get(entity).is_err() {
+                if let Ok(transform) = transforms.get(entity) {
+                    commands
+                        .entity(entity)
+                        .insert(BodyPartRestLocalTransform(*transform));
+                }
+            }
+            if let Ok(children) = children_query.get(entity) {
+                queue.extend(children.iter());
+            }
+        }
+    }
+}
+
+fn pause_unbound_body_part_anim_players(
+    body_parts: Query<Entity, With<BodyPartMarker>>,
+    children_query: Query<&Children>,
+    mut unbound_players: Query<&mut AnimationPlayer, Without<AnimBound>>,
+) {
+    for root in &body_parts {
+        let mut queue = vec![root];
+        while let Some(entity) = queue.pop() {
+            if let Ok(mut player) = unbound_players.get_mut(entity) {
+                player.pause_all();
+            }
+            if let Ok(children) = children_query.get(entity) {
+                queue.extend(children.iter());
+            }
         }
     }
 }
@@ -3316,6 +3376,8 @@ fn restore_unanimated_targets(
         if !bound_player_entities.contains(&animated_by.0) {
             continue;
         }
+        // Keep scale stable even if an imported clip accidentally carries scale keys.
+        transform.scale = rest_transform.0.scale;
         if clip.curves_for_target(*target_id).is_none() {
             *transform = rest_transform.0;
         }
@@ -3331,6 +3393,7 @@ fn sync_bone_transforms(
     body_part_query: Query<Entity, With<BodyPartMarker>>,
     children_query: Query<&Children>,
     name_query: Query<&Name>,
+    body_part_rest_query: Query<&BodyPartRestLocalTransform>,
     mut transform_query: Query<&mut Transform>,
 ) {
     for skeleton_entity in &skeleton_query {
@@ -3350,6 +3413,7 @@ fn sync_bone_transforms(
                 body_part_entity,
                 &children_query,
                 &name_query,
+                &body_part_rest_query,
                 &mut transform_query,
                 &bone_transforms,
             );
@@ -3384,6 +3448,7 @@ fn apply_bone_transforms(
     root: Entity,
     children_query: &Query<&Children>,
     name_query: &Query<&Name>,
+    body_part_rest_query: &Query<&BodyPartRestLocalTransform>,
     transform_query: &mut Query<&mut Transform>,
     bone_transforms: &HashMap<String, Transform>,
 ) {
@@ -3392,17 +3457,22 @@ fn apply_bone_transforms(
         if let Ok(name) = name_query.get(entity) {
             if let Some(&skel_t) = bone_transforms.get(name.as_str()) {
                 if let Ok(mut bp_t) = transform_query.get_mut(entity) {
-                    // Keep authored mesh bone scale. Some converted clips carry unstable
-                    // scale tracks that distort the body after skill playback.
-                    let preserved_scale = bp_t.scale;
+                    let rest_local = body_part_rest_query
+                        .get(entity)
+                        .map(|rest| rest.0)
+                        .unwrap_or(*bp_t);
                     if name.as_str() == ROOT_BONE_NAME {
+                        // Lock horizontal root translation to rest pose to keep every clip
+                        // in-place while still following animated height/rotation.
+                        bp_t.translation.x = rest_local.translation.x;
                         bp_t.rotation = skel_t.rotation;
                         bp_t.translation.y = skel_t.translation.y;
-                        bp_t.scale = preserved_scale;
+                        bp_t.translation.z = rest_local.translation.z;
+                        bp_t.scale = rest_local.scale;
                     } else {
                         bp_t.translation = skel_t.translation;
                         bp_t.rotation = skel_t.rotation;
-                        bp_t.scale = preserved_scale;
+                        bp_t.scale = rest_local.scale;
                     }
                 }
             }
