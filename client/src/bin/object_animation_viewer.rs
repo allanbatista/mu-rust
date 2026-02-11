@@ -5,8 +5,8 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gltf::{Gltf, GltfMaterialExtras};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::light::GlobalAmbientLight;
-use bevy::mesh::skinning::SkinnedMesh;
 use bevy::mesh::VertexAttributeValues;
+use bevy::mesh::skinning::SkinnedMesh;
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 #[cfg(feature = "solari")]

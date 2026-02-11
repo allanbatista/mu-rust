@@ -945,6 +945,8 @@ const GROUND_SIZE: f32 = GROUND_CELLS as f32 * GRID_CELL_SIZE;
 
 /// Height multiplier from terrain config (world_1 default).
 const HEIGHT_MULTIPLIER: f32 = 1.5;
+/// Ground UV tiling: one texture tile spans 2x2 terrain cells.
+const GROUND_UV_CELLS_PER_TILE: f32 = 2.0;
 
 /// Number of grid cells visible in each direction from the character.
 const GRID_VISIBLE_HALF_CELLS: i32 = 25;
@@ -980,6 +982,9 @@ const RMB_CLICK_MAX_SECONDS: f64 = 0.35;
 const SKILL_FALLBACK_TARGET_DISTANCE: f32 = 280.0;
 const SKILL_TRANSITION_DURATION: Duration = Duration::from_millis(100);
 const WEAPON_BLUR_MAX_SAMPLES: usize = 24;
+const WEAPON_BLUR_NEAR_OFFSET: f32 = 20.0;
+const WEAPON_BLUR_FAR_OFFSET: f32 = 120.0;
+const SKILL_VFX_LOAD_GRACE_SECONDS: f32 = 0.6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SkillType {
@@ -1254,6 +1259,15 @@ struct SkillVfxLifetime {
 }
 
 #[derive(Component)]
+struct SkillVfxAnimationSource {
+    gltf_handle: Handle<Gltf>,
+    playback_speed: f32,
+}
+
+#[derive(Component)]
+struct SkillVfxAnimationInitialized;
+
+#[derive(Component)]
 struct SkillVfxFollow {
     target: Entity,
     offset: Vec3,
@@ -1374,13 +1388,17 @@ fn main() {
                 handle_camera_rotation,
                 apply_animation_changes,
                 update_skill_vfx,
-                update_weapon_blur_vfx,
                 update_mu_camera,
                 draw_grid_lines,
                 draw_movement_target,
             ),
         )
+        .add_systems(Update, update_weapon_blur_vfx)
         .add_systems(Update, update_pending_skill_vfx)
+        .add_systems(
+            Update,
+            ensure_skill_vfx_animation_players.after(update_pending_skill_vfx),
+        )
         .add_systems(
             PostUpdate,
             (
@@ -1465,8 +1483,11 @@ fn setup_viewer(
         ..default()
     });
 
-    // Load ground texture (tile_ground_01 from world 1)
-    let ground_texture: Handle<Image> = asset_server.load("data/world_1/tile_ground_01.png");
+    // Use the primary map texture slot when available. `tile_ground_01.png` can be a tiny
+    // placeholder in some converted asset sets.
+    let ground_texture_path = resolve_world_ground_texture_path();
+    let ground_texture: Handle<Image> = asset_server.load(ground_texture_path.clone());
+    info!("Ground texture: {}", ground_texture_path);
 
     // Build 256x256 heightmap terrain mesh
     let terrain_mesh = build_terrain_mesh(&heightmap);
@@ -1537,7 +1558,7 @@ fn build_terrain_mesh(heightmap: &HeightmapResource) -> Mesh {
     let h = heightmap.height.min(GROUND_CELLS);
 
     let mut positions = Vec::with_capacity(w * h);
-    let cells_per_tile = 4.0;
+    let cells_per_tile = GROUND_UV_CELLS_PER_TILE;
 
     for z in 0..h {
         for x in 0..w {
@@ -3009,41 +3030,19 @@ fn spawn_lunge_vfx(
     }
 
     let strike_delay = (skill_duration * 0.22).clamp(0.05, 0.42);
-    let impact_delay = (strike_delay + skill_duration * 0.08).clamp(strike_delay + 0.02, 0.65);
-
-    if vfx_asset_exists("data/skill/sword_force.glb") {
-        queue_skill_vfx_scene(
-            commands,
-            "data/skill/sword_force.glb",
-            caster_pos + forward * 35.0 + Vec3::new(0.0, 34.0, 0.0),
-            0.62,
-            0.20,
-            strike_delay,
-            Some((caster_entity, forward * 35.0 + Vec3::new(0.0, 34.0, 0.0))),
-        );
-    }
-
-    if vfx_asset_exists("data/skill/wave_force.glb") {
-        queue_skill_vfx_scene(
-            commands,
-            "data/skill/wave_force.glb",
-            caster_pos + forward * 105.0 + Vec3::new(0.0, 18.0, 0.0),
-            0.60,
-            0.20,
-            impact_delay,
-            None,
-        );
-    }
+    // Lunge (skill 20) in classic client is mostly weapon blur.
+    // Keep only a compact contact flash and avoid large Rush-like VFX.
+    let impact_offset = forward * 45.0 + Vec3::new(0.0, 18.0, 0.0);
 
     if vfx_asset_exists("data/skill/flashing.glb") {
         queue_skill_vfx_scene(
             commands,
             "data/skill/flashing.glb",
-            caster_pos + forward * 75.0 + Vec3::new(0.0, 14.0, 0.0),
-            0.55,
-            0.18,
-            impact_delay,
-            None,
+            caster_pos + impact_offset,
+            0.38,
+            0.12,
+            strike_delay,
+            Some((caster_entity, impact_offset)),
         );
     }
 }
@@ -3058,6 +3057,7 @@ fn spawn_skill_vfx_scene(
     follow: Option<(Entity, Vec3)>,
 ) {
     let scene_handle: Handle<Scene> = asset_server.load(format!("{glb_path}#Scene0"));
+    let gltf_handle: Handle<Gltf> = asset_server.load(glb_path.to_string());
     let mut entity = commands.spawn((
         SceneBundle {
             scene: SceneRoot(scene_handle),
@@ -3065,8 +3065,15 @@ fn spawn_skill_vfx_scene(
             ..default()
         },
         SkillVfx,
+        SkillVfxAnimationSource {
+            gltf_handle,
+            playback_speed: 1.0,
+        },
         SkillVfxLifetime {
-            timer: Timer::from_seconds(ttl_seconds.max(0.05), TimerMode::Once),
+            timer: Timer::from_seconds(
+                (ttl_seconds + SKILL_VFX_LOAD_GRACE_SECONDS).max(0.2),
+                TimerMode::Once,
+            ),
         },
     ));
 
@@ -3119,7 +3126,103 @@ fn update_pending_skill_vfx(
     }
 }
 
+fn ensure_skill_vfx_animation_players(
+    mut commands: Commands,
+    gltfs: Res<Assets<Gltf>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+    children_query: Query<&Children>,
+    player_presence: Query<(), With<AnimationPlayer>>,
+    mut players: Query<&mut AnimationPlayer>,
+    sources: Query<
+        (Entity, &SkillVfxAnimationSource),
+        (With<SkillVfx>, Without<SkillVfxAnimationInitialized>),
+    >,
+) {
+    for (source_entity, source) in &sources {
+        let player_entities =
+            find_animation_players_in_subtree(source_entity, &children_query, &player_presence);
+        if player_entities.is_empty() {
+            continue;
+        }
+
+        let Some(gltf) = gltfs.get(&source.gltf_handle) else {
+            continue;
+        };
+
+        if gltf.animations.is_empty() {
+            commands
+                .entity(source_entity)
+                .insert(SkillVfxAnimationInitialized);
+            continue;
+        }
+
+        let mut graph = AnimationGraph::new();
+        let nodes: Vec<AnimationNodeIndex> = graph
+            .add_clips(gltf.animations.iter().cloned(), 1.0, graph.root)
+            .collect();
+        let Some(first_node) = nodes.first().copied() else {
+            commands
+                .entity(source_entity)
+                .insert(SkillVfxAnimationInitialized);
+            continue;
+        };
+        let graph_handle = graphs.add(graph);
+
+        for player_entity in player_entities {
+            if let Ok(mut player) = players.get_mut(player_entity) {
+                let mut transitions = AnimationTransitions::new();
+                transitions
+                    .play(&mut player, first_node, Duration::ZERO)
+                    .set_speed(source.playback_speed.max(0.001))
+                    .repeat();
+                commands
+                    .entity(player_entity)
+                    .insert((AnimationGraphHandle(graph_handle.clone()), transitions));
+            }
+        }
+
+        commands
+            .entity(source_entity)
+            .insert(SkillVfxAnimationInitialized);
+    }
+}
+
+fn find_animation_players_in_subtree(
+    root: Entity,
+    children_query: &Query<&Children>,
+    player_presence: &Query<(), With<AnimationPlayer>>,
+) -> Vec<Entity> {
+    let mut result = Vec::new();
+    let mut queue = vec![root];
+    while let Some(entity) = queue.pop() {
+        if player_presence.contains(entity) {
+            result.push(entity);
+        }
+        if let Ok(children) = children_query.get(entity) {
+            queue.extend(children.iter());
+        }
+    }
+    result
+}
+
 fn vfx_asset_exists(path: &str) -> bool {
+    asset_path_exists(path)
+}
+
+fn resolve_world_ground_texture_path() -> String {
+    [
+        "prototype/2x2-gray-with-central-position.png",
+        "data/world_1/tile_ground_01x.png",
+        "data/world_1/tile_ground_01.png",
+        "data/world_1/map_1.png",
+    ]
+    .into_iter()
+    .find(|path| asset_path_exists(path))
+    .unwrap_or("data/world_1/tile_ground_01x.png")
+    .to_string()
+}
+
+fn asset_path_exists(path: &str) -> bool {
     let full = format!("{}/{}", asset_root_path(), path);
     std::path::Path::new(&full).exists()
 }
@@ -3153,6 +3256,206 @@ fn update_skill_vfx(
             commands.entity(entity).despawn();
         }
     }
+}
+
+fn update_weapon_blur_vfx(
+    time: Res<Time>,
+    mut viewer: ResMut<ViewerState>,
+    mut gizmos: Gizmos,
+    skeleton_query: Query<Entity, With<SkeletonMarker>>,
+    children_query: Query<&Children>,
+    name_query: Query<&Name>,
+    global_transforms: Query<&GlobalTransform>,
+    character_roots: Query<&GlobalTransform, With<CharacterRoot>>,
+) {
+    let delta_seconds = time.delta_secs();
+    let mut clear_blur = false;
+    let character_entity = viewer.character_entity;
+
+    {
+        let Some(blur) = viewer.active_weapon_blur.as_mut() else {
+            return;
+        };
+
+        blur.elapsed_seconds += delta_seconds;
+        blur.time_since_last_sample_seconds += delta_seconds;
+
+        for sample in &mut blur.samples {
+            sample.age += delta_seconds;
+        }
+        while blur
+            .samples
+            .front()
+            .is_some_and(|sample| sample.age >= blur.sample_lifetime_seconds)
+        {
+            blur.samples.pop_front();
+        }
+
+        let mut fallback_forward = Vec3::NEG_Z;
+        if let Some(root_entity) = character_entity {
+            if let Ok(root_transform) = character_roots.get(root_entity) {
+                fallback_forward = root_transform.rotation().mul_vec3(Vec3::NEG_Z);
+            }
+        }
+        fallback_forward.y = 0.0;
+        fallback_forward = fallback_forward.normalize_or_zero();
+        if fallback_forward.length_squared() <= f32::EPSILON {
+            fallback_forward = Vec3::NEG_Z;
+        }
+
+        if blur.elapsed_seconds >= blur.start_seconds && blur.elapsed_seconds <= blur.end_seconds {
+            if blur.bones.is_none() {
+                if let Ok(skeleton_entity) = skeleton_query.single() {
+                    blur.bones =
+                        resolve_weapon_blur_bones(skeleton_entity, &children_query, &name_query);
+                } else {
+                    clear_blur = true;
+                }
+            }
+
+            if !clear_blur {
+                if let Some(bones) = blur.bones {
+                    if let (Ok(hand_transform), Ok(tip_transform)) = (
+                        global_transforms.get(bones.hand),
+                        global_transforms.get(bones.tip),
+                    ) {
+                        let hand = hand_transform.translation();
+                        let mut blade_dir = tip_transform.translation() - hand;
+                        if blade_dir.length_squared() <= f32::EPSILON {
+                            blade_dir = hand_transform.rotation().mul_vec3(Vec3::NEG_Y);
+                        }
+                        if blade_dir.length_squared() <= f32::EPSILON {
+                            blade_dir = fallback_forward;
+                        }
+                        blade_dir = blade_dir.normalize();
+
+                        let near = hand + blade_dir * WEAPON_BLUR_NEAR_OFFSET;
+                        let tip = hand + blade_dir * WEAPON_BLUR_FAR_OFFSET;
+
+                        let should_sample = match blur.samples.back() {
+                            Some(last) => {
+                                let movement = last
+                                    .hand
+                                    .distance_squared(near)
+                                    .max(last.tip.distance_squared(tip));
+                                movement >= blur.min_sample_distance_sq
+                                    || blur.time_since_last_sample_seconds
+                                        >= blur.max_sample_interval_seconds
+                            }
+                            None => true,
+                        };
+
+                        if should_sample {
+                            if blur.samples.len() >= WEAPON_BLUR_MAX_SAMPLES {
+                                blur.samples.pop_front();
+                            }
+                            blur.samples.push_back(WeaponBlurSample {
+                                hand: near,
+                                tip,
+                                age: 0.0,
+                            });
+                            blur.time_since_last_sample_seconds = 0.0;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut prev_sample: Option<&WeaponBlurSample> = None;
+        for sample in &blur.samples {
+            let life = (1.0 - sample.age / blur.sample_lifetime_seconds).clamp(0.0, 1.0);
+            if let Some(prev) = prev_sample {
+                let prev_life = (1.0 - prev.age / blur.sample_lifetime_seconds).clamp(0.0, 1.0);
+                let alpha = (life.min(prev_life) * 0.95).clamp(0.0, 1.0);
+                let edge_color = Color::srgba(1.0, 1.0, 1.0, alpha);
+                let core_color = Color::srgba(1.0, 0.85, 0.55, alpha * 0.72);
+                gizmos.line(prev.hand, sample.hand, edge_color);
+                gizmos.line(prev.tip, sample.tip, edge_color);
+                gizmos.line(
+                    prev.hand.lerp(prev.tip, 0.5),
+                    sample.hand.lerp(sample.tip, 0.5),
+                    core_color,
+                );
+                gizmos.line(sample.hand, sample.tip, core_color);
+            }
+            prev_sample = Some(sample);
+        }
+
+        if blur.elapsed_seconds > blur.end_seconds + blur.sample_lifetime_seconds
+            && blur.samples.is_empty()
+        {
+            clear_blur = true;
+        }
+    }
+
+    if clear_blur {
+        viewer.active_weapon_blur = None;
+    }
+}
+
+fn resolve_weapon_blur_bones(
+    root: Entity,
+    children_query: &Query<&Children>,
+    name_query: &Query<&Name>,
+) -> Option<WeaponBlurBones> {
+    let right_hand = find_descendant_named(
+        root,
+        &["Bip01 R Hand", "Bip01 R Forearm"],
+        children_query,
+        name_query,
+    );
+    let left_hand = find_descendant_named(
+        root,
+        &["Bip01 L Hand", "Bip01 L Forearm"],
+        children_query,
+        name_query,
+    );
+
+    let (hand, is_right_side) = match right_hand {
+        Some(hand) => (hand, true),
+        None => (left_hand?, false),
+    };
+
+    let primary_tip_candidates = if is_right_side {
+        ["Bip01 R Finger02", "Bip01 R Finger01", "Bip01 R Finger0"]
+    } else {
+        ["Bip01 L Finger02", "Bip01 L Finger01", "Bip01 L Finger0"]
+    };
+    let fallback_tip_candidates = if is_right_side {
+        ["Bip01 L Finger02", "Bip01 L Finger01", "Bip01 L Finger0"]
+    } else {
+        ["Bip01 R Finger02", "Bip01 R Finger01", "Bip01 R Finger0"]
+    };
+
+    let tip = find_descendant_named(root, &primary_tip_candidates, children_query, name_query)
+        .or_else(|| {
+            find_descendant_named(root, &fallback_tip_candidates, children_query, name_query)
+        })
+        .unwrap_or(hand);
+
+    Some(WeaponBlurBones { hand, tip })
+}
+
+fn find_descendant_named(
+    root: Entity,
+    candidates: &[&str],
+    children_query: &Query<&Children>,
+    name_query: &Query<&Name>,
+) -> Option<Entity> {
+    for candidate in candidates {
+        let mut queue = vec![root];
+        while let Some(entity) = queue.pop() {
+            if let Ok(name) = name_query.get(entity) {
+                if name.as_str() == *candidate {
+                    return Some(entity);
+                }
+            }
+            if let Ok(children) = children_query.get(entity) {
+                queue.extend(children.iter());
+            }
+        }
+    }
+    None
 }
 
 fn cursor_terrain_hit(
@@ -3652,6 +3955,8 @@ fn apply_bone_transforms(
                         bp_t.translation.z = rest_local.translation.z;
                         bp_t.scale = rest_local.scale;
                     } else {
+                        // Keep animated local translation for child bones; forcing rest offsets
+                        // here can misplace shoulders/arms on action clips.
                         bp_t.translation = skel_t.translation;
                         bp_t.rotation = skel_t.rotation;
                         bp_t.scale = rest_local.scale;
