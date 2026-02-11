@@ -11,9 +11,9 @@ use crate::scene_runtime::systems::{
     apply_legacy_gltf_material_overrides, apply_map_vfx_profile_to_scene_objects,
     apply_scene_object_distance_culling, control_debug_free_camera, cycle_debug_frame_limit,
     cycle_debug_shadow_quality, draw_runtime_map_grid, ensure_particle_render_batches,
-    ensure_scene_object_animation_players, fix_scene_object_backface_culling,
-    handle_window_occlusion, initialize_world_56_login_fx, load_scene_runtime_assets,
-    reset_debug_free_camera, reset_debug_overlay_state, reset_debug_scene_stats, setup_camera_tour,
+    ensure_scene_object_animation_players, fix_scene_object_materials, handle_window_occlusion,
+    initialize_world_56_login_fx, load_scene_runtime_assets, reset_debug_free_camera,
+    reset_debug_overlay_state, reset_debug_scene_stats, setup_camera_tour,
     spawn_boundary_walls_when_ready, spawn_debug_free_camera_hint, spawn_debug_scene_stats_hud,
     spawn_dynamic_lights, spawn_runtime_sun_light, spawn_scene_objects_when_ready,
     spawn_skybox_when_ready, spawn_terrain_grass_when_ready, spawn_terrain_when_ready,
@@ -82,7 +82,7 @@ pub fn register_scene_runtime(app: &mut App) {
             Update,
             (
                 apply_legacy_gltf_material_overrides,
-                fix_scene_object_backface_culling,
+                fix_scene_object_materials,
                 ensure_scene_object_animation_players.run_if(
                     |q: Query<
                         (),

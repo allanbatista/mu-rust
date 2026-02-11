@@ -991,6 +991,7 @@ enum SkillType {
 enum SkillVfxProfile {
     DefensiveAura,
     SlashTrail,
+    Lunge,
     TwistingSlash,
     RagefulBlow,
     DeathStab,
@@ -1211,6 +1212,16 @@ struct SkillVfxFollow {
     offset: Vec3,
 }
 
+#[derive(Component)]
+struct PendingSkillVfxSpawn {
+    timer: Timer,
+    glb_path: &'static str,
+    position: Vec3,
+    uniform_scale: f32,
+    ttl_seconds: f32,
+    follow: Option<(Entity, Vec3)>,
+}
+
 /// Marker for the invisible animated skeleton scene (player.glb).
 #[derive(Component)]
 struct SkeletonMarker;
@@ -1321,6 +1332,7 @@ fn main() {
                 draw_movement_target,
             ),
         )
+        .add_systems(Update, update_pending_skill_vfx)
         .add_systems(
             PostUpdate,
             (
@@ -2553,7 +2565,9 @@ fn trigger_selected_skill(
         &asset_server,
         character_entity,
         caster_pos,
+        transform.rotation,
         target_pos,
+        skill_duration,
         skill,
     );
 
@@ -2603,7 +2617,9 @@ fn spawn_skill_vfx_for_entry(
     asset_server: &AssetServer,
     caster_entity: Entity,
     caster_pos: Vec3,
+    caster_rotation: Quat,
     target_pos: Vec3,
+    skill_duration: f32,
     skill: SkillEntry,
 ) {
     match skill.vfx {
@@ -2628,6 +2644,9 @@ fn spawn_skill_vfx_for_entry(
                 1.2,
                 Some((caster_entity, Vec3::new(0.0, 30.0, 0.0))),
             );
+        }
+        SkillVfxProfile::Lunge => {
+            spawn_lunge_vfx(commands, caster_pos, caster_rotation, skill_duration);
         }
         SkillVfxProfile::TwistingSlash => {
             spawn_skill_vfx_scene(
@@ -2915,6 +2934,53 @@ fn spawn_skill_vfx_for_entry(
     }
 }
 
+fn spawn_lunge_vfx(
+    commands: &mut Commands,
+    caster_pos: Vec3,
+    caster_rotation: Quat,
+    skill_duration: f32,
+) {
+    let mut forward = caster_rotation.mul_vec3(Vec3::NEG_Z);
+    forward.y = 0.0;
+    if forward.length_squared() <= f32::EPSILON {
+        forward = Vec3::NEG_Z;
+    } else {
+        forward = forward.normalize();
+    }
+
+    let strike_origin = caster_pos + forward * 95.0 + Vec3::new(0.0, 26.0, 0.0);
+    let strike_delay = (skill_duration * 0.28).clamp(0.08, 0.55);
+    let trail_delay = (skill_duration * 0.40).clamp(strike_delay + 0.03, 0.75);
+    let sword_force_path = if vfx_asset_exists("data/skill/sword_force.glb") {
+        "data/skill/sword_force.glb"
+    } else {
+        warn!("Missing data/skill/sword_force.glb, using combo.glb fallback for Lunge.");
+        "data/skill/combo.glb"
+    };
+
+    queue_skill_vfx_scene(
+        commands,
+        sword_force_path,
+        strike_origin,
+        0.85,
+        0.30,
+        strike_delay,
+        None,
+    );
+
+    if vfx_asset_exists("data/skill/wave_force.glb") {
+        queue_skill_vfx_scene(
+            commands,
+            "data/skill/wave_force.glb",
+            strike_origin + forward * 55.0 + Vec3::new(0.0, 2.0, 0.0),
+            0.72,
+            0.24,
+            trail_delay,
+            None,
+        );
+    }
+}
+
 fn spawn_skill_vfx_scene(
     commands: &mut Commands,
     asset_server: &AssetServer,
@@ -2940,6 +3006,55 @@ fn spawn_skill_vfx_scene(
     if let Some((target, offset)) = follow {
         entity.insert(SkillVfxFollow { target, offset });
     }
+}
+
+fn queue_skill_vfx_scene(
+    commands: &mut Commands,
+    glb_path: &'static str,
+    position: Vec3,
+    uniform_scale: f32,
+    ttl_seconds: f32,
+    delay_seconds: f32,
+    follow: Option<(Entity, Vec3)>,
+) {
+    commands.spawn(PendingSkillVfxSpawn {
+        timer: Timer::from_seconds(delay_seconds.max(0.0), TimerMode::Once),
+        glb_path,
+        position,
+        uniform_scale,
+        ttl_seconds,
+        follow,
+    });
+}
+
+fn update_pending_skill_vfx(
+    mut commands: Commands,
+    time: Res<Time>,
+    asset_server: Res<AssetServer>,
+    mut pending_spawns: Query<(Entity, &mut PendingSkillVfxSpawn)>,
+) {
+    for (entity, mut pending) in &mut pending_spawns {
+        pending.timer.tick(time.delta());
+        if !pending.timer.is_finished() {
+            continue;
+        }
+
+        spawn_skill_vfx_scene(
+            &mut commands,
+            &asset_server,
+            pending.glb_path,
+            pending.position,
+            pending.uniform_scale,
+            pending.ttl_seconds,
+            pending.follow,
+        );
+        commands.entity(entity).despawn();
+    }
+}
+
+fn vfx_asset_exists(path: &str) -> bool {
+    let full = format!("{}/{}", asset_root_path(), path);
+    std::path::Path::new(&full).exists()
 }
 
 fn update_skill_vfx(

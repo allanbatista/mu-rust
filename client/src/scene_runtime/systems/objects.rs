@@ -15,6 +15,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 const DEFAULT_SCENE_OBJECT_ANIMATION_SPEED: f32 = 0.16;
@@ -23,6 +24,22 @@ const DEFAULT_MU_SCENE_OBJECT_YAW_OFFSET_DEGREES: f32 = 0.0;
 const SCENE_OBJECT_YAW_OFFSET_ENV: &str = "MU_SCENE_OBJECT_YAW_OFFSET_DEGREES";
 const DEFAULT_SCENE_OBJECT_CULL_DISTANCE: f32 = 25000.0;
 const SCENE_OBJECT_CULL_DISTANCE_ENV: &str = "MU_SCENE_OBJECT_CULL_DISTANCE";
+const SCENE_OBJECTS_UNLIT_ENV: &str = "MU_SCENE_OBJECTS_UNLIT";
+
+fn scene_objects_unlit() -> bool {
+    static UNLIT: OnceLock<bool> = OnceLock::new();
+    *UNLIT.get_or_init(|| {
+        std::env::var(SCENE_OBJECTS_UNLIT_ENV)
+            .ok()
+            .map(|v| {
+                !matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "false" | "0" | "off" | "no"
+                )
+            })
+            .unwrap_or(true) // default: unlit
+    })
+}
 
 /// Marker component to track if scene objects have been spawned### Iniciativa 1 — Dashboard Gerencial v2.1 (Refactoring, Migration, and Expansion)
 //
@@ -801,14 +818,18 @@ pub fn apply_legacy_gltf_material_overrides(
     }
 }
 
-/// Fix backface culling for scene objects loaded from GLB files.
+/// Fix materials for scene objects loaded from GLB files.
 ///
 /// MU BMD models are converted to GLB with single-sided geometry. When the camera
 /// views a wall from the "back" side, standard backface culling discards those
 /// triangles, making the wall invisible. This system sets `double_sided: true` on
 /// all StandardMaterials that belong to scene object entities (descendants of
 /// entities with the `SceneObject` component).
-pub fn fix_scene_object_backface_culling(
+///
+/// Additionally, when `MU_SCENE_OBJECTS_UNLIT` is enabled (default: true), sets
+/// `unlit: true` so textures display at full brightness — matching the original
+/// MU Online rendering where objects were not affected by PBR lighting.
+pub fn fix_scene_object_materials(
     mut materials: ResMut<Assets<StandardMaterial>>,
     new_material_query: Query<
         (Entity, &MeshMaterial3d<StandardMaterial>),
@@ -817,6 +838,8 @@ pub fn fix_scene_object_backface_culling(
     parent_query: Query<&ChildOf>,
     scene_object_query: Query<(), With<SceneObject>>,
 ) {
+    let unlit = scene_objects_unlit();
+
     for (entity, mat_handle) in &new_material_query {
         // Walk up the parent chain to check if this entity is a descendant of a SceneObject
         let mut current = entity;
@@ -843,6 +866,9 @@ pub fn fix_scene_object_backface_culling(
         if !material.double_sided {
             material.double_sided = true;
             material.cull_mode = None;
+        }
+        if unlit && !material.unlit {
+            material.unlit = true;
         }
     }
 }

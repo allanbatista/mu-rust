@@ -43,7 +43,7 @@ const DK_SKILLS: &[SkillEntry] = &[
         PlayerAction::AttackSkillSword2,
         0.25,
         SkillType::Target,
-        SkillVfxProfile::SlashTrail,
+        SkillVfxProfile::Lunge,
     ),
     skill(
         21,
@@ -596,7 +596,7 @@ const MG_SKILLS: &[SkillEntry] = &[
         PlayerAction::AttackSkillSword2,
         0.24,
         SkillType::Target,
-        SkillVfxProfile::SlashTrail,
+        SkillVfxProfile::Lunge,
     ),
     skill(
         21,
