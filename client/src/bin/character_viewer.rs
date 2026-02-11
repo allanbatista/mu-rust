@@ -4497,6 +4497,7 @@ fn spawn_skill_vfx_scene(
         SceneBundle {
             scene: SceneRoot(scene_handle),
             transform: Transform::from_translation(position).with_scale(Vec3::splat(uniform_scale)),
+            visibility: Visibility::Hidden,
             ..default()
         },
         SkillVfx,
@@ -4873,7 +4874,8 @@ fn apply_skill_vfx_materials(
 
         commands
             .entity(root_entity)
-            .insert(SkillVfxMaterialsApplied);
+            .insert(SkillVfxMaterialsApplied)
+            .insert(Visibility::Inherited);
     }
 }
 
