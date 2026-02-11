@@ -1272,6 +1272,9 @@ struct SkillVfxAnimationSource {
 struct SkillVfxAnimationInitialized;
 
 #[derive(Component)]
+struct SkillVfxMaterialsApplied;
+
+#[derive(Component)]
 struct SkillVfxFollow {
     target: Entity,
     offset: Vec3,
@@ -1511,6 +1514,12 @@ fn main() {
         .add_systems(
             Update,
             ensure_skill_vfx_animation_players.after(update_pending_skill_vfx),
+        )
+        .add_systems(
+            Update,
+            apply_skill_vfx_materials
+                .after(update_skill_vfx)
+                .after(update_pending_skill_vfx),
         )
         .add_systems(
             PostUpdate,
@@ -4806,6 +4815,66 @@ fn subtree_contains_mesh(
     }
 
     false
+}
+
+fn apply_skill_vfx_materials(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    vfx_roots: Query<
+        Entity,
+        (
+            With<SkillVfx>,
+            With<SkillVfxLifetime>,
+            Without<SkillVfxMaterialsApplied>,
+        ),
+    >,
+    lifetimes: Query<&SkillVfxLifetime>,
+    children_query: Query<&Children>,
+    material_query: Query<(Entity, &MeshMaterial3d<StandardMaterial>)>,
+) {
+    for root_entity in &vfx_roots {
+        let Ok(lifetime) = lifetimes.get(root_entity) else {
+            continue;
+        };
+        if !lifetime.ready {
+            continue;
+        }
+
+        // Walk entire subtree to find mesh entities with materials
+        let mut queue = vec![root_entity];
+        while let Some(entity) = queue.pop() {
+            if let Ok((mesh_entity, mat_handle)) = material_query.get(entity) {
+                if let Some(original) = materials.get(&mat_handle.0).cloned() {
+                    let mut overridden = original;
+                    overridden.alpha_mode = AlphaMode::Add;
+                    overridden.unlit = true;
+                    overridden.double_sided = true;
+                    overridden.cull_mode = None;
+                    overridden.emissive = LinearRgba::WHITE;
+                    if overridden.emissive_texture.is_none() {
+                        overridden.emissive_texture = overridden.base_color_texture.clone();
+                    }
+                    overridden.perceptual_roughness = 1.0;
+                    overridden.metallic = 0.0;
+                    overridden.reflectance = 0.0;
+
+                    let new_handle = materials.add(overridden);
+                    commands
+                        .entity(mesh_entity)
+                        .insert(MeshMaterial3d(new_handle))
+                        .insert(NotShadowCaster)
+                        .insert(NotShadowReceiver);
+                }
+            }
+            if let Ok(children) = children_query.get(entity) {
+                queue.extend(children.iter());
+            }
+        }
+
+        commands
+            .entity(root_entity)
+            .insert(SkillVfxMaterialsApplied);
+    }
 }
 
 // ============================================================================
