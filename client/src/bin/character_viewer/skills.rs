@@ -107,7 +107,7 @@ const DK_SKILLS: &[SkillEntry] = &[
         PlayerAction::SkillVitality,
         0.20,
         SkillType::SelfCast,
-        SkillVfxProfile::DefensiveAura,
+        SkillVfxProfile::GreaterFortitude,
     ),
     skill(
         49,

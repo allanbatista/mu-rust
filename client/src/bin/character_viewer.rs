@@ -1005,6 +1005,7 @@ enum SkillVfxProfile {
     Impale,
     FireBreath,
     Combo,
+    GreaterFortitude,
     MagicProjectile,
     MagicArea,
     Teleport,
@@ -2746,16 +2747,24 @@ fn trigger_selected_skill(
         return_action,
         remaining_seconds: skill_duration,
     });
-    // Resolve weapon bones eagerly for Lunge trail
-    let weapon_bones = if skill.vfx == SkillVfxProfile::Lunge {
-        viewer.active_weapon_blur = None;
+    // Resolve weapon bones eagerly for all melee trail profiles
+    let weapon_bones = if matches!(
+        skill.vfx,
+        SkillVfxProfile::Lunge
+            | SkillVfxProfile::SlashTrail
+            | SkillVfxProfile::TwistingSlash
+            | SkillVfxProfile::RagefulBlow
+            | SkillVfxProfile::DeathStab
+            | SkillVfxProfile::Impale
+            | SkillVfxProfile::Combo
+    ) {
         find_character_skeleton(character_entity, &skeleton_query).and_then(|skel| {
             resolve_weapon_blur_bones(skel, &children_query_bones, &name_query_bones)
         })
     } else {
-        viewer.active_weapon_blur = None;
         None
     };
+    viewer.active_weapon_blur = None;
 
     spawn_skill_vfx_for_entry(
         &mut commands,
@@ -2823,6 +2832,7 @@ fn spawn_skill_vfx_for_entry(
 ) {
     match skill.vfx {
         SkillVfxProfile::DefensiveAura => {
+            spawn_defense_vfx(commands, caster_entity, caster_pos, skill_duration);
             spawn_skill_vfx_scene(
                 commands,
                 asset_server,
@@ -2832,8 +2842,27 @@ fn spawn_skill_vfx_for_entry(
                 2.2,
                 Some((caster_entity, Vec3::new(0.0, 60.0, 0.0))),
             );
+            if vfx_asset_exists("data/skill/protect_02.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/protect_02.glb",
+                    caster_pos + Vec3::new(0.0, 5.0, 0.0),
+                    1.0,
+                    2.0,
+                    Some((caster_entity, Vec3::new(0.0, 5.0, 0.0))),
+                );
+            }
         }
         SkillVfxProfile::SlashTrail => {
+            spawn_slash_trail_vfx(
+                commands,
+                caster_entity,
+                caster_pos,
+                caster_rotation,
+                skill_duration,
+                weapon_bones,
+            );
             spawn_skill_vfx_scene(
                 commands,
                 asset_server,
@@ -2855,6 +2884,14 @@ fn spawn_skill_vfx_for_entry(
             );
         }
         SkillVfxProfile::TwistingSlash => {
+            spawn_twisting_slash_vfx(
+                commands,
+                caster_entity,
+                caster_pos,
+                caster_rotation,
+                skill_duration,
+                weapon_bones,
+            );
             spawn_skill_vfx_scene(
                 commands,
                 asset_server,
@@ -2864,8 +2901,28 @@ fn spawn_skill_vfx_for_entry(
                 1.4,
                 Some((caster_entity, Vec3::new(0.0, 35.0, 0.0))),
             );
+            if vfx_asset_exists("data/skill/wave_force.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/wave_force.glb",
+                    caster_pos + Vec3::new(0.0, 5.0, 0.0),
+                    1.0,
+                    1.2,
+                    Some((caster_entity, Vec3::new(0.0, 5.0, 0.0))),
+                );
+            }
         }
         SkillVfxProfile::RagefulBlow => {
+            spawn_rageful_blow_vfx(
+                commands,
+                caster_entity,
+                caster_pos,
+                caster_rotation,
+                target_pos,
+                skill_duration,
+                weapon_bones,
+            );
             spawn_skill_vfx_scene(
                 commands,
                 asset_server,
@@ -2875,8 +2932,28 @@ fn spawn_skill_vfx_for_entry(
                 1.0,
                 None,
             );
+            if vfx_asset_exists("data/skill/earth_quake_01.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/earth_quake_01.glb",
+                    target_pos + Vec3::new(0.0, 3.0, 0.0),
+                    1.1,
+                    0.9,
+                    None,
+                );
+            }
         }
         SkillVfxProfile::DeathStab => {
+            spawn_death_stab_vfx(
+                commands,
+                caster_entity,
+                caster_pos,
+                caster_rotation,
+                target_pos,
+                skill_duration,
+                weapon_bones,
+            );
             spawn_skill_vfx_scene(
                 commands,
                 asset_server,
@@ -2888,6 +2965,15 @@ fn spawn_skill_vfx_for_entry(
             );
         }
         SkillVfxProfile::Impale => {
+            spawn_impale_vfx(
+                commands,
+                caster_entity,
+                caster_pos,
+                caster_rotation,
+                target_pos,
+                skill_duration,
+                weapon_bones,
+            );
             spawn_skill_vfx_scene(
                 commands,
                 asset_server,
@@ -2899,6 +2985,13 @@ fn spawn_skill_vfx_for_entry(
             );
         }
         SkillVfxProfile::FireBreath => {
+            spawn_fire_breath_vfx(
+                commands,
+                caster_entity,
+                caster_pos,
+                target_pos,
+                skill_duration,
+            );
             spawn_skill_vfx_scene(
                 commands,
                 asset_server,
@@ -2919,6 +3012,15 @@ fn spawn_skill_vfx_for_entry(
             );
         }
         SkillVfxProfile::Combo => {
+            spawn_combo_vfx(
+                commands,
+                caster_entity,
+                caster_pos,
+                caster_rotation,
+                target_pos,
+                skill_duration,
+                weapon_bones,
+            );
             spawn_skill_vfx_scene(
                 commands,
                 asset_server,
@@ -2936,6 +3038,30 @@ fn spawn_skill_vfx_for_entry(
                 1.1,
                 0.8,
                 None,
+            );
+            if vfx_asset_exists("data/skill/sword_force.glb") {
+                let strike_t = (skill_duration * 0.55).clamp(0.10, 0.65);
+                queue_skill_vfx_scene(
+                    commands,
+                    "data/skill/sword_force.glb",
+                    caster_pos + Vec3::new(0.0, 35.0, 0.0),
+                    1.0,
+                    0.6,
+                    (strike_t - 0.1).max(0.0),
+                    Some((caster_entity, Vec3::new(0.0, 35.0, 0.0))),
+                );
+            }
+        }
+        SkillVfxProfile::GreaterFortitude => {
+            spawn_greater_fortitude_vfx(commands, caster_entity, caster_pos, skill_duration);
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/protect_01.glb",
+                caster_pos + Vec3::new(0.0, 60.0, 0.0),
+                1.0,
+                2.2,
+                Some((caster_entity, Vec3::new(0.0, 60.0, 0.0))),
             );
         }
         SkillVfxProfile::MagicProjectile => {
@@ -3282,6 +3408,1071 @@ fn spawn_lunge_vfx(
     }
 }
 
+// ============================================================================
+// SLASH TRAIL VFX (Falling Slash 19, Uppercut 21, Cyclone 22, Slash 23)
+// ============================================================================
+fn spawn_slash_trail_vfx(
+    commands: &mut Commands,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    caster_rotation: Quat,
+    skill_duration: f32,
+    weapon_bones: Option<WeaponBlurBones>,
+) {
+    let mut forward = caster_rotation.mul_vec3(Vec3::NEG_Z);
+    forward.y = 0.0;
+    if forward.length_squared() <= f32::EPSILON {
+        forward = Vec3::NEG_Z;
+    } else {
+        forward = forward.normalize();
+    }
+
+    let strike_time = (skill_duration * 0.32).clamp(0.06, 0.48);
+    let impact_offset = forward * 45.0 + Vec3::new(0.0, 18.0, 0.0);
+
+    // 1) Weapon Trail — white-blue cold steel
+    if let Some(bones) = weapon_bones {
+        commands.spawn((
+            SkillVfx,
+            WeaponTrail {
+                config: WeaponTrailConfig {
+                    hand_bone: bones.hand,
+                    tip_bone: bones.tip,
+                    max_samples: WEAPON_BLUR_MAX_SAMPLES,
+                    sample_lifetime: 0.16,
+                    min_sample_distance_sq: 36.0,
+                    max_sample_interval: 0.035,
+                    near_offset: WEAPON_BLUR_NEAR_OFFSET,
+                    far_offset: WEAPON_BLUR_FAR_OFFSET,
+                    color_new: [0.9, 0.95, 1.0, 0.9],
+                    color_old: [0.6, 0.7, 1.0, 0.0],
+                    texture_path: "data/effect/sword_blur.png".into(),
+                    additive: true,
+                },
+                samples: VecDeque::new(),
+                time_since_last_sample: 0.0,
+                mesh_entity: None,
+                mesh_handle: None,
+                active_duration: skill_duration,
+                elapsed: 0.0,
+            },
+            Transform::from_translation(caster_pos),
+        ));
+    }
+
+    // 2) Swing light — steel-blue
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration,
+            peak_time: strike_time,
+            peak_intensity: 6500.0,
+            base_intensity: 1200.0,
+            color: Color::srgb(0.8, 0.9, 1.0),
+            range: 190.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 190.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 60.0,
+        },
+    ));
+
+    // 3) Impact sparks — white→blue
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 10,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.08, 0.22),
+                initial_velocity: Vec3::new(0.0, 75.0, 0.0),
+                velocity_variance: Vec3::new(55.0, 35.0, 55.0),
+                scale_range: (3.0, 7.0),
+                scale_variance: 2.0,
+                color_start: Vec4::new(0.95, 0.97, 1.0, 1.0),
+                color_end: Vec4::new(0.6, 0.7, 1.0, 0.0),
+                texture_path: "data/effect/spark_01.png".into(),
+                additive: true,
+                rotation_speed: 3.5,
+            },
+            lifetime_after_burst: 0.45,
+        },
+        Transform::from_translation(caster_pos + impact_offset),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: impact_offset,
+        },
+    ));
+
+    // 4) Impact light flash — white-blue
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: 0.25,
+            peak_time: strike_time,
+            peak_intensity: 12000.0,
+            base_intensity: 0.0,
+            color: Color::srgb(0.85, 0.92, 1.0),
+            range: 150.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 150.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + impact_offset),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: impact_offset,
+        },
+    ));
+
+    // 5) Delayed flash GLB
+    if vfx_asset_exists("data/skill/flashing.glb") {
+        queue_skill_vfx_scene(
+            commands,
+            "data/skill/flashing.glb",
+            caster_pos + impact_offset,
+            0.38,
+            0.12,
+            strike_time,
+            Some((caster_entity, impact_offset)),
+        );
+    }
+}
+
+// ============================================================================
+// TWISTING SLASH VFX (skill 41) — AoE spin, cyan wind energy
+// ============================================================================
+fn spawn_twisting_slash_vfx(
+    commands: &mut Commands,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    caster_rotation: Quat,
+    skill_duration: f32,
+    weapon_bones: Option<WeaponBlurBones>,
+) {
+    let _ = caster_rotation; // AoE spin — no directional offset needed
+
+    let strike_time = (skill_duration * 0.45).clamp(0.08, 0.55);
+
+    // 1) Weapon Trail — cyan wind
+    if let Some(bones) = weapon_bones {
+        commands.spawn((
+            SkillVfx,
+            WeaponTrail {
+                config: WeaponTrailConfig {
+                    hand_bone: bones.hand,
+                    tip_bone: bones.tip,
+                    max_samples: WEAPON_BLUR_MAX_SAMPLES,
+                    sample_lifetime: 0.25,
+                    min_sample_distance_sq: 20.0,
+                    max_sample_interval: 0.035,
+                    near_offset: WEAPON_BLUR_NEAR_OFFSET,
+                    far_offset: 130.0,
+                    color_new: [0.5, 0.9, 1.0, 1.0],
+                    color_old: [0.2, 0.4, 0.8, 0.0],
+                    texture_path: "data/effect/sword_blur.png".into(),
+                    additive: true,
+                },
+                samples: VecDeque::new(),
+                time_since_last_sample: 0.0,
+                mesh_entity: None,
+                mesh_handle: None,
+                active_duration: skill_duration,
+                elapsed: 0.0,
+            },
+            Transform::from_translation(caster_pos),
+        ));
+    }
+
+    // 2) Swing light — cyan-blue, wider range for AoE
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration,
+            peak_time: strike_time,
+            peak_intensity: 9000.0,
+            base_intensity: 2500.0,
+            color: Color::srgb(0.45, 0.75, 1.0),
+            range: 260.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 260.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 60.0,
+        },
+    ));
+
+    // 3) Impact burst — 18 particles, wide horizontal spread, cyan→blue
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 18,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.10, 0.28),
+                initial_velocity: Vec3::new(0.0, 65.0, 0.0),
+                velocity_variance: Vec3::new(85.0, 25.0, 85.0),
+                scale_range: (3.0, 8.0),
+                scale_variance: 2.5,
+                color_start: Vec4::new(0.5, 0.9, 1.0, 1.0),
+                color_end: Vec4::new(0.2, 0.4, 0.8, 0.0),
+                texture_path: "data/effect/spark_02.png".into(),
+                additive: true,
+                rotation_speed: 5.0,
+            },
+            lifetime_after_burst: 0.55,
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 20.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 20.0,
+        },
+    ));
+}
+
+// ============================================================================
+// RAGEFUL BLOW VFX (skill 42) — heavy multi-hit, fiery orange
+// ============================================================================
+fn spawn_rageful_blow_vfx(
+    commands: &mut Commands,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    _caster_rotation: Quat,
+    target_pos: Vec3,
+    skill_duration: f32,
+    weapon_bones: Option<WeaponBlurBones>,
+) {
+    let strike_time = (skill_duration * 0.28).clamp(0.06, 0.42);
+
+    // 1) Weapon Trail — hot orange→red
+    if let Some(bones) = weapon_bones {
+        commands.spawn((
+            SkillVfx,
+            WeaponTrail {
+                config: WeaponTrailConfig {
+                    hand_bone: bones.hand,
+                    tip_bone: bones.tip,
+                    max_samples: WEAPON_BLUR_MAX_SAMPLES,
+                    sample_lifetime: 0.20,
+                    min_sample_distance_sq: 36.0,
+                    max_sample_interval: 0.035,
+                    near_offset: WEAPON_BLUR_NEAR_OFFSET,
+                    far_offset: WEAPON_BLUR_FAR_OFFSET,
+                    color_new: [1.0, 0.55, 0.15, 1.0],
+                    color_old: [1.0, 0.2, 0.0, 0.0],
+                    texture_path: "data/effect/sword_blur.png".into(),
+                    additive: true,
+                },
+                samples: VecDeque::new(),
+                time_since_last_sample: 0.0,
+                mesh_entity: None,
+                mesh_handle: None,
+                active_duration: skill_duration,
+                elapsed: 0.0,
+            },
+            Transform::from_translation(caster_pos),
+        ));
+    }
+
+    // 2) Swing light — fiery orange
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration,
+            peak_time: strike_time,
+            peak_intensity: 10000.0,
+            base_intensity: 2000.0,
+            color: Color::srgb(1.0, 0.5, 0.15),
+            range: 240.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 240.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 60.0,
+        },
+    ));
+
+    // 3) Impact burst 1 (at strike_time) — 16 orange→red sparks
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 16,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.10, 0.30),
+                initial_velocity: Vec3::new(0.0, 90.0, 0.0),
+                velocity_variance: Vec3::new(70.0, 45.0, 70.0),
+                scale_range: (4.0, 10.0),
+                scale_variance: 3.0,
+                color_start: Vec4::new(1.0, 0.6, 0.2, 1.0),
+                color_end: Vec4::new(1.0, 0.15, 0.0, 0.0),
+                texture_path: "data/effect/spark_03.png".into(),
+                additive: true,
+                rotation_speed: 4.5,
+            },
+            lifetime_after_burst: 0.55,
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 15.0),
+    ));
+
+    // 4) Impact burst 2 (slightly delayed) — 12 smaller orange sparks
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time + skill_duration * 0.15,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 12,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.08, 0.25),
+                initial_velocity: Vec3::new(0.0, 70.0, 0.0),
+                velocity_variance: Vec3::new(60.0, 35.0, 60.0),
+                scale_range: (3.0, 7.0),
+                scale_variance: 2.0,
+                color_start: Vec4::new(1.0, 0.5, 0.15, 1.0),
+                color_end: Vec4::new(0.8, 0.1, 0.0, 0.0),
+                texture_path: "data/effect/spark_01.png".into(),
+                additive: true,
+                rotation_speed: 4.0,
+            },
+            lifetime_after_burst: 0.45,
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 20.0),
+    ));
+
+    // 5) Impact flash — bright orange
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: 0.35,
+            peak_time: strike_time,
+            peak_intensity: 18000.0,
+            base_intensity: 0.0,
+            color: Color::srgb(1.0, 0.5, 0.15),
+            range: 180.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 180.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 15.0),
+    ));
+
+    // 6) Delayed flash GLB at target
+    if vfx_asset_exists("data/skill/flashing.glb") {
+        queue_skill_vfx_scene(
+            commands,
+            "data/skill/flashing.glb",
+            target_pos + Vec3::Y * 15.0,
+            0.45,
+            0.15,
+            strike_time,
+            None,
+        );
+    }
+}
+
+// ============================================================================
+// DEATH STAB VFX (skill 43) — precise thrust, purple/violet
+// ============================================================================
+fn spawn_death_stab_vfx(
+    commands: &mut Commands,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    _caster_rotation: Quat,
+    target_pos: Vec3,
+    skill_duration: f32,
+    weapon_bones: Option<WeaponBlurBones>,
+) {
+    let strike_time = (skill_duration * 0.30).clamp(0.06, 0.45);
+
+    // 1) Weapon Trail — purple-violet
+    if let Some(bones) = weapon_bones {
+        commands.spawn((
+            SkillVfx,
+            WeaponTrail {
+                config: WeaponTrailConfig {
+                    hand_bone: bones.hand,
+                    tip_bone: bones.tip,
+                    max_samples: WEAPON_BLUR_MAX_SAMPLES,
+                    sample_lifetime: 0.14,
+                    min_sample_distance_sq: 36.0,
+                    max_sample_interval: 0.035,
+                    near_offset: 25.0,
+                    far_offset: 130.0,
+                    color_new: [0.85, 0.4, 1.0, 0.95],
+                    color_old: [0.5, 0.1, 0.7, 0.0],
+                    texture_path: "data/effect/sword_blur.png".into(),
+                    additive: true,
+                },
+                samples: VecDeque::new(),
+                time_since_last_sample: 0.0,
+                mesh_entity: None,
+                mesh_handle: None,
+                active_duration: skill_duration,
+                elapsed: 0.0,
+            },
+            Transform::from_translation(caster_pos),
+        ));
+    }
+
+    // 2) Swing light — violet
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration,
+            peak_time: strike_time,
+            peak_intensity: 8000.0,
+            base_intensity: 1500.0,
+            color: Color::srgb(0.7, 0.3, 1.0),
+            range: 200.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 200.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 60.0,
+        },
+    ));
+
+    // 3) Impact sparks — purple→dark purple
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 14,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.08, 0.24),
+                initial_velocity: Vec3::new(0.0, 80.0, 0.0),
+                velocity_variance: Vec3::new(55.0, 40.0, 55.0),
+                scale_range: (3.0, 8.0),
+                scale_variance: 2.0,
+                color_start: Vec4::new(0.85, 0.4, 1.0, 1.0),
+                color_end: Vec4::new(0.5, 0.1, 0.7, 0.0),
+                texture_path: "data/effect/spark_01.png".into(),
+                additive: true,
+                rotation_speed: 4.0,
+            },
+            lifetime_after_burst: 0.5,
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 15.0),
+    ));
+
+    // 4) Impact flash — violet
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: 0.28,
+            peak_time: strike_time,
+            peak_intensity: 14000.0,
+            base_intensity: 0.0,
+            color: Color::srgb(0.7, 0.3, 1.0),
+            range: 150.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 150.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 15.0),
+    ));
+
+    // 5) Delayed flash GLB
+    if vfx_asset_exists("data/skill/flashing.glb") {
+        queue_skill_vfx_scene(
+            commands,
+            "data/skill/flashing.glb",
+            target_pos + Vec3::Y * 15.0,
+            0.38,
+            0.12,
+            strike_time,
+            None,
+        );
+    }
+}
+
+// ============================================================================
+// IMPALE VFX (skill 47) — spear pierce, silver/white
+// ============================================================================
+fn spawn_impale_vfx(
+    commands: &mut Commands,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    _caster_rotation: Quat,
+    target_pos: Vec3,
+    skill_duration: f32,
+    weapon_bones: Option<WeaponBlurBones>,
+) {
+    let strike_time = (skill_duration * 0.28).clamp(0.06, 0.42);
+
+    // 1) Weapon Trail — silver-white, extended far_offset for spear reach
+    if let Some(bones) = weapon_bones {
+        commands.spawn((
+            SkillVfx,
+            WeaponTrail {
+                config: WeaponTrailConfig {
+                    hand_bone: bones.hand,
+                    tip_bone: bones.tip,
+                    max_samples: WEAPON_BLUR_MAX_SAMPLES,
+                    sample_lifetime: 0.15,
+                    min_sample_distance_sq: 36.0,
+                    max_sample_interval: 0.035,
+                    near_offset: 30.0,
+                    far_offset: 160.0,
+                    color_new: [0.9, 0.95, 1.0, 0.90],
+                    color_old: [0.5, 0.6, 0.8, 0.0],
+                    texture_path: "data/effect/sword_blur.png".into(),
+                    additive: true,
+                },
+                samples: VecDeque::new(),
+                time_since_last_sample: 0.0,
+                mesh_entity: None,
+                mesh_handle: None,
+                active_duration: skill_duration,
+                elapsed: 0.0,
+            },
+            Transform::from_translation(caster_pos),
+        ));
+    }
+
+    // 2) Swing light — silver
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration,
+            peak_time: strike_time,
+            peak_intensity: 7500.0,
+            base_intensity: 1200.0,
+            color: Color::srgb(0.85, 0.9, 1.0),
+            range: 200.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 200.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 60.0,
+        },
+    ));
+
+    // 3) Impact sparks — tighter spread, white→grey
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 10,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.08, 0.22),
+                initial_velocity: Vec3::new(0.0, 75.0, 0.0),
+                velocity_variance: Vec3::new(35.0, 40.0, 35.0),
+                scale_range: (2.5, 7.0),
+                scale_variance: 2.0,
+                color_start: Vec4::new(0.95, 0.97, 1.0, 1.0),
+                color_end: Vec4::new(0.5, 0.55, 0.6, 0.0),
+                texture_path: "data/effect/spark_01.png".into(),
+                additive: true,
+                rotation_speed: 3.5,
+            },
+            lifetime_after_burst: 0.45,
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 12.0),
+    ));
+
+    // 4) Impact flash — silver-white
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: 0.24,
+            peak_time: strike_time,
+            peak_intensity: 13000.0,
+            base_intensity: 0.0,
+            color: Color::srgb(0.85, 0.9, 1.0),
+            range: 150.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 150.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 12.0),
+    ));
+
+    // 5) Delayed flash GLB
+    if vfx_asset_exists("data/skill/flashing.glb") {
+        queue_skill_vfx_scene(
+            commands,
+            "data/skill/flashing.glb",
+            target_pos + Vec3::Y * 12.0,
+            0.38,
+            0.12,
+            strike_time,
+            None,
+        );
+    }
+}
+
+// ============================================================================
+// COMBO VFX (skill 59) — multi-hit finisher, golden
+// ============================================================================
+fn spawn_combo_vfx(
+    commands: &mut Commands,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    _caster_rotation: Quat,
+    target_pos: Vec3,
+    skill_duration: f32,
+    weapon_bones: Option<WeaponBlurBones>,
+) {
+    let strike_time = (skill_duration * 0.55).clamp(0.10, 0.65);
+
+    // 1) Weapon Trail — golden
+    if let Some(bones) = weapon_bones {
+        commands.spawn((
+            SkillVfx,
+            WeaponTrail {
+                config: WeaponTrailConfig {
+                    hand_bone: bones.hand,
+                    tip_bone: bones.tip,
+                    max_samples: WEAPON_BLUR_MAX_SAMPLES,
+                    sample_lifetime: 0.20,
+                    min_sample_distance_sq: 36.0,
+                    max_sample_interval: 0.035,
+                    near_offset: WEAPON_BLUR_NEAR_OFFSET,
+                    far_offset: WEAPON_BLUR_FAR_OFFSET,
+                    color_new: [1.0, 0.8, 0.3, 1.0],
+                    color_old: [1.0, 0.4, 0.1, 0.0],
+                    texture_path: "data/effect/sword_blur.png".into(),
+                    additive: true,
+                },
+                samples: VecDeque::new(),
+                time_since_last_sample: 0.0,
+                mesh_entity: None,
+                mesh_handle: None,
+                active_duration: skill_duration,
+                elapsed: 0.0,
+            },
+            Transform::from_translation(caster_pos),
+        ));
+    }
+
+    // 2) Swing light — golden, widest range
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration,
+            peak_time: strike_time,
+            peak_intensity: 12000.0,
+            base_intensity: 2500.0,
+            color: Color::srgb(1.0, 0.75, 0.3),
+            range: 250.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 250.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 60.0,
+        },
+    ));
+
+    // 3) Mid-combo burst (at 35% of duration) — 8 gold sparks, smaller
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: skill_duration * 0.35,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 8,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.08, 0.22),
+                initial_velocity: Vec3::new(0.0, 70.0, 0.0),
+                velocity_variance: Vec3::new(50.0, 35.0, 50.0),
+                scale_range: (3.0, 7.0),
+                scale_variance: 2.0,
+                color_start: Vec4::new(1.0, 0.85, 0.4, 1.0),
+                color_end: Vec4::new(1.0, 0.5, 0.1, 0.0),
+                texture_path: "data/effect/spark_01.png".into(),
+                additive: true,
+                rotation_speed: 4.0,
+            },
+            lifetime_after_burst: 0.4,
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 18.0),
+    ));
+
+    // 4) Finisher burst (at strike_time) — 20 big golden→deep-orange sparks
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 20,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.10, 0.30),
+                initial_velocity: Vec3::new(0.0, 95.0, 0.0),
+                velocity_variance: Vec3::new(75.0, 50.0, 75.0),
+                scale_range: (4.0, 11.0),
+                scale_variance: 3.0,
+                color_start: Vec4::new(1.0, 0.8, 0.3, 1.0),
+                color_end: Vec4::new(1.0, 0.3, 0.0, 0.0),
+                texture_path: "data/effect/spark_03.png".into(),
+                additive: true,
+                rotation_speed: 5.0,
+            },
+            lifetime_after_burst: 0.6,
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 15.0),
+    ));
+
+    // 5) Impact flash — golden, brightest DK skill
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: 0.35,
+            peak_time: strike_time,
+            peak_intensity: 20000.0,
+            base_intensity: 0.0,
+            color: Color::srgb(1.0, 0.75, 0.3),
+            range: 200.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 200.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 15.0),
+    ));
+
+    // 6) Delayed flash GLB at target
+    if vfx_asset_exists("data/skill/flashing.glb") {
+        queue_skill_vfx_scene(
+            commands,
+            "data/skill/flashing.glb",
+            target_pos + Vec3::Y * 15.0,
+            0.45,
+            0.15,
+            strike_time,
+            None,
+        );
+    }
+}
+
+// ============================================================================
+// DEFENSE VFX (skill 18) — shield buff, blue aura glow
+// ============================================================================
+fn spawn_defense_vfx(
+    commands: &mut Commands,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    skill_duration: f32,
+) {
+    let peak_time = skill_duration * 0.35;
+
+    // 1) Aura light — shield-blue, sustained glow
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration * 1.2,
+            peak_time,
+            peak_intensity: 5000.0,
+            base_intensity: 1500.0,
+            color: Color::srgb(0.3, 0.6, 1.0),
+            range: 200.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 200.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 60.0,
+        },
+    ));
+
+    // 2) Aura burst — gentle upward blue sparkles
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: skill_duration * 0.25,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 10,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.20, 0.50),
+                initial_velocity: Vec3::new(0.0, 35.0, 0.0),
+                velocity_variance: Vec3::new(20.0, 15.0, 20.0),
+                scale_range: (2.0, 5.0),
+                scale_variance: 1.5,
+                color_start: Vec4::new(0.4, 0.7, 1.0, 0.9),
+                color_end: Vec4::new(0.2, 0.4, 0.8, 0.0),
+                texture_path: "data/effect/shiny_02.png".into(),
+                additive: true,
+                rotation_speed: 2.0,
+            },
+            lifetime_after_burst: 0.8,
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 30.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 30.0,
+        },
+    ));
+}
+
+// ============================================================================
+// GREATER FORTITUDE VFX (skill 48) — HP buff, green healing glow
+// ============================================================================
+fn spawn_greater_fortitude_vfx(
+    commands: &mut Commands,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    skill_duration: f32,
+) {
+    let peak_time = skill_duration * 0.40;
+
+    // 1) Healing light — green glow, sustained
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration * 1.3,
+            peak_time,
+            peak_intensity: 5500.0,
+            base_intensity: 1200.0,
+            color: Color::srgb(0.3, 1.0, 0.4),
+            range: 200.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 200.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 60.0,
+        },
+    ));
+
+    // 2) Healing burst — gentle upward green sparkles
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: skill_duration * 0.30,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 12,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.25, 0.60),
+                initial_velocity: Vec3::new(0.0, 45.0, 0.0),
+                velocity_variance: Vec3::new(22.0, 18.0, 22.0),
+                scale_range: (2.0, 5.5),
+                scale_variance: 1.5,
+                color_start: Vec4::new(0.35, 1.0, 0.45, 0.9),
+                color_end: Vec4::new(0.15, 0.6, 0.2, 0.0),
+                texture_path: "data/effect/shiny_01.png".into(),
+                additive: true,
+                rotation_speed: 2.0,
+            },
+            lifetime_after_burst: 0.9,
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 30.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 30.0,
+        },
+    ));
+}
+
+// ============================================================================
+// FIRE BREATH VFX (skill 49) — fire ranged, orange/red fire + smoke
+// ============================================================================
+fn spawn_fire_breath_vfx(
+    commands: &mut Commands,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    target_pos: Vec3,
+    skill_duration: f32,
+) {
+    let strike_time = (skill_duration * 0.30).clamp(0.06, 0.45);
+
+    // 1) Caster fire glow — fire-orange, peaks early
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: skill_duration,
+            peak_time: skill_duration * 0.20,
+            peak_intensity: 8000.0,
+            base_intensity: 2000.0,
+            color: Color::srgb(1.0, 0.5, 0.1),
+            range: 220.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 220.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(caster_pos + Vec3::Y * 50.0),
+        SkillVfxFollow {
+            target: caster_entity,
+            offset: Vec3::Y * 50.0,
+        },
+    ));
+
+    // 2) Impact fire light at target — deep-fire
+    commands.spawn((
+        SkillVfx,
+        SkillTimedLight {
+            elapsed: 0.0,
+            lifetime: 0.5,
+            peak_time: strike_time,
+            peak_intensity: 16000.0,
+            base_intensity: 0.0,
+            color: Color::srgb(1.0, 0.4, 0.05),
+            range: 180.0,
+        },
+        PointLight {
+            intensity: 0.0,
+            range: 180.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 15.0),
+    ));
+
+    // 3) Fire burst at target — orange→deep-red
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 16,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.10, 0.30),
+                initial_velocity: Vec3::new(0.0, 85.0, 0.0),
+                velocity_variance: Vec3::new(65.0, 40.0, 65.0),
+                scale_range: (3.5, 9.0),
+                scale_variance: 2.5,
+                color_start: Vec4::new(1.0, 0.6, 0.15, 1.0),
+                color_end: Vec4::new(0.8, 0.1, 0.0, 0.0),
+                texture_path: "data/effect/fire_01.png".into(),
+                additive: true,
+                rotation_speed: 3.5,
+            },
+            lifetime_after_burst: 0.55,
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 12.0),
+    ));
+
+    // 4) Smoke burst at target (slightly delayed) — brown smoke
+    commands.spawn((
+        SkillVfx,
+        SkillImpactBurst {
+            delay: strike_time + 0.12,
+            elapsed: 0.0,
+            fired: false,
+            burst_count: 8,
+            emitter_config: SkillBurstEmitterConfig {
+                lifetime_range: (0.15, 0.40),
+                initial_velocity: Vec3::new(0.0, 40.0, 0.0),
+                velocity_variance: Vec3::new(30.0, 20.0, 30.0),
+                scale_range: (4.0, 10.0),
+                scale_variance: 3.0,
+                color_start: Vec4::new(0.4, 0.3, 0.2, 0.7),
+                color_end: Vec4::new(0.25, 0.2, 0.15, 0.0),
+                texture_path: "data/effect/smoke_01.png".into(),
+                additive: false,
+                rotation_speed: 1.5,
+            },
+            lifetime_after_burst: 0.7,
+        },
+        Transform::from_translation(target_pos + Vec3::Y * 8.0),
+    ));
+
+    // 5) Delayed flash GLB at target
+    if vfx_asset_exists("data/skill/flashing.glb") {
+        queue_skill_vfx_scene(
+            commands,
+            "data/skill/flashing.glb",
+            target_pos + Vec3::Y * 12.0,
+            0.40,
+            0.12,
+            strike_time,
+            None,
+        );
+    }
+}
+
 fn spawn_skill_vfx_scene(
     commands: &mut Commands,
     asset_server: &AssetServer,
@@ -3454,14 +4645,67 @@ fn preload_class_skill_vfx_assets(
     asset_server: &AssetServer,
     preload_cache: &mut SkillVfxPreloadCache,
 ) {
+    let has_melee_trail = skills.iter().any(|s| {
+        matches!(
+            s.vfx,
+            SkillVfxProfile::Lunge
+                | SkillVfxProfile::SlashTrail
+                | SkillVfxProfile::TwistingSlash
+                | SkillVfxProfile::RagefulBlow
+                | SkillVfxProfile::DeathStab
+                | SkillVfxProfile::Impale
+                | SkillVfxProfile::Combo
+        )
+    });
+
+    if has_melee_trail {
+        // Shared trail texture
+        let _: Handle<Image> = asset_server.load("data/effect/sword_blur.png");
+        // Spark textures used across melee VFX
+        let _: Handle<Image> = asset_server.load("data/effect/spark_01.png");
+        let _: Handle<Image> = asset_server.load("data/effect/spark_02.png");
+        let _: Handle<Image> = asset_server.load("data/effect/spark_03.png");
+        // Shared delayed flash
+        preload_skill_vfx_asset("data/skill/flashing.glb", asset_server, preload_cache);
+    }
+
+    let has_buff = skills.iter().any(|s| {
+        matches!(
+            s.vfx,
+            SkillVfxProfile::DefensiveAura | SkillVfxProfile::GreaterFortitude
+        )
+    });
+
+    if has_buff {
+        let _: Handle<Image> = asset_server.load("data/effect/shiny_01.png");
+        let _: Handle<Image> = asset_server.load("data/effect/shiny_02.png");
+        preload_skill_vfx_asset("data/skill/protect_02.glb", asset_server, preload_cache);
+    }
+
+    let has_fire = skills
+        .iter()
+        .any(|s| s.vfx == SkillVfxProfile::FireBreath);
+
+    if has_fire {
+        let _: Handle<Image> = asset_server.load("data/effect/fire_01.png");
+        let _: Handle<Image> = asset_server.load("data/effect/smoke_01.png");
+    }
+
+    // Preload additional GLB scenes used by upgraded VFX
     if skills
         .iter()
-        .any(|skill| skill.vfx == SkillVfxProfile::Lunge)
+        .any(|s| s.vfx == SkillVfxProfile::TwistingSlash)
     {
-        preload_skill_vfx_asset("data/skill/flashing.glb", asset_server, preload_cache);
-        // Preload trail and spark textures used by the Lunge VFX
-        let _: Handle<Image> = asset_server.load("data/effect/sword_blur.png");
-        let _: Handle<Image> = asset_server.load("data/effect/spark_01.png");
+        preload_skill_vfx_asset("data/skill/wave_force.glb", asset_server, preload_cache);
+    }
+    if skills
+        .iter()
+        .any(|s| s.vfx == SkillVfxProfile::RagefulBlow)
+    {
+        preload_skill_vfx_asset("data/skill/earth_quake_01.glb", asset_server, preload_cache);
+    }
+    if skills.iter().any(|s| s.vfx == SkillVfxProfile::Combo) {
+        preload_skill_vfx_asset("data/skill/sword_force.glb", asset_server, preload_cache);
     }
 }
 
