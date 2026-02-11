@@ -37,7 +37,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, fields as dataclass_fields
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
 def _png_alpha_profile(png_bytes: bytes) -> Tuple[bool, bool, float, float]:
@@ -227,6 +227,18 @@ WORLD_DIR_PATTERN = re.compile(r"^world(\d+)$", re.IGNORECASE)
 OBJECT_DIR_PATTERN = re.compile(r"^object(\d+)$", re.IGNORECASE)
 OBJECT_MODEL_PATTERN = re.compile(r"^object(\d+)$", re.IGNORECASE)
 NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9]+")
+
+PLAYER_DIR_NAME = "player"
+CANONICAL_PLAYER_BMD_BASENAME = "player.bmd"
+PLAYER_CANONICAL_REQUIRED_BONES: Tuple[str, ...] = (
+    "bip01",
+    "bip01 spine",
+    "bip01 l clavicle",
+    "bip01 l upperarm",
+    "bip01 l forearm",
+    "bip01 l hand",
+)
+PLAYER_CANONICAL_MIN_BONE_MATCH_RATIO = 0.60
 
 # Global cache for fallback PNG lookup maps, keyed by absolute root path.
 _GLOBAL_PNG_INDEX_CACHE: Dict[str, Tuple[Dict[str, Path], Dict[str, Path], Dict[str, Path]]] = {}
@@ -544,6 +556,15 @@ class BmdModel:
     meshs: List[BmdMesh]
     actions: List[BmdAction]
     bones: List[BmdBone]
+
+
+@dataclass(frozen=True)
+class CanonicalSkeleton:
+    source_path: Path
+    model: BmdModel
+    fixups: List[BoneFixup]
+    bone_index_by_key: Dict[str, int]
+    local_bind_pose_by_index: List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]
 
 
 @dataclass(frozen=True)
@@ -1052,6 +1073,148 @@ def _track_values_vary(
             if abs(value[index] - first[index]) > epsilon:
                 return True
     return False
+
+
+def _normalize_bone_name_key(name: str) -> str:
+    """Normalize bone names for robust map lookup across BMD variants."""
+    return " ".join(name.strip().lower().split())
+
+
+def _build_bone_name_index_map(model: BmdModel) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for index, bone in enumerate(model.bones):
+        key = _normalize_bone_name_key(bone.name)
+        if key and key not in out:
+            out[key] = index
+    return out
+
+
+def _is_player_source_path(source_path: Optional[Path]) -> bool:
+    if source_path is None:
+        return False
+    return any(part.lower() == PLAYER_DIR_NAME for part in source_path.parts)
+
+
+def _resolve_default_canonical_player_skeleton_path(bmd_root: Path) -> Optional[Path]:
+    """Resolve default player skeleton path under bmd_root (case-insensitive)."""
+    direct_candidate = bmd_root / PLAYER_DIR_NAME / CANONICAL_PLAYER_BMD_BASENAME
+    if direct_candidate.is_file():
+        return direct_candidate
+
+    # Case-insensitive fallback for datasets with mixed-casing directories/files.
+    for child in bmd_root.iterdir():
+        if not child.is_dir() or child.name.lower() != PLAYER_DIR_NAME:
+            continue
+        for entry in child.iterdir():
+            if entry.is_file() and entry.name.lower() == CANONICAL_PLAYER_BMD_BASENAME:
+                return entry
+        return None
+    return None
+
+
+_CANONICAL_PLAYER_SKELETON_CACHE: Dict[str, Optional[CanonicalSkeleton]] = {}
+
+
+def _load_canonical_player_skeleton(path: Optional[Path]) -> Optional[CanonicalSkeleton]:
+    if path is None:
+        return None
+
+    key = str(path.expanduser().resolve())
+    if key in _CANONICAL_PLAYER_SKELETON_CACHE:
+        return _CANONICAL_PLAYER_SKELETON_CACHE[key]
+
+    canonical_path = Path(key)
+    if not canonical_path.is_file():
+        logging.warning("Canonical player skeleton file not found: %s", canonical_path)
+        _CANONICAL_PLAYER_SKELETON_CACHE[key] = None
+        return None
+
+    try:
+        model = parse_bmd(canonical_path)
+        if model.num_bones <= 0 or model.num_actions <= 0:
+            raise BmdParseError(
+                f"canonical skeleton has no bindable bones/actions (bones={model.num_bones}, actions={model.num_actions})"
+            )
+        fixups = compute_bone_fixups(model)
+        if len(fixups) != model.num_bones:
+            raise BmdParseError(
+                f"canonical skeleton fixups mismatch (fixups={len(fixups)}, bones={model.num_bones})"
+            )
+
+        local_bind_pose_by_index: List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = []
+        for bone_index in range(model.num_bones):
+            local_bind_pose_by_index.append(
+                _bone_local_pose(model, bone_index=bone_index, action_index=0, key_index=0)
+            )
+
+        loaded = CanonicalSkeleton(
+            source_path=canonical_path,
+            model=model,
+            fixups=fixups,
+            bone_index_by_key=_build_bone_name_index_map(model),
+            local_bind_pose_by_index=local_bind_pose_by_index,
+        )
+        _CANONICAL_PLAYER_SKELETON_CACHE[key] = loaded
+        logging.info(
+            "Loaded canonical player skeleton: %s (%d bones, %d actions)",
+            canonical_path,
+            model.num_bones,
+            model.num_actions,
+        )
+        return loaded
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Failed to load canonical player skeleton %s: %s", canonical_path, exc)
+        _CANONICAL_PLAYER_SKELETON_CACHE[key] = None
+        return None
+
+
+def _build_player_canonical_bone_remap(
+    model: BmdModel,
+    source_path: Optional[Path],
+    canonical: Optional[CanonicalSkeleton],
+) -> Optional[List[Optional[int]]]:
+    """Return model-bone -> canonical-bone index mapping for compatible player parts."""
+    if canonical is None or not _is_player_source_path(source_path):
+        return None
+    if model.num_bones <= 0:
+        return None
+
+    model_index_by_key = _build_bone_name_index_map(model)
+    missing_required = [
+        key for key in PLAYER_CANONICAL_REQUIRED_BONES
+        if key not in model_index_by_key or key not in canonical.bone_index_by_key
+    ]
+    if missing_required:
+        return None
+
+    remap: List[Optional[int]] = [None] * model.num_bones
+    matched_count = 0
+    named_bone_count = 0
+    for bone_index, bone in enumerate(model.bones):
+        key = _normalize_bone_name_key(bone.name)
+        if not key:
+            continue
+        named_bone_count += 1
+        canonical_index = canonical.bone_index_by_key.get(key)
+        if canonical_index is None:
+            continue
+        remap[bone_index] = canonical_index
+        matched_count += 1
+
+    if matched_count == 0:
+        return None
+
+    match_ratio = matched_count / max(1, named_bone_count)
+    if match_ratio < PLAYER_CANONICAL_MIN_BONE_MATCH_RATIO:
+        logging.debug(
+            "Skipping canonical skeleton for %s: match ratio %.2f below threshold %.2f",
+            source_path if source_path is not None else model.name,
+            match_ratio,
+            PLAYER_CANONICAL_MIN_BONE_MATCH_RATIO,
+        )
+        return None
+
+    return remap
 
 
 def _texture_name_to_candidate_uris(texture_name: str) -> List[str]:
@@ -1577,6 +1740,7 @@ def bmd_to_glb(
     model: BmdModel,
     texture_resolver: Optional[TextureResolver] = None,
     source_path: Optional[Path] = None,
+    canonical_player_skeleton: Optional[CanonicalSkeleton] = None,
 ) -> Optional[bytes]:
     """Convert a parsed BMD model to GLB (GLTF Binary) bytes.
 
@@ -1597,6 +1761,43 @@ def bmd_to_glb(
         fixups = []
 
     export_skinning = bool(fixups) and len(fixups) == model.num_bones
+    bind_fixups = fixups
+    bind_local_pose_overrides: Optional[
+        List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]
+    ] = None
+
+    if export_skinning:
+        canonical_remap = _build_player_canonical_bone_remap(
+            model=model,
+            source_path=source_path,
+            canonical=canonical_player_skeleton,
+        )
+        if canonical_remap is not None and canonical_player_skeleton is not None:
+            bind_fixups = []
+            bind_local_pose_overrides = []
+            remapped_count = 0
+            for bone_index in range(model.num_bones):
+                canonical_index = canonical_remap[bone_index]
+                if canonical_index is None:
+                    bind_fixups.append(fixups[bone_index])
+                    bind_local_pose_overrides.append(
+                        _bone_local_pose(model, bone_index, action_index=0, key_index=0)
+                    )
+                    continue
+                bind_fixups.append(canonical_player_skeleton.fixups[canonical_index])
+                bind_local_pose_overrides.append(
+                    canonical_player_skeleton.local_bind_pose_by_index[canonical_index]
+                )
+                remapped_count += 1
+
+            logging.debug(
+                "Using canonical player skeleton for %s (%d/%d bones remapped from %s)",
+                source_path if source_path is not None else model.name,
+                remapped_count,
+                model.num_bones,
+                canonical_player_skeleton.source_path,
+            )
+
     legacy_object_identity = _legacy_object_identity_from_source_path(source_path)
     legacy_blend_texture_index = None
     if legacy_object_identity is not None:
@@ -1672,19 +1873,19 @@ def bmd_to_glb(
                 vnode = vert.node
                 nnode = norm.node
 
-                if fixups:
-                    if 0 <= vnode < len(fixups):
-                        vertex_fixup = fixups[vnode]
+                if bind_fixups:
+                    if 0 <= vnode < len(bind_fixups):
+                        vertex_fixup = bind_fixups[vnode]
                     else:
                         if vnode not in warned_vertex_nodes:
                             logging.warning(
                                 "Vertex node %d out of range [0,%d) in %s, clamping to 0",
                                 vnode,
-                                len(fixups),
+                                len(bind_fixups),
                                 model.name,
                             )
                             warned_vertex_nodes.add(vnode)
-                        vertex_fixup = fixups[0]
+                        vertex_fixup = bind_fixups[0]
 
                     wp = vector_transform(vert.position, vertex_fixup.m)
                     world_pos = (
@@ -1695,19 +1896,19 @@ def bmd_to_glb(
                 else:
                     world_pos = vert.position
 
-                if fixups:
-                    if 0 <= nnode < len(fixups):
-                        normal_fixup = fixups[nnode]
+                if bind_fixups:
+                    if 0 <= nnode < len(bind_fixups):
+                        normal_fixup = bind_fixups[nnode]
                     else:
                         if nnode not in warned_normal_nodes:
                             logging.warning(
                                 "Normal node %d out of range [0,%d) in %s, clamping to 0",
                                 nnode,
-                                len(fixups),
+                                len(bind_fixups),
                                 model.name,
                             )
                             warned_normal_nodes.add(nnode)
-                        normal_fixup = fixups[0]
+                        normal_fixup = bind_fixups[0]
 
                     wn = vector_rotate(norm.normal, normal_fixup.m)
                     world_norm = vector_normalize(wn)
@@ -2098,7 +2299,10 @@ def bmd_to_glb(
         bone_nodes: List[Dict[str, object]] = []
 
         for bone_index, bone in enumerate(model.bones):
-            bind_pos, bind_rot = _bone_local_pose(model, bone_index, action_index=0, key_index=0)
+            if bind_local_pose_overrides is not None:
+                bind_pos, bind_rot = bind_local_pose_overrides[bone_index]
+            else:
+                bind_pos, bind_rot = _bone_local_pose(model, bone_index, action_index=0, key_index=0)
             translation, quaternion = _mu_local_pose_to_gltf_trs(bind_pos, bind_rot)
 
             bone_name = bone.name.strip() if bone.name else ""
@@ -2132,7 +2336,7 @@ def bmd_to_glb(
         joint_nodes = [bone_node_offset + bone_index for bone_index in range(model.num_bones)]
 
         inverse_bind_values: List[float] = []
-        for fixup in fixups:
+        for fixup in bind_fixups:
             bind_global = _fixup_to_gltf_global_matrix(fixup)
             inverse_bind = _inverse_rigid_matrix4(bind_global)
             inverse_bind_values.extend(_matrix4_to_column_major_values(inverse_bind))
@@ -2621,6 +2825,7 @@ def convert_single_bmd(
     output_root: Path,
     force: bool,
     embed_textures: bool,
+    canonical_player_skeleton_path: Optional[Path],
     stats: ConversionStats,
 ) -> None:
     """Convert a single BMD file to GLB."""
@@ -2664,6 +2869,7 @@ def convert_single_bmd(
         return
 
     try:
+        canonical_player_skeleton = _load_canonical_player_skeleton(canonical_player_skeleton_path)
         texture_resolver = TextureResolver(
             texture_dir=output_path.parent,
             embed_textures=embed_textures,
@@ -2674,6 +2880,7 @@ def convert_single_bmd(
             model,
             texture_resolver=texture_resolver,
             source_path=source,
+            canonical_player_skeleton=canonical_player_skeleton,
         )
     except Exception as exc:
         stats.failed += 1
@@ -2723,6 +2930,7 @@ def _bmd_convert_worker(
     output_root: Path,
     force: bool,
     embed_textures: bool,
+    canonical_player_skeleton_path: Optional[Path],
 ) -> ConversionStats:
     """Worker function for parallel BMD conversion. Returns local stats."""
     stats = ConversionStats()
@@ -2733,6 +2941,7 @@ def _bmd_convert_worker(
             output_root,
             force,
             embed_textures,
+            canonical_player_skeleton_path,
             stats,
         )
     except Exception as exc:  # noqa: BLE001
@@ -2960,6 +3169,7 @@ def convert_all(
     report_path: Optional[Path],
     embed_textures: bool,
     prune_embedded_textures: bool,
+    canonical_player_skeleton_path: Optional[Path],
     workers: int = 1,
 ) -> ConversionStats:
     """Convert all BMD files found under bmd_root."""
@@ -2994,6 +3204,7 @@ def convert_all(
                 output_root,
                 force,
                 embed_textures,
+                canonical_player_skeleton_path,
                 stats,
             )
 
@@ -3018,6 +3229,7 @@ def convert_all(
                 [output_root] * total,
                 [force] * total,
                 [embed_textures] * total,
+                [canonical_player_skeleton_path] * total,
                 chunksize=chunksize,
             )
             for worker_stats in futures_iter:
@@ -3138,6 +3350,20 @@ def main() -> int:
         "--workers", type=int, default=os.cpu_count() or 4,
         help="Number of parallel worker processes (default: number of CPUs).",
     )
+    parser.add_argument(
+        "--canonical-player-skeleton",
+        type=Path,
+        default=None,
+        help=(
+            "Path to canonical player skeleton BMD used to rebase player-part skin bind pose. "
+            "When omitted, auto-detects <bmd-root>/player/player.bmd."
+        ),
+    )
+    parser.add_argument(
+        "--disable-canonical-player-skeleton",
+        action="store_true",
+        help="Disable canonical player skeleton rebasing for player-part models.",
+    )
 
     args = parser.parse_args()
 
@@ -3174,6 +3400,24 @@ def main() -> int:
     elif embed_textures:
         logging.info("PNG cleanup mode: keep object texture PNG files")
 
+    canonical_player_skeleton_path: Optional[Path] = None
+    if not args.disable_canonical_player_skeleton:
+        if args.canonical_player_skeleton is not None:
+            canonical_player_skeleton_path = args.canonical_player_skeleton
+        else:
+            canonical_player_skeleton_path = _resolve_default_canonical_player_skeleton_path(
+                args.bmd_root
+            )
+        if canonical_player_skeleton_path is not None:
+            logging.info(
+                "Canonical player skeleton mode: enabled (%s)",
+                canonical_player_skeleton_path,
+            )
+        else:
+            logging.info("Canonical player skeleton mode: disabled (no player/player.bmd found)")
+    else:
+        logging.info("Canonical player skeleton mode: disabled by CLI flag")
+
     workers = max(1, args.workers)
     stats = convert_all(
         bmd_root=args.bmd_root,
@@ -3186,6 +3430,7 @@ def main() -> int:
         report_path=args.report,
         embed_textures=embed_textures,
         prune_embedded_textures=prune_embedded_textures,
+        canonical_player_skeleton_path=canonical_player_skeleton_path,
         workers=workers,
     )
 

@@ -24,5 +24,6 @@ impl<B: SceneBuilder> Plugin for ScenePlugin<B> {
     }
 }
 
+pub mod gameplay;
 pub mod loading;
 pub mod login;

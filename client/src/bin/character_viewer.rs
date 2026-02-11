@@ -1,6 +1,9 @@
 use bevy::asset::AssetPlugin;
 use bevy::asset::RenderAssetUsages;
+#[cfg(feature = "solari")]
+use bevy::camera::CameraMainTextureUsages;
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::gltf::Gltf;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
@@ -8,10 +11,7 @@ use bevy::light::GlobalAmbientLight;
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod};
 use bevy::mesh::Indices;
 use bevy::mesh::PrimitiveTopology;
-use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
-#[cfg(feature = "solari")]
-use bevy::camera::CameraMainTextureUsages;
 #[cfg(feature = "solari")]
 use bevy::render::render_resource::TextureUsages;
 #[cfg(feature = "solari")]
@@ -911,7 +911,7 @@ mod character {
     }
 }
 
-use character::animations::animation_display_name;
+use character::animations::{PlayerAction, animation_display_name};
 use character::controller::{CharacterAnimState, CharacterController, CharacterState};
 use character::equipment::EquipmentSet;
 use character::types::*;
@@ -960,6 +960,169 @@ const RUN_TO_WALK_THRESHOLD: f32 = 300.0;
 
 /// Small yaw correction for model bind-pose alignment (radians).
 const MODEL_YAW_OFFSET: f32 = 0.0;
+
+const RMB_CLICK_MAX_DRAG_PX: f32 = 8.0;
+const RMB_CLICK_MAX_SECONDS: f64 = 0.35;
+const SKILL_FALLBACK_TARGET_DISTANCE: f32 = 280.0;
+const SKILL_TRANSITION_DURATION: Duration = Duration::from_millis(100);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillType {
+    Target,
+    Area,
+    SelfCast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillVfxProfile {
+    DefensiveAura,
+    SlashTrail,
+    TwistingSlash,
+    RagefulBlow,
+    DeathStab,
+    Impale,
+    FireBreath,
+    Combo,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SkillEntry {
+    skill_id: u16,
+    name: &'static str,
+    action_id: usize,
+    cast_speed: f32,
+    kind: SkillType,
+    vfx: SkillVfxProfile,
+}
+
+impl SkillEntry {
+    fn display_name(&self) -> String {
+        format!(
+            "{:03} {} ({})",
+            self.skill_id,
+            self.name,
+            animation_display_name(self.action_id)
+        )
+    }
+}
+
+const DK_SKILLS: &[SkillEntry] = &[
+    SkillEntry {
+        skill_id: 18,
+        name: "Defense",
+        action_id: PlayerAction::Defense1 as usize,
+        cast_speed: 0.22,
+        kind: SkillType::SelfCast,
+        vfx: SkillVfxProfile::DefensiveAura,
+    },
+    SkillEntry {
+        skill_id: 19,
+        name: "Falling Slash",
+        action_id: PlayerAction::AttackSkillSword1 as usize,
+        cast_speed: 0.25,
+        kind: SkillType::Target,
+        vfx: SkillVfxProfile::SlashTrail,
+    },
+    SkillEntry {
+        skill_id: 20,
+        name: "Lunge",
+        action_id: PlayerAction::AttackSkillSword2 as usize,
+        cast_speed: 0.25,
+        kind: SkillType::Target,
+        vfx: SkillVfxProfile::SlashTrail,
+    },
+    SkillEntry {
+        skill_id: 21,
+        name: "Uppercut",
+        action_id: PlayerAction::AttackSkillSword3 as usize,
+        cast_speed: 0.25,
+        kind: SkillType::Target,
+        vfx: SkillVfxProfile::SlashTrail,
+    },
+    SkillEntry {
+        skill_id: 22,
+        name: "Cyclone",
+        action_id: PlayerAction::AttackSkillSword4 as usize,
+        cast_speed: 0.24,
+        kind: SkillType::Target,
+        vfx: SkillVfxProfile::SlashTrail,
+    },
+    SkillEntry {
+        skill_id: 23,
+        name: "Slash",
+        action_id: PlayerAction::AttackSkillSword5 as usize,
+        cast_speed: 0.24,
+        kind: SkillType::Target,
+        vfx: SkillVfxProfile::SlashTrail,
+    },
+    SkillEntry {
+        skill_id: 41,
+        name: "Twisting Slash",
+        action_id: PlayerAction::AttackSkillWheel as usize,
+        cast_speed: 0.25,
+        kind: SkillType::Area,
+        vfx: SkillVfxProfile::TwistingSlash,
+    },
+    SkillEntry {
+        skill_id: 42,
+        name: "Rageful Blow",
+        action_id: PlayerAction::AttackSkillFuryStrike as usize,
+        cast_speed: 0.23,
+        kind: SkillType::Area,
+        vfx: SkillVfxProfile::RagefulBlow,
+    },
+    SkillEntry {
+        skill_id: 43,
+        name: "Death Stab",
+        action_id: PlayerAction::AttackOneToOne as usize,
+        cast_speed: 0.24,
+        kind: SkillType::Target,
+        vfx: SkillVfxProfile::DeathStab,
+    },
+    SkillEntry {
+        skill_id: 47,
+        name: "Impale",
+        action_id: PlayerAction::AttackSkillSpear as usize,
+        cast_speed: 0.24,
+        kind: SkillType::Target,
+        vfx: SkillVfxProfile::Impale,
+    },
+    SkillEntry {
+        skill_id: 48,
+        name: "Greater Fortitude",
+        action_id: PlayerAction::SkillVitality as usize,
+        cast_speed: 0.2,
+        kind: SkillType::SelfCast,
+        vfx: SkillVfxProfile::DefensiveAura,
+    },
+    SkillEntry {
+        skill_id: 49,
+        name: "Fire Breath",
+        action_id: PlayerAction::SkillRider as usize,
+        cast_speed: 0.22,
+        kind: SkillType::Target,
+        vfx: SkillVfxProfile::FireBreath,
+    },
+    SkillEntry {
+        skill_id: 59,
+        name: "Combo",
+        action_id: PlayerAction::AttackSkillSword1 as usize,
+        cast_speed: 0.26,
+        kind: SkillType::Target,
+        vfx: SkillVfxProfile::Combo,
+    },
+];
+
+fn skills_for_class(class: CharacterClass) -> &'static [SkillEntry] {
+    match class {
+        CharacterClass::DarkKnight => DK_SKILLS,
+        _ => &[],
+    }
+}
+
+fn is_ctrl_pressed(keyboard: &ButtonInput<KeyCode>) -> bool {
+    keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight)
+}
 
 // ============================================================================
 // Heightmap resource
@@ -1040,11 +1203,19 @@ struct ViewerState {
     selected_class_index: usize,
     selected_animation: usize,
     playback_speed: f32,
+    pending_animation_repeat: Option<bool>,
     playing: bool,
     character_entity: Option<Entity>,
     pending_class_change: bool,
     pending_animation_change: bool,
     pending_toggle_playback: bool,
+    selected_skill_index: usize,
+    available_skills: Vec<SkillEntry>,
+    pending_skill_cast: bool,
+    active_skill: Option<ActiveSkillCast>,
+    rmb_press_cursor: Option<Vec2>,
+    rmb_press_time_seconds: f64,
+    rmb_press_with_ctrl: bool,
     movement_target: Option<Vec3>,
     status: String,
     selected_set_index: usize,
@@ -1058,16 +1229,25 @@ struct ViewerState {
 
 impl Default for ViewerState {
     fn default() -> Self {
-        let body_type = CharacterClass::ALL[0].body_type();
+        let initial_class = CharacterClass::ALL[0];
+        let body_type = initial_class.body_type();
         Self {
             selected_class_index: 0,
             selected_animation: 1, // StopMale (idle)
             playback_speed: DEFAULT_PLAYBACK_SPEED,
+            pending_animation_repeat: None,
             playing: true,
             character_entity: None,
             pending_class_change: true, // Spawn on startup
             pending_animation_change: false,
             pending_toggle_playback: false,
+            selected_skill_index: 0,
+            available_skills: skills_for_class(initial_class).to_vec(),
+            pending_skill_cast: false,
+            active_skill: None,
+            rmb_press_cursor: None,
+            rmb_press_time_seconds: 0.0,
+            rmb_press_with_ctrl: false,
             movement_target: None,
             status: "Loading player.glb...".to_string(),
             selected_set_index: 0,
@@ -1087,11 +1267,34 @@ struct PlayerAnimLib {
     graph_handle: Option<Handle<AnimationGraph>>,
     animation_nodes: Vec<AnimationNodeIndex>,
     animation_names: Vec<String>,
+    animation_durations: Vec<f32>,
     initialized: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveSkillCast {
+    skill_id: u16,
+    action_id: usize,
+    return_action: usize,
+    remaining_seconds: f32,
 }
 
 #[derive(Component)]
 struct AnimBound;
+
+#[derive(Component)]
+struct SkillVfx;
+
+#[derive(Component)]
+struct SkillVfxLifetime {
+    timer: Timer,
+}
+
+#[derive(Component)]
+struct SkillVfxFollow {
+    target: Entity,
+    offset: Vec3,
+}
 
 /// Marker for the invisible animated skeleton scene (player.glb).
 #[derive(Component)]
@@ -1134,30 +1337,30 @@ fn main() {
 
     let mut app = App::new();
     app.insert_resource(GlobalAmbientLight {
-            color: Color::WHITE,
-            brightness: 250.0,
-            affects_lightmapped_meshes: true,
-        })
-        .insert_resource(ViewerState::default())
-        .insert_resource(heightmap)
-        .insert_resource(DirectionalLightShadowMap { size: 4096 })
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "MU Character Viewer".to_string(),
-                        resolution: WindowResolution::new(1440, 900),
-                        resizable: true,
-                        ..default()
-                    }),
-                    ..default()
-                })
-                .set(AssetPlugin {
-                    file_path: asset_root.into(),
+        color: Color::WHITE,
+        brightness: 250.0,
+        affects_lightmapped_meshes: true,
+    })
+    .insert_resource(ViewerState::default())
+    .insert_resource(heightmap)
+    .insert_resource(DirectionalLightShadowMap { size: 4096 })
+    .add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "MU Character Viewer".to_string(),
+                    resolution: WindowResolution::new(1440, 900),
+                    resizable: true,
                     ..default()
                 }),
-        )
-        .add_plugins(EguiPlugin::default());
+                ..default()
+            })
+            .set(AssetPlugin {
+                file_path: asset_root.into(),
+                ..default()
+            }),
+    )
+    .add_plugins(EguiPlugin::default());
 
     #[cfg(feature = "solari")]
     app.add_plugins(bevy::solari::SolariPlugins);
@@ -1174,12 +1377,16 @@ fn main() {
                 handle_class_change,
                 init_player_animation_lib,
                 bind_anim_players,
-                apply_animation_changes,
+                handle_skill_trigger_input,
+                trigger_selected_skill,
+                update_active_skill_cast,
                 handle_click_to_move,
                 advance_movement,
                 rotate_idle_to_mouse,
                 handle_scroll_zoom,
                 handle_camera_rotation,
+                apply_animation_changes,
+                update_skill_vfx,
                 update_mu_camera,
                 draw_grid_lines,
                 draw_movement_target,
@@ -1219,7 +1426,7 @@ fn setup_viewer(
     };
     let cam_transform = compute_mu_camera_transform(&mu_cam, Vec3::ZERO);
 
-    let mut camera = commands.spawn((
+    let mut _camera = commands.spawn((
         Camera3dBundle {
             transform: cam_transform,
             tonemapping: Tonemapping::ReinhardLuminance,
@@ -1230,7 +1437,7 @@ fn setup_viewer(
     ));
 
     #[cfg(feature = "solari")]
-    camera.insert((
+    _camera.insert((
         SolariLighting::default(),
         Msaa::Off,
         CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
@@ -1288,6 +1495,7 @@ fn setup_viewer(
         graph_handle: None,
         animation_nodes: Vec::new(),
         animation_names: Vec::new(),
+        animation_durations: Vec::new(),
         initialized: false,
     });
 }
@@ -1455,6 +1663,7 @@ fn handle_scroll_zoom(
 
 fn handle_camera_rotation(
     mouse: Res<ButtonInput<MouseButton>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
     mut motion_events: MessageReader<MouseMotion>,
     mut cameras: Query<&mut MuCamera>,
     egui_wants_input: Res<EguiWantsInput>,
@@ -1462,7 +1671,7 @@ fn handle_camera_rotation(
     // Consume motion events regardless to avoid stale accumulation
     let total_delta: Vec2 = motion_events.read().map(|e| e.delta).sum();
 
-    if !mouse.pressed(MouseButton::Right) {
+    if !(mouse.pressed(MouseButton::Right) && is_ctrl_pressed(&keyboard)) {
         return;
     }
 
@@ -1601,6 +1810,9 @@ fn draw_character_viewer_ui(
                 let new_class = CharacterClass::ALL[new_class_index];
                 viewer.available_sets = EquipmentSet::available_for(new_class.body_type());
                 viewer.selected_set_index = 0;
+                viewer.available_skills = skills_for_class(new_class).to_vec();
+                viewer.selected_skill_index = 0;
+                viewer.active_skill = None;
                 viewer.pending_class_change = true;
             }
 
@@ -1644,6 +1856,34 @@ fn draw_character_viewer_ui(
 
             ui.separator();
 
+            // Skill selector
+            ui.label("Class Skills:");
+            if viewer.available_skills.is_empty() {
+                ui.label("No skill catalog for this class yet.");
+            } else {
+                let mut new_skill_index = viewer
+                    .selected_skill_index
+                    .min(viewer.available_skills.len().saturating_sub(1));
+                let selected_skill = viewer.available_skills[new_skill_index].display_name();
+                egui::ComboBox::from_label("Skill")
+                    .selected_text(selected_skill)
+                    .show_ui(ui, |ui| {
+                        for (i, skill) in viewer.available_skills.iter().enumerate() {
+                            ui.selectable_value(&mut new_skill_index, i, skill.display_name());
+                        }
+                    });
+
+                if new_skill_index != viewer.selected_skill_index {
+                    viewer.selected_skill_index = new_skill_index;
+                }
+
+                if ui.button("Play Skill (RMB)").clicked() {
+                    viewer.pending_skill_cast = true;
+                }
+            }
+
+            ui.separator();
+
             // Animation selector
             if let Some(lib) = &library {
                 if lib.animation_names.is_empty() {
@@ -1667,6 +1907,8 @@ fn draw_character_viewer_ui(
                     if selected != viewer.selected_animation {
                         viewer.selected_animation = selected;
                         viewer.pending_animation_change = true;
+                        viewer.pending_animation_repeat = Some(true);
+                        viewer.active_skill = None;
                     }
                 }
             }
@@ -1676,6 +1918,7 @@ fn draw_character_viewer_ui(
                 egui::Slider::new(&mut viewer.playback_speed, 0.02..=1.2).text("Speed");
             if ui.add(speed_slider).changed() {
                 viewer.pending_animation_change = true;
+                viewer.pending_animation_repeat = Some(true);
             }
 
             // Play/Pause
@@ -1686,7 +1929,7 @@ fn draw_character_viewer_ui(
                 }
             });
 
-            ui.label("LMB: move | Scroll: zoom | RMB: rotate camera");
+            ui.label("LMB: move | RMB: play selected skill | Ctrl+RMB: rotate | Scroll: zoom");
 
             ui.separator();
             ui.label(format!("Status: {}", viewer.status));
@@ -1770,6 +2013,15 @@ fn handle_class_change(
 
     // Set default idle animation for the class
     viewer.selected_animation = idle_action_for_class(class);
+    viewer.playback_speed = idle_playback_speed(class);
+    viewer.pending_animation_repeat = Some(true);
+    viewer.available_skills = skills_for_class(class).to_vec();
+    viewer.selected_skill_index = viewer
+        .selected_skill_index
+        .min(viewer.available_skills.len().saturating_sub(1));
+    viewer.pending_skill_cast = false;
+    viewer.active_skill = None;
+    viewer.rmb_press_cursor = None;
 
     // Get selected equipment set
     let equipment_set = viewer
@@ -1856,6 +2108,7 @@ fn handle_class_change(
 fn init_player_animation_lib(
     mut library: ResMut<PlayerAnimLib>,
     gltfs: Res<Assets<Gltf>>,
+    animation_clips: Res<Assets<AnimationClip>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
     mut viewer: ResMut<ViewerState>,
 ) {
@@ -1906,6 +2159,16 @@ fn init_player_animation_lib(
     library.graph_handle = Some(graphs.add(graph));
     library.animation_nodes = nodes;
     library.animation_names = names;
+    library.animation_durations = gltf
+        .animations
+        .iter()
+        .map(|handle| {
+            animation_clips
+                .get(handle)
+                .map(|clip| clip.duration().max(0.05))
+                .unwrap_or(1.0)
+        })
+        .collect();
 }
 
 // ============================================================================
@@ -1978,6 +2241,13 @@ fn find_unbound_players(
     result
 }
 
+fn request_animation_change(viewer: &mut ViewerState, action: usize, speed: f32, repeat: bool) {
+    viewer.selected_animation = action;
+    viewer.playback_speed = speed;
+    viewer.pending_animation_change = true;
+    viewer.pending_animation_repeat = Some(repeat);
+}
+
 // ============================================================================
 // Apply animation / playback changes
 // ============================================================================
@@ -1990,6 +2260,7 @@ fn apply_animation_changes(
 ) {
     let anim_changed = std::mem::take(&mut viewer.pending_animation_change);
     let toggle = std::mem::take(&mut viewer.pending_toggle_playback);
+    let repeat = viewer.pending_animation_repeat.take().unwrap_or(true);
 
     if toggle {
         viewer.playing = !viewer.playing;
@@ -2020,10 +2291,12 @@ fn apply_animation_changes(
 
     for (mut player, mut transitions) in &mut bound_players {
         if anim_changed {
-            transitions
-                .play(&mut player, animation_node, Duration::from_millis(200))
-                .set_speed(viewer.playback_speed.max(0.001))
-                .repeat();
+            let active = transitions
+                .play(&mut player, animation_node, SKILL_TRANSITION_DURATION)
+                .set_speed(viewer.playback_speed.max(0.001));
+            if repeat {
+                active.repeat();
+            }
         }
 
         if toggle || anim_changed {
@@ -2036,12 +2309,14 @@ fn apply_animation_changes(
     }
 
     if anim_changed {
-        let name = library
-            .animation_names
-            .get(viewer.selected_animation)
-            .map(String::as_str)
-            .unwrap_or("unnamed");
-        viewer.status = format!("Playing {} (index {})", name, viewer.selected_animation);
+        if repeat {
+            let name = library
+                .animation_names
+                .get(viewer.selected_animation)
+                .map(String::as_str)
+                .unwrap_or("unnamed");
+            viewer.status = format!("Playing {} (index {})", name, viewer.selected_animation);
+        }
     } else if toggle {
         viewer.status = if viewer.playing {
             "Resumed.".to_string()
@@ -2049,6 +2324,399 @@ fn apply_animation_changes(
             "Paused.".to_string()
         };
     }
+}
+
+// ============================================================================
+// Skill trigger and one-shot playback
+// ============================================================================
+
+fn handle_skill_trigger_input(
+    mouse: Res<ButtonInput<MouseButton>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    windows: Query<&Window>,
+    mut viewer: ResMut<ViewerState>,
+    egui_wants_input: Res<EguiWantsInput>,
+) {
+    let ctrl_pressed = is_ctrl_pressed(&keyboard);
+    let cursor_pos = windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position());
+
+    if mouse.just_pressed(MouseButton::Right) {
+        viewer.rmb_press_cursor = cursor_pos;
+        viewer.rmb_press_time_seconds = time.elapsed_secs_f64();
+        viewer.rmb_press_with_ctrl = ctrl_pressed;
+    }
+
+    if mouse.pressed(MouseButton::Right) {
+        if let (Some(start), Some(current)) = (viewer.rmb_press_cursor, cursor_pos) {
+            if current.distance(start) > RMB_CLICK_MAX_DRAG_PX {
+                viewer.rmb_press_cursor = None;
+            }
+        }
+    }
+
+    if mouse.just_released(MouseButton::Right) {
+        let elapsed = time.elapsed_secs_f64() - viewer.rmb_press_time_seconds;
+        let is_click = viewer.rmb_press_cursor.is_some()
+            && elapsed <= RMB_CLICK_MAX_SECONDS
+            && !viewer.rmb_press_with_ctrl
+            && !ctrl_pressed;
+        if is_click && !egui_wants_input.wants_any_pointer_input() {
+            viewer.pending_skill_cast = true;
+        }
+        viewer.rmb_press_cursor = None;
+        viewer.rmb_press_with_ctrl = false;
+    }
+}
+
+fn trigger_selected_skill(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    heightmap: Res<HeightmapResource>,
+    library: Res<PlayerAnimLib>,
+    mut viewer: ResMut<ViewerState>,
+    mut characters: Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut CharacterController,
+            &mut CharacterAnimState,
+        ),
+        With<CharacterRoot>,
+    >,
+) {
+    if !std::mem::take(&mut viewer.pending_skill_cast) {
+        return;
+    }
+
+    if viewer.available_skills.is_empty() {
+        viewer.status = "No skills available for this class.".to_string();
+        return;
+    }
+
+    let skill_index = viewer
+        .selected_skill_index
+        .min(viewer.available_skills.len().saturating_sub(1));
+    let skill = viewer.available_skills[skill_index];
+
+    if library.animation_nodes.get(skill.action_id).is_none() {
+        viewer.status = format!(
+            "Skill {} uses missing animation index {}.",
+            skill.skill_id, skill.action_id
+        );
+        return;
+    }
+
+    let Ok((character_entity, mut transform, mut controller, mut anim_state)) =
+        characters.single_mut()
+    else {
+        return;
+    };
+
+    let caster_pos = transform.translation;
+
+    let cursor_target = windows.single().ok().zip(cameras.single().ok()).and_then(
+        |(window, (camera, camera_transform))| {
+            cursor_terrain_hit(window, camera, camera_transform, &heightmap)
+        },
+    );
+
+    let fallback_target = {
+        let mut dir = transform.rotation.mul_vec3(Vec3::NEG_Z);
+        dir.y = 0.0;
+        let dir = dir.normalize_or_zero();
+        caster_pos + dir * SKILL_FALLBACK_TARGET_DISTANCE
+    };
+
+    let target_pos = match skill.kind {
+        SkillType::SelfCast => caster_pos,
+        SkillType::Target | SkillType::Area => cursor_target.unwrap_or(fallback_target),
+    };
+
+    let diff = Vec2::new(target_pos.x - caster_pos.x, target_pos.z - caster_pos.z);
+    if diff.length_squared() > 1.0 {
+        let target_yaw = mu_heading_to_bevy_yaw(diff.x, diff.y) + MODEL_YAW_OFFSET;
+        transform.rotation = Quat::from_rotation_y(target_yaw);
+    }
+
+    controller.state = CharacterState::Idle;
+    viewer.movement_target = None;
+
+    anim_state.current_action = skill.action_id;
+    anim_state.playback_speed = skill.cast_speed;
+
+    viewer.playing = true;
+    request_animation_change(&mut viewer, skill.action_id, skill.cast_speed, false);
+
+    let clip_duration = library
+        .animation_durations
+        .get(skill.action_id)
+        .copied()
+        .unwrap_or(1.0)
+        .max(0.05);
+    let skill_duration = (clip_duration / skill.cast_speed.max(0.001)).clamp(0.15, 12.0);
+    let return_action = idle_action_for_class(controller.class);
+    viewer.active_skill = Some(ActiveSkillCast {
+        skill_id: skill.skill_id,
+        action_id: skill.action_id,
+        return_action,
+        remaining_seconds: skill_duration,
+    });
+
+    spawn_skill_vfx_for_entry(
+        &mut commands,
+        &asset_server,
+        character_entity,
+        caster_pos,
+        target_pos,
+        skill,
+    );
+
+    viewer.status = format!("Casting {} (Skill {})", skill.name, skill.skill_id);
+}
+
+fn update_active_skill_cast(
+    time: Res<Time>,
+    mut viewer: ResMut<ViewerState>,
+    mut characters: Query<(&mut CharacterController, &mut CharacterAnimState), With<CharacterRoot>>,
+) {
+    let mut finished = false;
+    if let Some(active_skill) = viewer.active_skill.as_mut() {
+        active_skill.remaining_seconds -= time.delta_secs();
+        finished = active_skill.remaining_seconds <= 0.0;
+    }
+
+    if !finished {
+        return;
+    }
+
+    let finished_skill = viewer.active_skill.take();
+    let Ok((mut controller, mut anim_state)) = characters.single_mut() else {
+        return;
+    };
+
+    controller.state = CharacterState::Idle;
+    let idle_action = finished_skill
+        .as_ref()
+        .map(|skill| skill.return_action)
+        .unwrap_or_else(|| idle_action_for_class(controller.class));
+    let idle_speed = idle_playback_speed(controller.class);
+    anim_state.current_action = idle_action;
+    anim_state.playback_speed = idle_speed;
+    request_animation_change(&mut viewer, idle_action, idle_speed, true);
+
+    if let Some(skill) = finished_skill {
+        viewer.status = format!(
+            "Skill {} (action {}) finished. Back to idle {}.",
+            skill.skill_id, skill.action_id, skill.return_action
+        );
+    }
+}
+
+fn spawn_skill_vfx_for_entry(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    caster_entity: Entity,
+    caster_pos: Vec3,
+    target_pos: Vec3,
+    skill: SkillEntry,
+) {
+    match skill.vfx {
+        SkillVfxProfile::DefensiveAura => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/protect_01.glb",
+                caster_pos + Vec3::new(0.0, 60.0, 0.0),
+                1.0,
+                2.2,
+                Some((caster_entity, Vec3::new(0.0, 60.0, 0.0))),
+            );
+        }
+        SkillVfxProfile::SlashTrail => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/combo.glb",
+                caster_pos + Vec3::new(0.0, 30.0, 0.0),
+                1.0,
+                1.2,
+                Some((caster_entity, Vec3::new(0.0, 30.0, 0.0))),
+            );
+        }
+        SkillVfxProfile::TwistingSlash => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/saw_01.glb",
+                caster_pos + Vec3::new(0.0, 35.0, 0.0),
+                1.0,
+                1.4,
+                Some((caster_entity, Vec3::new(0.0, 35.0, 0.0))),
+            );
+        }
+        SkillVfxProfile::RagefulBlow => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/blast_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.2,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::DeathStab => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/deathsp_eff.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+        }
+        SkillVfxProfile::Impale => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/piercing.glb",
+                target_pos + Vec3::new(0.0, 8.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+        }
+        SkillVfxProfile::FireBreath => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/inferno_01.glb",
+                target_pos + Vec3::new(0.0, 5.0, 0.0),
+                1.3,
+                1.4,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/fire_01.glb",
+                caster_pos + Vec3::new(0.0, 30.0, 0.0),
+                1.0,
+                0.8,
+                Some((caster_entity, Vec3::new(0.0, 30.0, 0.0))),
+            );
+        }
+        SkillVfxProfile::Combo => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/combo.glb",
+                caster_pos + Vec3::new(0.0, 30.0, 0.0),
+                1.0,
+                1.1,
+                Some((caster_entity, Vec3::new(0.0, 30.0, 0.0))),
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/blast_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.1,
+                0.8,
+                None,
+            );
+        }
+    }
+}
+
+fn spawn_skill_vfx_scene(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    glb_path: &str,
+    position: Vec3,
+    uniform_scale: f32,
+    ttl_seconds: f32,
+    follow: Option<(Entity, Vec3)>,
+) {
+    let scene_handle: Handle<Scene> = asset_server.load(format!("{glb_path}#Scene0"));
+    let mut entity = commands.spawn((
+        SceneBundle {
+            scene: SceneRoot(scene_handle),
+            transform: Transform::from_translation(position).with_scale(Vec3::splat(uniform_scale)),
+            ..default()
+        },
+        SkillVfx,
+        SkillVfxLifetime {
+            timer: Timer::from_seconds(ttl_seconds.max(0.05), TimerMode::Once),
+        },
+    ));
+
+    if let Some((target, offset)) = follow {
+        entity.insert(SkillVfxFollow { target, offset });
+    }
+}
+
+fn update_skill_vfx(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut vfx_entities: Query<
+        (
+            Entity,
+            &mut SkillVfxLifetime,
+            Option<&SkillVfxFollow>,
+            &mut Transform,
+        ),
+        With<SkillVfx>,
+    >,
+    targets: Query<&GlobalTransform>,
+) {
+    for (entity, mut lifetime, follow, mut transform) in &mut vfx_entities {
+        if let Some(follow) = follow {
+            if let Ok(target_transform) = targets.get(follow.target) {
+                transform.translation = target_transform.translation() + follow.offset;
+            } else {
+                commands.entity(entity).despawn();
+                continue;
+            }
+        }
+
+        lifetime.timer.tick(time.delta());
+        if lifetime.timer.is_finished() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+fn cursor_terrain_hit(
+    window: &Window,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    heightmap: &HeightmapResource,
+) -> Option<Vec3> {
+    let cursor_pos = window.cursor_position()?;
+    let ray = camera
+        .viewport_to_world(camera_transform, cursor_pos)
+        .ok()?;
+    if ray.direction.y.abs() < 1e-6 {
+        return None;
+    }
+
+    let approx_y = terrain_height_at(heightmap, ray.origin.x, ray.origin.z);
+    let t = (approx_y - ray.origin.y) / ray.direction.y;
+    if t < 0.0 {
+        return None;
+    }
+
+    let hit = ray.origin + ray.direction * t;
+    let terrain_y = terrain_height_at(heightmap, hit.x, hit.z);
+    Some(Vec3::new(hit.x, terrain_y, hit.z))
 }
 
 // ============================================================================
@@ -2065,6 +2733,10 @@ fn handle_click_to_move(
     egui_wants_input: Res<EguiWantsInput>,
     heightmap: Res<HeightmapResource>,
 ) {
+    if viewer.active_skill.is_some() {
+        return;
+    }
+
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
@@ -2110,10 +2782,10 @@ fn handle_click_to_move(
     for (mut controller, mut anim_state) in &mut characters {
         controller.state = CharacterState::Running { target };
         let run_action = run_action_for_class(controller.class);
+        let run_speed = run_playback_speed(controller.class);
         anim_state.current_action = run_action;
-        anim_state.playback_speed = run_playback_speed(controller.class);
-        viewer.selected_animation = run_action;
-        viewer.pending_animation_change = true;
+        anim_state.playback_speed = run_speed;
+        request_animation_change(&mut viewer, run_action, run_speed, true);
     }
 
     viewer.movement_target = Some(target);
@@ -2137,6 +2809,10 @@ fn advance_movement(
     >,
     heightmap: Res<HeightmapResource>,
 ) {
+    if viewer.active_skill.is_some() {
+        return;
+    }
+
     let dt = time.delta_secs();
 
     for (mut transform, mut controller, mut anim_state) in &mut characters {
@@ -2165,9 +2841,10 @@ fn advance_movement(
             transform.translation.y = terrain_height_at(&heightmap, target.x, target.z);
             controller.state = CharacterState::Idle;
             let idle_action = idle_action_for_class(controller.class);
+            let idle_speed = idle_playback_speed(controller.class);
             anim_state.current_action = idle_action;
-            viewer.selected_animation = idle_action;
-            viewer.pending_animation_change = true;
+            anim_state.playback_speed = idle_speed;
+            request_animation_change(&mut viewer, idle_action, idle_speed, true);
             viewer.movement_target = None;
             let col = ((target.x / GRID_CELL_SIZE).floor() as i32 + 1).clamp(1, 256);
             let row = ((target.z / GRID_CELL_SIZE).floor() as i32 + 1).clamp(1, 256);
@@ -2181,14 +2858,13 @@ fn advance_movement(
         {
             controller.state = CharacterState::Walking { target };
             let walk_action = walk_action_for_class(controller.class);
+            let walk_speed = walk_playback_speed(controller.class);
             anim_state.current_action = walk_action;
-            anim_state.playback_speed = walk_playback_speed(controller.class);
-            viewer.selected_animation = walk_action;
-            viewer.pending_animation_change = true;
+            anim_state.playback_speed = walk_speed;
+            request_animation_change(&mut viewer, walk_action, walk_speed, true);
             viewer.status = "Walking (close to target)".to_string();
             let direction = diff / distance;
-            let target_yaw =
-                direction.x.atan2(direction.z) + std::f32::consts::PI + MODEL_YAW_OFFSET;
+            let target_yaw = mu_heading_to_bevy_yaw(direction.x, direction.z) + MODEL_YAW_OFFSET;
             let target_rot = Quat::from_rotation_y(target_yaw);
             transform.rotation = transform
                 .rotation
@@ -2203,8 +2879,8 @@ fn advance_movement(
 
         let direction = diff / distance;
 
-        // Face movement direction (add PI because glTF models face -Z)
-        let target_yaw = direction.x.atan2(direction.z) + std::f32::consts::PI + MODEL_YAW_OFFSET;
+        // Face movement direction using MU CreateAngle-compatible heading.
+        let target_yaw = mu_heading_to_bevy_yaw(direction.x, direction.z) + MODEL_YAW_OFFSET;
         let target_rot = Quat::from_rotation_y(target_yaw);
         transform.rotation = transform
             .rotation
@@ -2221,6 +2897,12 @@ fn advance_movement(
     }
 }
 
+fn mu_heading_to_bevy_yaw(direction_x: f32, direction_z: f32) -> f32 {
+    // MU heading uses CreateAngle(dx, dy) ~= atan2(dx, -dy). Convert to Bevy yaw by negating.
+    let mu_heading = direction_x.atan2(-direction_z);
+    -mu_heading
+}
+
 // ============================================================================
 // Rotate idle character to face mouse cursor
 // ============================================================================
@@ -2229,10 +2911,15 @@ fn rotate_idle_to_mouse(
     time: Res<Time>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
+    viewer: Res<ViewerState>,
     mut characters: Query<(&mut Transform, &CharacterController), With<CharacterRoot>>,
     egui_wants_input: Res<EguiWantsInput>,
     heightmap: Res<HeightmapResource>,
 ) {
+    if viewer.active_skill.is_some() {
+        return;
+    }
+
     if egui_wants_input.wants_any_pointer_input() {
         return;
     }
@@ -2274,7 +2961,7 @@ fn rotate_idle_to_mouse(
             continue;
         }
 
-        let target_yaw = horiz.x.atan2(horiz.y) + std::f32::consts::PI + MODEL_YAW_OFFSET;
+        let target_yaw = mu_heading_to_bevy_yaw(horiz.x, horiz.y) + MODEL_YAW_OFFSET;
         let target_rot = Quat::from_rotation_y(target_yaw);
         transform.rotation = transform
             .rotation
@@ -2361,6 +3048,10 @@ fn run_action_for_class(_class: CharacterClass) -> usize {
     25 // PLAYER_RUN — same for all classes when unarmed
 }
 
+fn idle_playback_speed(_class: CharacterClass) -> f32 {
+    0.16
+}
+
 fn walk_playback_speed(class: CharacterClass) -> f32 {
     match class {
         CharacterClass::RageFighter => 0.32,
@@ -2445,11 +3136,17 @@ fn apply_bone_transforms(
         if let Ok(name) = name_query.get(entity) {
             if let Some(&skel_t) = bone_transforms.get(name.as_str()) {
                 if let Ok(mut bp_t) = transform_query.get_mut(entity) {
+                    // Keep authored mesh bone scale. Some converted clips carry unstable
+                    // scale tracks that distort the body after skill playback.
+                    let preserved_scale = bp_t.scale;
                     if name.as_str() == ROOT_BONE_NAME {
                         bp_t.rotation = skel_t.rotation;
                         bp_t.translation.y = skel_t.translation.y;
+                        bp_t.scale = preserved_scale;
                     } else {
-                        *bp_t = skel_t;
+                        bp_t.translation = skel_t.translation;
+                        bp_t.rotation = skel_t.rotation;
+                        bp_t.scale = preserved_scale;
                     }
                 }
             }

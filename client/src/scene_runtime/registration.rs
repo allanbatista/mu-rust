@@ -24,9 +24,13 @@ use crate::scene_runtime::systems::{
 };
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
-use bevy::state::prelude::{OnEnter, States, in_state};
+use bevy::state::prelude::OnEnter;
 
-pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) {
+fn runtime_state_is_active(state: Res<State<crate::AppState>>) -> bool {
+    matches!(state.get(), crate::AppState::Gameplay)
+}
+
+pub fn register_scene_runtime(app: &mut App) {
     app.add_plugins(MaterialPlugin::<GrassMaterial>::default())
         .init_resource::<DebugOverlayState>()
         .init_resource::<DebugSceneStats>()
@@ -47,7 +51,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
             Update,
             load_scene_runtime_assets
                 .in_set(SceneRenderPipeline::Load)
-                .run_if(in_state(active_state)),
+                .run_if(runtime_state_is_active),
         )
         .add_systems(
             Update,
@@ -62,7 +66,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
                 initialize_world_56_login_fx,
             )
                 .in_set(SceneRenderPipeline::Spawn)
-                .run_if(in_state(active_state)),
+                .run_if(runtime_state_is_active),
         )
         .add_systems(
             Update,
@@ -88,7 +92,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
                 animate_world_56_dark_lord,
             )
                 .in_set(SceneRenderPipeline::Simulate)
-                .run_if(in_state(active_state)),
+                .run_if(runtime_state_is_active),
         )
         .add_systems(
             Update,
@@ -100,16 +104,16 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
             )
                 .chain()
                 .in_set(SceneRenderPipeline::Simulate)
-                .run_if(in_state(active_state)),
+                .run_if(runtime_state_is_active),
         )
         .add_systems(
             Update,
             (spawn_dynamic_lights, update_dynamic_lights)
                 .in_set(SceneRenderPipeline::Lighting)
-                .run_if(in_state(active_state)),
+                .run_if(runtime_state_is_active),
         )
         .add_systems(
-            OnEnter(active_state),
+            OnEnter(crate::AppState::Gameplay),
             (
                 reset_debug_overlay_state,
                 reset_debug_scene_stats,
@@ -126,7 +130,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
             )
                 .chain()
                 .in_set(SceneRenderPipeline::Camera)
-                .run_if(in_state(active_state)),
+                .run_if(runtime_state_is_active),
         )
         .add_systems(
             Update,
@@ -135,13 +139,13 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
                 apply_debug_overlay_visibility,
             )
                 .in_set(SceneRenderPipeline::Camera)
-                .run_if(in_state(active_state)),
+                .run_if(runtime_state_is_active),
         )
         .add_systems(
             Update,
             update_debug_scene_stats
                 .in_set(SceneRenderPipeline::Camera)
-                .run_if(in_state(active_state))
+                .run_if(runtime_state_is_active)
                 .run_if(|s: Res<DebugOverlayState>| s.visible),
         );
 
@@ -152,7 +156,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
             .init_resource::<DebugFrameLimiter>()
             .init_resource::<DebugShadowQuality>()
             .add_systems(
-                OnEnter(active_state),
+                OnEnter(crate::AppState::Gameplay),
                 (reset_debug_free_camera, spawn_debug_free_camera_hint),
             )
             .add_systems(
@@ -165,7 +169,7 @@ pub fn register_scene_runtime<S: States + Copy>(app: &mut App, active_state: S) 
                     cycle_debug_shadow_quality,
                 )
                     .in_set(SceneRenderPipeline::Camera)
-                    .run_if(in_state(active_state)),
+                    .run_if(runtime_state_is_active),
             );
     }
 }

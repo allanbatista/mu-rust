@@ -1,12 +1,12 @@
 use bevy::asset::{AssetId, AssetPlugin};
+#[cfg(feature = "solari")]
+use bevy::camera::CameraMainTextureUsages;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gltf::Gltf;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::light::GlobalAmbientLight;
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-#[cfg(feature = "solari")]
-use bevy::camera::CameraMainTextureUsages;
 #[cfg(feature = "solari")]
 use bevy::render::render_resource::TextureUsages;
 #[cfg(feature = "solari")]
@@ -107,29 +107,29 @@ struct MeshBoundsCache {
 fn main() {
     let mut app = App::new();
     app.insert_resource(GlobalAmbientLight {
-            color: Color::WHITE,
-            brightness: 250.0,
-            affects_lightmapped_meshes: true,
-        })
-        .insert_resource(MeshBoundsCache::default())
-        .insert_resource(ViewerState::default())
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "MU Object Animation Viewer".to_string(),
-                        resolution: WindowResolution::new(1440, 900),
-                        resizable: true,
-                        ..default()
-                    }),
-                    ..default()
-                })
-                .set(AssetPlugin {
-                    file_path: asset_root_path().into(),
+        color: Color::WHITE,
+        brightness: 250.0,
+        affects_lightmapped_meshes: true,
+    })
+    .insert_resource(MeshBoundsCache::default())
+    .insert_resource(ViewerState::default())
+    .add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "MU Object Animation Viewer".to_string(),
+                    resolution: WindowResolution::new(1440, 900),
+                    resizable: true,
                     ..default()
                 }),
-        )
-        .add_plugins(EguiPlugin::default());
+                ..default()
+            })
+            .set(AssetPlugin {
+                file_path: asset_root_path().into(),
+                ..default()
+            }),
+    )
+    .add_plugins(EguiPlugin::default());
 
     #[cfg(feature = "solari")]
     app.add_plugins(bevy::solari::SolariPlugins);

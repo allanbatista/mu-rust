@@ -56,7 +56,7 @@ fn process_world_requests(
     for WorldRequest(requested) in requests.read() {
         // Despawn existing world entities
         for entity in &roots {
-            commands.entity(entity).despawn();
+            commands.entity(entity).try_despawn();
         }
 
         spawn_world(&mut commands, *requested);
@@ -102,13 +102,4 @@ fn setup_world_camera(mut commands: Commands) {
             .looking_at(Vec3::new(24_056.0, 170.0, 2_500.0), Vec3::Y),
     ));
 
-    // 2D Camera for UI overlay
-    commands.spawn((
-        Camera2d,
-        Camera {
-            order: 1,                            // Render UI on top
-            clear_color: ClearColorConfig::None, // Don't clear, draw over 3D
-            ..Default::default()
-        },
-    ));
 }

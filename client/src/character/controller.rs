@@ -17,4 +17,5 @@ pub struct CharacterAnimState {
 pub enum CharacterState {
     Idle,
     Walking { target: Vec3 },
+    Running { target: Vec3 },
 }

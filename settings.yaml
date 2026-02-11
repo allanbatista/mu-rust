@@ -1,0 +1,12 @@
+graphics:
+  window_mode: windowed
+  resolution:
+    width: 1280
+    height: 720
+  shadow_quality: low
+  vsync: true
+  fps_limit: default60
+  render_distance: medium
+audio:
+  ambient_enabled: true
+  effects_enabled: true

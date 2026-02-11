@@ -48,7 +48,7 @@ fn setup_loading_scene(
     let texture = asset_server.load("wallpapers/entry.png");
 
     commands
-        .spawn((LoadingSceneRoot, Transform::default()))
+        .spawn((LoadingSceneRoot, Transform::default(), Visibility::Visible))
         .with_children(|parent| {
             parent.spawn((
                 LoadingImage {
@@ -77,7 +77,7 @@ fn advance_loading_timer(
     mut next_state: ResMut<NextState<crate::AppState>>,
 ) {
     if timer.0.tick(time.delta()).just_finished() {
-        next_state.set(crate::AppState::Mock);
+        next_state.set(crate::AppState::Login);
     }
 }
 
@@ -109,7 +109,7 @@ fn fit_loading_image(
 
 fn cleanup_loading_scene(mut commands: Commands, query: Query<Entity, With<LoadingSceneRoot>>) {
     if let Ok(entity) = query.single() {
-        commands.entity(entity).despawn();
+        commands.entity(entity).try_despawn();
     }
     commands.remove_resource::<LoadingTimer>();
 }
