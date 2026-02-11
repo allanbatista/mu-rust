@@ -4,3 +4,4 @@ assets/data*/
 *.pyc
 assets/reports/
 assets/remaster*
+settings.yaml
