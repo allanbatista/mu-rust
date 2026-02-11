@@ -33,11 +33,55 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, fields as dataclass_fields
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Sequence, Tuple
+
+
+def _image_temp_suffix_from_bytes(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if image_bytes.startswith(b"BM"):
+        return ".bmp"
+    # Most MU legacy textures decoded from .OZT are TGA payloads.
+    return ".tga"
+
+
+def _image_payload_may_have_alpha(image_bytes: bytes) -> bool:
+    suffix = _image_temp_suffix_from_bytes(image_bytes)
+    # Legacy additive textures frequently come from OZJ/JPG payloads; those
+    # formats do not carry alpha and must not be classified via fake alpha.
+    return suffix in {".png", ".tga"}
+
+
+def _parse_magick_gray_histogram(histogram_output: str) -> Tuple[int, Dict[int, int]]:
+    bins: Dict[int, int] = {}
+    total_pixels = 0
+    for line in histogram_output.splitlines():
+        entry = line.strip()
+        if not entry or ":" not in entry:
+            continue
+
+        count_token, _ = entry.split(":", 1)
+        try:
+            count = int(count_token.strip())
+        except ValueError:
+            continue
+
+        gray_match = re.search(r"gray\(([-+]?\d+(?:\.\d+)?)\)", entry, re.IGNORECASE)
+        if gray_match is None:
+            continue
+
+        gray_value = int(round(float(gray_match.group(1))))
+        gray_value = max(0, min(255, gray_value))
+        bins[gray_value] = bins.get(gray_value, 0) + count
+        total_pixels += count
+    return total_pixels, bins
 
 
 def _png_alpha_profile(png_bytes: bytes) -> Tuple[bool, bool, float, float]:
@@ -72,92 +116,70 @@ def _png_alpha_profile(png_bytes: bytes) -> Tuple[bool, bool, float, float]:
         has_partial_alpha = any(histogram[value] > 0 for value in range(1, 255))
         return True, has_partial_alpha, transparent_ratio, opaque_ratio
     except Exception:
+        pass
+
+    if not _image_payload_may_have_alpha(png_bytes):
         return False, False, 0.0, 1.0
 
-
-def _apply_black_color_key_alpha(
-    image_bytes: bytes,
-    threshold: int,
-) -> Tuple[bytes, bool]:
-    """Return PNG bytes with border-connected near-black pixels keyed to alpha=0.
-
-    Only near-black regions that are connected to texture borders are removed.
-    This avoids erasing dark-but-valid details inside the effect texture.
-    """
+    # Fallback for environments without Pillow (or unsupported payloads):
+    # ask ImageMagick for alpha channel data only when alpha truly exists.
+    temp_input_path: Optional[Path] = None
     try:
-        import io
-        from collections import deque
-        from PIL import Image
+        with tempfile.NamedTemporaryFile(
+            suffix=_image_temp_suffix_from_bytes(png_bytes),
+            delete=False,
+        ) as input_tmp:
+            input_tmp.write(png_bytes)
+            temp_input_path = Path(input_tmp.name)
 
-        clamped_threshold = max(0, min(255, int(threshold)))
+        histogram_output = subprocess.check_output(
+            [
+                "magick",
+                "identify",
+                "-format",
+                "%[channels]",
+                str(temp_input_path),
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if "a" not in histogram_output.lower():
+            return False, False, 0.0, 1.0
 
-        image = Image.open(io.BytesIO(image_bytes))
-        image.load()
-        rgba = image.convert("RGBA")
-        width, height = rgba.size
-        if width <= 0 or height <= 0:
-            return image_bytes, False
+        histogram_output = subprocess.check_output(
+            [
+                "magick",
+                str(temp_input_path),
+                "-channel",
+                "a",
+                "-separate",
+                "-define",
+                "histogram:unique-colors=true",
+                "-format",
+                "%c",
+                "histogram:info:-",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
 
-        px = rgba.load()
-        if px is None:
-            return image_bytes, False
+        total_pixels, bins = _parse_magick_gray_histogram(histogram_output)
 
-        visited = bytearray(width * height)
-        queue: deque[Tuple[int, int]] = deque()
+        if total_pixels <= 0:
+            return False, False, 0.0, 1.0
 
-        def is_near_black(x: int, y: int) -> bool:
-            r, g, b, _a = px[x, y]
-            return r <= clamped_threshold and g <= clamped_threshold and b <= clamped_threshold
-
-        def enqueue_if_candidate(x: int, y: int) -> None:
-            index = y * width + x
-            if visited[index]:
-                return
-            visited[index] = 1
-            if is_near_black(x, y):
-                queue.append((x, y))
-
-        for x in range(width):
-            enqueue_if_candidate(x, 0)
-            enqueue_if_candidate(x, height - 1)
-        for y in range(height):
-            enqueue_if_candidate(0, y)
-            enqueue_if_candidate(width - 1, y)
-
-        changed = False
-        while queue:
-            x, y = queue.popleft()
-            r, g, b, a = px[x, y]
-            if a != 0:
-                changed = True
-                px[x, y] = (r, g, b, 0)
-
-            if x > 0:
-                enqueue_if_candidate(x - 1, y)
-            if x + 1 < width:
-                enqueue_if_candidate(x + 1, y)
-            if y > 0:
-                enqueue_if_candidate(x, y - 1)
-            if y + 1 < height:
-                enqueue_if_candidate(x, y + 1)
-
-        if not changed:
-            return image_bytes, False
-
-        non_zero_alpha = 0
-        for _r, _g, _b, a in rgba.getdata():
-            if a > 0:
-                non_zero_alpha += 1
-                break
-        if non_zero_alpha == 0:
-            # Never emit a fully transparent texture; keep original in this case.
-            return image_bytes, False
-
-        output = io.BytesIO()
-        rgba.save(output, format="PNG")
-        return output.getvalue(), True
+        transparent_pixels = bins.get(0, 0)
+        opaque_pixels = bins.get(255, 0)
+        has_partial_alpha = any(count > 0 for value, count in bins.items() if 0 < value < 255)
+        transparent_ratio = transparent_pixels / total_pixels
+        opaque_ratio = opaque_pixels / total_pixels
+        has_alpha = transparent_pixels > 0 or has_partial_alpha
+        return has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio
     except Exception:
-        return image_bytes, False
+        return False, False, 0.0, 1.0
+    finally:
+        if temp_input_path is not None:
+            temp_input_path.unlink(missing_ok=True)
 
 
 # Conservative thresholds to avoid turning cutout/opaque materials into full blend.
@@ -166,6 +188,131 @@ ALPHA_BLEND_OPAQUE_MAX_RATIO = 0.20
 ALPHA_BLEND_TRANSPARENT_MIN_RATIO = 0.02
 ALPHA_MASK_PARTIAL_MIN_RATIO = 0.10
 ALPHA_MASK_CUTOFF = 0.35
+
+# Legacy additive inference thresholds for textures that do not expose alpha.
+LEGACY_ADDITIVE_BLACK_RATIO_MIN = 0.50
+LEGACY_ADDITIVE_BRIGHT_RATIO_MIN = 0.00
+LEGACY_ADDITIVE_MEAN_LUMA_MAX = 0.18
+LEGACY_ADDITIVE_BLACK_LUMA_MAX = 0.06
+LEGACY_ADDITIVE_BRIGHT_LUMA_MIN = 0.75
+LEGACY_ADDITIVE_INTENSITY_DEFAULT = 1.00
+LEGACY_ADDITIVE_INTENSITY_BOOST = 1.20
+LEGACY_ADDITIVE_INTENSITY_BOOST_BRIGHT_RATIO_MIN = 0.12
+LEGACY_ADDITIVE_INTENSITY_MIN = 0.60
+LEGACY_ADDITIVE_INTENSITY_MAX = 1.40
+
+
+def _texture_visual_profile(image_bytes: bytes) -> Tuple[float, float, float]:
+    """Return (black_ratio, bright_ratio, mean_luma) in [0, 1]."""
+    black_bin_max = max(0, min(255, int(round(LEGACY_ADDITIVE_BLACK_LUMA_MAX * 255.0))))
+    bright_bin_min = max(0, min(255, int(round(LEGACY_ADDITIVE_BRIGHT_LUMA_MIN * 255.0))))
+
+    try:
+        import io
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(image_bytes))
+        img.load()
+        gray = img.convert("RGB").convert("L")
+        histogram = gray.histogram()
+        total_pixels = sum(histogram)
+        if total_pixels <= 0:
+            return 0.0, 0.0, 0.0
+
+        black_pixels = sum(histogram[: black_bin_max + 1])
+        bright_pixels = sum(histogram[bright_bin_min:])
+        weighted_sum = sum(value * count for value, count in enumerate(histogram))
+        mean_luma = weighted_sum / (255.0 * total_pixels)
+        return black_pixels / total_pixels, bright_pixels / total_pixels, mean_luma
+    except Exception:
+        pass
+
+    temp_input_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=_image_temp_suffix_from_bytes(image_bytes),
+            delete=False,
+        ) as input_tmp:
+            input_tmp.write(image_bytes)
+            temp_input_path = Path(input_tmp.name)
+
+        histogram_output = subprocess.check_output(
+            [
+                "magick",
+                str(temp_input_path),
+                "-colorspace",
+                "Gray",
+                "-depth",
+                "8",
+                "-format",
+                "%c",
+                "histogram:info:-",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        total_pixels, bins = _parse_magick_gray_histogram(histogram_output)
+        if total_pixels <= 0:
+            return 0.0, 0.0, 0.0
+
+        black_pixels = sum(count for value, count in bins.items() if value <= black_bin_max)
+        bright_pixels = sum(count for value, count in bins.items() if value >= bright_bin_min)
+        weighted_sum = sum(value * count for value, count in bins.items())
+        mean_luma = weighted_sum / (255.0 * total_pixels)
+        return black_pixels / total_pixels, bright_pixels / total_pixels, mean_luma
+    except Exception:
+        return 0.0, 0.0, 0.0
+    finally:
+        if temp_input_path is not None:
+            temp_input_path.unlink(missing_ok=True)
+
+
+def _legacy_additive_intensity_from_signal(bright_ratio: float) -> float:
+    intensity = LEGACY_ADDITIVE_INTENSITY_DEFAULT
+    if bright_ratio > LEGACY_ADDITIVE_INTENSITY_BOOST_BRIGHT_RATIO_MIN:
+        intensity = LEGACY_ADDITIVE_INTENSITY_BOOST
+    return max(
+        LEGACY_ADDITIVE_INTENSITY_MIN,
+        min(LEGACY_ADDITIVE_INTENSITY_MAX, intensity),
+    )
+
+
+def _legacy_additive_confidence_from_signal(
+    black_ratio: float,
+    bright_ratio: float,
+    mean_luma: float,
+) -> float:
+    black_score = min(1.0, black_ratio / max(LEGACY_ADDITIVE_BLACK_RATIO_MIN, 1e-6))
+    bright_score = min(1.0, bright_ratio / max(LEGACY_ADDITIVE_BRIGHT_RATIO_MIN, 1e-6))
+    luma_score = 1.0 - min(1.0, mean_luma / max(LEGACY_ADDITIVE_MEAN_LUMA_MAX, 1e-6))
+    return max(0.0, min(1.0, (black_score + bright_score + luma_score) / 3.0))
+
+
+def _infer_legacy_additive_from_visual_signal(
+    has_alpha: bool,
+    black_ratio: float,
+    bright_ratio: float,
+    mean_luma: float,
+) -> Optional[Tuple[float, float, str]]:
+    if has_alpha:
+        return None
+    if (
+        black_ratio >= LEGACY_ADDITIVE_BLACK_RATIO_MIN
+        and bright_ratio >= LEGACY_ADDITIVE_BRIGHT_RATIO_MIN
+        and mean_luma <= LEGACY_ADDITIVE_MEAN_LUMA_MAX
+    ):
+        intensity = _legacy_additive_intensity_from_signal(bright_ratio)
+        confidence = _legacy_additive_confidence_from_signal(
+            black_ratio=black_ratio,
+            bright_ratio=bright_ratio,
+            mean_luma=mean_luma,
+        )
+        detail = (
+            f"black_ratio={black_ratio:.3f} bright_ratio={bright_ratio:.3f} "
+            f"mean_luma={mean_luma:.3f}"
+        )
+        return intensity, confidence, detail
+    return None
 
 
 def _classify_alpha_mode(
@@ -259,6 +406,8 @@ LEGACY_TEXTURE_EXTENSIONS_BY_PREFERENCE: Tuple[str, ...] = (
 # Legacy world/object rendering hints from MuClient5.2 / muonline-cross source.
 # Key: (object_dir, model_index), where model_index is from ObjectXX.bmd.
 # Value: BlendMesh value used by RenderMesh, which maps to Mesh.Texture index.
+# NOTE: these hints are now a fallback when automatic blend inference cannot
+# confidently classify a material as additive.
 #
 # MuClient5.2 references:
 #   cpp/MuClient5.2/source/ZzzObject.cpp
@@ -282,9 +431,28 @@ LEGACY_BLEND_TEXTURE_INDEX_BY_OBJECT_MODEL: Dict[Tuple[int, int], int] = {
     (4, 42): 0,   # type 41 -> Object42, BlendMesh=0
 }
 
-# Some legacy additive effects use near-black backgrounds (typically JPEG-based)
-# that should be fully transparent in modern pipelines. We apply a conservative
-# color-key threshold during GLB embedding for these specific models.
+# Legacy blend hints for non-object model groups (currently item models).
+# Key format: "<group>/<model_stem>" normalized to lowercase alnum only.
+# NOTE: this table exists for compatibility fallback only.
+LEGACY_BLEND_TEXTURE_INDEX_BY_MODEL_KEY: Dict[str, int] = {
+    "item/wing01": 0,
+}
+
+# Optional intensity hint for legacy additive materials.
+# Runtime may apply this multiplier to tune perceived brightness.
+LEGACY_ADDITIVE_INTENSITY_BY_OBJECT_MODEL: Dict[Tuple[int, int], float] = {
+    (4, 38): 1.20,
+    (4, 42): 1.20,
+    (4, 40): 1.00,
+}
+
+LEGACY_ADDITIVE_INTENSITY_BY_MODEL_KEY: Dict[str, float] = {
+    "item/wing01": 1.00,
+}
+
+# Optional metadata hints for legacy additive effects that used near-black
+# backgrounds in the original client. This converter currently does not rewrite
+# textures with color-key alpha; values are emitted as extras metadata only.
 LEGACY_ADDITIVE_COLOR_KEY_THRESHOLD_BY_OBJECT_MODEL: Dict[Tuple[int, int], int] = {
     (4, 40): 64,  # Object4/Object40 (Chaos Machine glow mesh)
 }
@@ -576,6 +744,32 @@ class ResolvedTexture:
     has_partial_alpha: bool = False
     transparent_ratio: float = 0.0
     opaque_ratio: float = 1.0
+    black_ratio: float = 0.0
+    bright_ratio: float = 0.0
+    mean_luma: float = 0.0
+
+
+@dataclass(frozen=True)
+class PrimitiveInfo:
+    vert_offset: int
+    vert_count: int
+    idx_offset: int
+    idx_count: int
+    texture_uri: Optional[str]
+    legacy_blend_mode: Optional[str]
+    mesh_index: int
+    mesh_texture_index: int
+    mesh_texture_name: str
+    mesh_texture_reference_name: Optional[str]
+    texture_candidates: Tuple[str, ...]
+    texture_found_on_disk: bool
+    texture_has_alpha: bool
+    texture_has_partial_alpha: bool
+    texture_transparent_ratio: float
+    texture_opaque_ratio: float
+    texture_black_ratio: float
+    texture_bright_ratio: float
+    texture_mean_luma: float
 
 
 # ---------------------------------------------------------------------------
@@ -1465,6 +1659,7 @@ class TextureResolver:
             has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio = _png_alpha_profile(
                 payload_bytes
             )
+            black_ratio, bright_ratio, mean_luma = _texture_visual_profile(payload_bytes)
             return ResolvedTexture(
                 uri=virtual_uri,
                 png_bytes=payload_bytes if self.embed_textures else None,
@@ -1473,6 +1668,9 @@ class TextureResolver:
                 has_partial_alpha=has_partial_alpha,
                 transparent_ratio=transparent_ratio,
                 opaque_ratio=opaque_ratio,
+                black_ratio=black_ratio,
+                bright_ratio=bright_ratio,
+                mean_luma=mean_luma,
             )
 
         return None
@@ -1640,6 +1838,9 @@ class TextureResolver:
         has_partial_alpha = False
         transparent_ratio = 0.0
         opaque_ratio = 1.0
+        black_ratio = 0.0
+        bright_ratio = 0.0
+        mean_luma = 0.0
         if alpha_probe_payload is not None:
             (
                 has_alpha,
@@ -1647,6 +1848,11 @@ class TextureResolver:
                 transparent_ratio,
                 opaque_ratio,
             ) = _png_alpha_profile(alpha_probe_payload)
+            (
+                black_ratio,
+                bright_ratio,
+                mean_luma,
+            ) = _texture_visual_profile(alpha_probe_payload)
 
         resolved_uri = self._uri_for_path(resolved_path)
         return ResolvedTexture(
@@ -1657,6 +1863,9 @@ class TextureResolver:
             has_partial_alpha=has_partial_alpha,
             transparent_ratio=transparent_ratio,
             opaque_ratio=opaque_ratio,
+            black_ratio=black_ratio,
+            bright_ratio=bright_ratio,
+            mean_luma=mean_luma,
         )
 
     def resolve(self, texture_name: str) -> Optional[ResolvedTexture]:
@@ -1764,11 +1973,138 @@ def _legacy_object_identity_from_source_path(
     return None
 
 
+def _legacy_model_key_from_source_path(source_path: Optional[Path]) -> Optional[str]:
+    if source_path is None:
+        return None
+
+    normalized_stem = NON_ALNUM_PATTERN.sub("", source_path.stem.lower())
+    if not normalized_stem:
+        return None
+
+    for raw_part in reversed(source_path.parts[:-1]):
+        normalized_part = NON_ALNUM_PATTERN.sub("", raw_part.lower())
+        if not normalized_part:
+            continue
+        if normalized_part == "item":
+            return f"item/{normalized_stem}"
+        if normalized_part.startswith("object") and normalized_part[6:].isdigit():
+            return f"{normalized_part}/{normalized_stem}"
+    return None
+
+
+def _material_decision_from_inputs(
+    texture_uri: Optional[str],
+    legacy_blend_mode: Optional[str],
+    texture_signal_profile_by_uri: Dict[str, Tuple[bool, bool, float, float, float, float, float]],
+) -> Dict[str, object]:
+    if not texture_uri:
+        return {
+            "material_kind": "untextured",
+            "alpha_mode": "OPAQUE",
+            "double_sided": False,
+            "decision_source": "default",
+            "decision_detail": "primitive has no resolved texture URI",
+            "inference_mode": "untextured",
+            "inference_confidence": 1.0,
+            "inference_source": "default",
+        }
+
+    (
+        has_alpha,
+        has_partial_alpha,
+        transparent_ratio,
+        opaque_ratio,
+        black_ratio,
+        bright_ratio,
+        mean_luma,
+    ) = texture_signal_profile_by_uri.get(
+        texture_uri,
+        (False, False, 0.0, 1.0, 0.0, 0.0, 0.0),
+    )
+
+    alpha_mode = _classify_alpha_mode(
+        has_alpha=has_alpha,
+        has_partial_alpha=has_partial_alpha,
+        transparent_ratio=transparent_ratio,
+        opaque_ratio=opaque_ratio,
+    )
+
+    if alpha_mode == "BLEND":
+        return {
+            "material_kind": "textured_pbr",
+            "alpha_mode": "BLEND",
+            "double_sided": True,
+            "decision_source": "alpha_profile",
+            "decision_detail": "partial alpha coverage classified as BLEND",
+            "inference_mode": "blend",
+            "inference_confidence": 0.95,
+            "inference_source": "alpha_profile",
+        }
+    if alpha_mode == "MASK":
+        return {
+            "material_kind": "textured_pbr",
+            "alpha_mode": "MASK",
+            "double_sided": True,
+            "decision_source": "alpha_profile",
+            "decision_detail": "binary/threshold alpha coverage classified as MASK",
+            "inference_mode": "mask",
+            "inference_confidence": 0.90,
+            "inference_source": "alpha_profile",
+        }
+
+    inferred_additive = _infer_legacy_additive_from_visual_signal(
+        has_alpha=has_alpha,
+        black_ratio=black_ratio,
+        bright_ratio=bright_ratio,
+        mean_luma=mean_luma,
+    )
+    if inferred_additive is not None:
+        additive_intensity, confidence, detail = inferred_additive
+        return {
+            "material_kind": "additive_emissive",
+            "alpha_mode": "OPAQUE",
+            "double_sided": True,
+            "decision_source": "legacy_rgb_key",
+            "decision_detail": f"inferred additive from RGB profile ({detail})",
+            "inference_mode": "additive",
+            "inference_confidence": confidence,
+            "inference_source": "legacy_rgb_key",
+            "additive_intensity": additive_intensity,
+            "legacy_blend_reason": "rgb_key_inference",
+        }
+
+    if legacy_blend_mode == "additive":
+        return {
+            "material_kind": "additive_emissive",
+            "alpha_mode": "OPAQUE",
+            "double_sided": True,
+            "decision_source": "legacy_blend_texture_index",
+            "decision_detail": "mesh.texture matched legacy BlendMesh texture index fallback",
+            "inference_mode": "additive",
+            "inference_confidence": 0.65,
+            "inference_source": "legacy_blend_texture_index",
+            "additive_intensity": _legacy_additive_intensity_from_signal(bright_ratio),
+            "legacy_blend_reason": "blend_mesh_texture_index",
+        }
+
+    return {
+        "material_kind": "textured_pbr",
+        "alpha_mode": "OPAQUE",
+        "double_sided": False,
+        "decision_source": "default",
+        "decision_detail": "no alpha signal requiring BLEND/MASK",
+        "inference_mode": "opaque",
+        "inference_confidence": 0.90,
+        "inference_source": "default",
+    }
+
+
 def bmd_to_glb(
     model: BmdModel,
     texture_resolver: Optional[TextureResolver] = None,
     source_path: Optional[Path] = None,
     canonical_player_skeleton: Optional[CanonicalSkeleton] = None,
+    blend_probe_records: Optional[List[Dict[str, object]]] = None,
     force_player_inplace: bool = True,
 ) -> Optional[bytes]:
     """Convert a parsed BMD model to GLB (GLTF Binary) bytes.
@@ -1829,6 +2165,7 @@ def bmd_to_glb(
             )
 
     legacy_object_identity = _legacy_object_identity_from_source_path(source_path)
+    legacy_model_key = _legacy_model_key_from_source_path(source_path)
     legacy_blend_texture_index = None
     if legacy_object_identity is not None:
         legacy_blend_texture_index = LEGACY_BLEND_TEXTURE_INDEX_BY_OBJECT_MODEL.get(
@@ -1842,6 +2179,25 @@ def bmd_to_glb(
                 legacy_object_identity[1],
                 legacy_blend_texture_index,
             )
+    if legacy_blend_texture_index is None and legacy_model_key is not None:
+        legacy_blend_texture_index = LEGACY_BLEND_TEXTURE_INDEX_BY_MODEL_KEY.get(legacy_model_key)
+        if legacy_blend_texture_index is not None:
+            logging.debug(
+                "Applying legacy blend hint for %s: model=%s texture_index=%d",
+                model.name,
+                legacy_model_key,
+                legacy_blend_texture_index,
+            )
+
+    legacy_additive_intensity_override: Optional[float] = None
+    if legacy_object_identity is not None:
+        legacy_additive_intensity_override = LEGACY_ADDITIVE_INTENSITY_BY_OBJECT_MODEL.get(
+            legacy_object_identity
+        )
+    if legacy_additive_intensity_override is None and legacy_model_key is not None:
+        legacy_additive_intensity_override = LEGACY_ADDITIVE_INTENSITY_BY_MODEL_KEY.get(
+            legacy_model_key
+        )
 
     # Build unified vertex buffer per mesh, then combine into GLTF primitives.
     all_positions: List[Tuple[float, float, float]] = []
@@ -1851,10 +2207,12 @@ def bmd_to_glb(
     all_joint_indices: List[Tuple[int, int, int, int]] = []
     all_joint_weights: List[Tuple[float, float, float, float]] = []
 
-    primitives_info: List[Tuple[int, int, int, int, Optional[str], Optional[str]]] = []
-    # (vert_offset, vert_count, idx_offset, idx_count, texture_uri, legacy_blend_mode)
+    primitives_info: List[PrimitiveInfo] = []
     embedded_texture_payloads: Dict[str, bytes] = {}
-    texture_alpha_profile_by_uri: Dict[str, Tuple[bool, bool, float, float]] = {}
+    texture_signal_profile_by_uri: Dict[
+        str,
+        Tuple[bool, bool, float, float, float, float, float],
+    ] = {}
     missing_textures: set[str] = set()
     warned_vertex_nodes: set[int] = set()
     warned_normal_nodes: set[int] = set()
@@ -1978,6 +2336,13 @@ def bmd_to_glb(
             all_joint_indices.extend(mesh_joint_indices)
             all_joint_weights.extend(mesh_joint_weights)
 
+        mesh_texture_reference_name: Optional[str] = None
+        texture_candidates: List[str] = []
+        if 0 <= mesh.texture < len(model.meshs):
+            mesh_texture_reference_name = model.meshs[mesh.texture].texture_name
+            texture_candidates.append(mesh_texture_reference_name)
+        texture_candidates.append(mesh.texture_name)
+
         resolved_texture = _resolve_mesh_texture(
             model.meshs,
             mesh_index,
@@ -1985,17 +2350,49 @@ def bmd_to_glb(
         )
 
         texture_uri: Optional[str] = None
+        texture_found_on_disk = False
+        texture_has_alpha = False
+        texture_has_partial_alpha = False
+        texture_transparent_ratio = 0.0
+        texture_opaque_ratio = 1.0
+        texture_black_ratio = 0.0
+        texture_bright_ratio = 0.0
+        texture_mean_luma = 0.0
         if resolved_texture is not None:
+            texture_found_on_disk = resolved_texture.found_on_disk
+            texture_has_alpha = resolved_texture.has_alpha
+            texture_has_partial_alpha = resolved_texture.has_partial_alpha
+            texture_transparent_ratio = resolved_texture.transparent_ratio
+            texture_opaque_ratio = resolved_texture.opaque_ratio
+            texture_black_ratio = resolved_texture.black_ratio
+            texture_bright_ratio = resolved_texture.bright_ratio
+            texture_mean_luma = resolved_texture.mean_luma
             if resolved_texture.found_on_disk:
-                texture_uri = resolved_texture.uri
-                texture_alpha_profile_by_uri[texture_uri] = (
+                resolved_texture_uri = resolved_texture.uri
+                resolved_texture_payload = resolved_texture.png_bytes
+                resolved_texture_profile = (
                     resolved_texture.has_alpha,
                     resolved_texture.has_partial_alpha,
                     resolved_texture.transparent_ratio,
                     resolved_texture.opaque_ratio,
+                    resolved_texture.black_ratio,
+                    resolved_texture.bright_ratio,
+                    resolved_texture.mean_luma,
                 )
-                if resolved_texture.png_bytes is not None:
-                    embedded_texture_payloads.setdefault(texture_uri, resolved_texture.png_bytes)
+
+                texture_uri = resolved_texture_uri
+                (
+                    texture_has_alpha,
+                    texture_has_partial_alpha,
+                    texture_transparent_ratio,
+                    texture_opaque_ratio,
+                    texture_black_ratio,
+                    texture_bright_ratio,
+                    texture_mean_luma,
+                ) = resolved_texture_profile
+                texture_signal_profile_by_uri[texture_uri] = resolved_texture_profile
+                if resolved_texture_payload is not None:
+                    embedded_texture_payloads.setdefault(texture_uri, resolved_texture_payload)
             else:
                 missing_textures.add(resolved_texture.uri)
                 if texture_resolver is None or not texture_resolver.embed_textures:
@@ -2009,14 +2406,29 @@ def bmd_to_glb(
             # Legacy RenderMesh uses additive blending for BlendMesh surfaces.
             legacy_blend_mode = "additive"
 
-        primitives_info.append((
-            vert_offset,
-            len(mesh_positions),
-            idx_offset,
-            len(mesh_indices),
-            texture_uri,
-            legacy_blend_mode,
-        ))
+        primitives_info.append(
+            PrimitiveInfo(
+                vert_offset=vert_offset,
+                vert_count=len(mesh_positions),
+                idx_offset=idx_offset,
+                idx_count=len(mesh_indices),
+                texture_uri=texture_uri,
+                legacy_blend_mode=legacy_blend_mode,
+                mesh_index=mesh_index,
+                mesh_texture_index=mesh.texture,
+                mesh_texture_name=mesh.texture_name,
+                mesh_texture_reference_name=mesh_texture_reference_name,
+                texture_candidates=tuple(texture_candidates),
+                texture_found_on_disk=texture_found_on_disk,
+                texture_has_alpha=texture_has_alpha,
+                texture_has_partial_alpha=texture_has_partial_alpha,
+                texture_transparent_ratio=texture_transparent_ratio,
+                texture_opaque_ratio=texture_opaque_ratio,
+                texture_black_ratio=texture_black_ratio,
+                texture_bright_ratio=texture_bright_ratio,
+                texture_mean_luma=texture_mean_luma,
+            )
+        )
 
     if not all_positions or not all_indices:
         return None
@@ -2170,6 +2582,16 @@ def bmd_to_glb(
                 missing_preview,
             )
 
+    def material_decision_for_primitive(
+        texture_uri: Optional[str],
+        legacy_blend_mode: Optional[str],
+    ) -> Dict[str, object]:
+        return _material_decision_from_inputs(
+            texture_uri=texture_uri,
+            legacy_blend_mode=legacy_blend_mode,
+            texture_signal_profile_by_uri=texture_signal_profile_by_uri,
+        )
+
     def ensure_material(
         texture_uri: Optional[str],
         legacy_blend_mode: Optional[str],
@@ -2191,20 +2613,32 @@ def bmd_to_glb(
                 legacy_object_identity
             )
 
-        def apply_legacy_additive_mode(alpha_key_applied: bool = False) -> None:
+        def apply_legacy_additive_mode(
+            alpha_key_applied: bool = False,
+            additive_intensity: Optional[float] = None,
+            blend_reason: str = "blend_mesh_texture_index",
+        ) -> None:
             material["alphaMode"] = "OPAQUE"
             material["doubleSided"] = True
             pbr_add = material.get("pbrMetallicRoughness")
             if isinstance(pbr_add, dict):
-                pbr_add["baseColorFactor"] = [0.0, 0.0, 0.0, 1.0]
+                # Keep a visible fallback in generic glTF viewers.
+                # Runtime still applies legacy additive behavior via extras.
+                pbr_add["baseColorFactor"] = [1.0, 1.0, 1.0, 1.0]
+            effective_intensity = legacy_additive_intensity_override
+            if effective_intensity is None:
+                effective_intensity = additive_intensity
+            if effective_intensity is None:
+                effective_intensity = LEGACY_ADDITIVE_INTENSITY_DEFAULT
             extras: Dict[str, object] = {
                 "mu_legacy_blend_mode": "additive",
-                "mu_legacy_blend_mode_reason": "blend_mesh_texture_index",
+                "mu_legacy_blend_mode_reason": blend_reason,
             }
             if additive_alpha_key_threshold is not None:
                 extras["mu_legacy_alpha_key_threshold"] = additive_alpha_key_threshold
                 if alpha_key_applied:
                     extras["mu_legacy_alpha_key_applied"] = True
+            extras["mu_legacy_additive_intensity"] = float(effective_intensity)
             if legacy_blend_texture_index is not None:
                 extras["mu_legacy_blend_texture_index"] = legacy_blend_texture_index
             if legacy_object_identity is not None:
@@ -2212,7 +2646,7 @@ def bmd_to_glb(
                 extras["mu_legacy_object_model"] = legacy_object_identity[1]
             material["extras"] = extras
 
-        alpha_key_applied = False
+        material_decision = material_decision_for_primitive(texture_uri, legacy_blend_mode)
         if texture_uri:
             image_index = len(images)
             embedded_payload = embedded_texture_payloads.get(texture_uri)
@@ -2241,23 +2675,27 @@ def bmd_to_glb(
             texture_index = len(textures)
             textures.append({"source": image_index})
 
-            if legacy_blend_mode == "additive":
+            if material_decision["material_kind"] == "additive_emissive":
                 material["emissiveFactor"] = [1.0, 1.0, 1.0]
                 material["emissiveTexture"] = {"index": texture_index}
-                apply_legacy_additive_mode(alpha_key_applied=False)
+                pbr = material.get("pbrMetallicRoughness")
+                if isinstance(pbr, dict):
+                    pbr["baseColorTexture"] = {"index": texture_index}
+                apply_legacy_additive_mode(
+                    alpha_key_applied=False,
+                    additive_intensity=material_decision.get("additive_intensity"),
+                    blend_reason=str(
+                        material_decision.get(
+                            "legacy_blend_reason",
+                            "blend_mesh_texture_index",
+                        )
+                    ),
+                )
             else:
                 pbr = material["pbrMetallicRoughness"]
                 if isinstance(pbr, dict):
                     pbr["baseColorTexture"] = {"index": texture_index}
-                has_alpha, has_partial_alpha, transparent_ratio, opaque_ratio = (
-                    texture_alpha_profile_by_uri.get(texture_uri, (False, False, 0.0, 1.0))
-                )
-                alpha_mode = _classify_alpha_mode(
-                    has_alpha=has_alpha,
-                    has_partial_alpha=has_partial_alpha,
-                    transparent_ratio=transparent_ratio,
-                    opaque_ratio=opaque_ratio,
-                )
+                alpha_mode = material_decision["alpha_mode"]
                 if alpha_mode == "BLEND":
                     material["alphaMode"] = "BLEND"
                     material["doubleSided"] = True
@@ -2265,8 +2703,17 @@ def bmd_to_glb(
                     material["alphaMode"] = "MASK"
                     material["alphaCutoff"] = ALPHA_MASK_CUTOFF
                     material["doubleSided"] = True
-        elif legacy_blend_mode == "additive":
-            apply_legacy_additive_mode(alpha_key_applied=False)
+        elif material_decision["material_kind"] == "additive_emissive":
+            apply_legacy_additive_mode(
+                alpha_key_applied=False,
+                additive_intensity=material_decision.get("additive_intensity"),
+                blend_reason=str(
+                    material_decision.get(
+                        "legacy_blend_reason",
+                        "blend_mesh_texture_index",
+                    )
+                ),
+            )
 
         material_index = len(materials)
         materials.append(material)
@@ -2276,22 +2723,15 @@ def bmd_to_glb(
     mesh_primitives: List[Dict[str, object]] = []
     index_component_type = 5125 if use_uint32 else 5123
     index_component_size = 4 if use_uint32 else 2
-    for (
-        _vert_offset,
-        _vert_count,
-        idx_offset,
-        idx_count,
-        texture_uri,
-        legacy_blend_mode,
-    ) in primitives_info:
+    for primitive in primitives_info:
         index_accessor: Dict[str, object] = {
             "bufferView": INDEX_BUFFER_VIEW,
             "componentType": index_component_type,
-            "count": idx_count,
+            "count": primitive.idx_count,
             "type": "SCALAR",
         }
 
-        byte_offset = idx_offset * index_component_size
+        byte_offset = primitive.idx_offset * index_component_size
         if byte_offset:
             index_accessor["byteOffset"] = byte_offset
 
@@ -2311,13 +2751,65 @@ def bmd_to_glb(
             attributes["JOINTS_0"] = joint_accessor_index
             attributes["WEIGHTS_0"] = weight_accessor_index
 
+        material_decision = material_decision_for_primitive(
+            primitive.texture_uri,
+            primitive.legacy_blend_mode,
+        )
+
         mesh_primitives.append(
             {
                 "attributes": attributes,
                 "indices": index_accessor_index,
-                "material": ensure_material(texture_uri, legacy_blend_mode),
+                "material": ensure_material(primitive.texture_uri, primitive.legacy_blend_mode),
             }
         )
+
+        if blend_probe_records is not None:
+            source_value = str(source_path) if source_path is not None else None
+            object_dir = None
+            object_model = None
+            if legacy_object_identity is not None:
+                object_dir, object_model = legacy_object_identity
+            blend_probe_records.append(
+                {
+                    "source_path": source_value,
+                    "model_name": model.name,
+                    "model_version": model.version,
+                    "object_dir": object_dir,
+                    "object_model": object_model,
+                    "mesh_index": primitive.mesh_index,
+                    "mesh_texture_index": primitive.mesh_texture_index,
+                    "mesh_texture_name": primitive.mesh_texture_name,
+                    "mesh_texture_reference_name": primitive.mesh_texture_reference_name,
+                    "texture_candidates": list(primitive.texture_candidates),
+                    "resolved_texture_uri": primitive.texture_uri,
+                    "resolved_texture_found_on_disk": primitive.texture_found_on_disk,
+                    "resolved_texture_has_alpha": primitive.texture_has_alpha,
+                    "resolved_texture_has_partial_alpha": primitive.texture_has_partial_alpha,
+                    "resolved_texture_transparent_ratio": primitive.texture_transparent_ratio,
+                    "resolved_texture_opaque_ratio": primitive.texture_opaque_ratio,
+                    "resolved_texture_black_ratio": primitive.texture_black_ratio,
+                    "resolved_texture_bright_ratio": primitive.texture_bright_ratio,
+                    "resolved_texture_mean_luma": primitive.texture_mean_luma,
+                    "legacy_blend_texture_index": legacy_blend_texture_index,
+                    "legacy_blend_mode": primitive.legacy_blend_mode,
+                    "material_kind": material_decision["material_kind"],
+                    "material_alpha_mode": material_decision["alpha_mode"],
+                    "material_double_sided": material_decision["double_sided"],
+                    "material_decision_source": material_decision["decision_source"],
+                    "material_decision_detail": material_decision["decision_detail"],
+                    "material_inference_mode": material_decision.get("inference_mode"),
+                    "material_inference_confidence": material_decision.get(
+                        "inference_confidence"
+                    ),
+                    "material_inference_source": material_decision.get("inference_source"),
+                    "bmd_explicit_blend_flag_present": False,
+                    "bmd_explicit_blend_flag_note": (
+                        "Parser currently exposes mesh texture indirection only; "
+                        "no explicit per-material blend state field is decoded."
+                    ),
+                }
+            )
 
     nodes: List[Dict[str, object]] = [{"mesh": 0, "name": model.name}]
     scene_nodes: List[int] = [0]
@@ -2867,6 +3359,7 @@ class ConversionStats:
     kept_pngs_not_embedded: int = 0
     failed: int = 0
     failures: List[Dict] = field(default_factory=list)
+    blend_probe_entries: List[Dict[str, object]] = field(default_factory=list)
 
 
 def merge_stats(target: ConversionStats, source: ConversionStats) -> None:
@@ -2893,6 +3386,7 @@ def convert_single_bmd(
     embed_textures: bool,
     canonical_player_skeleton_path: Optional[Path],
     force_player_inplace: bool,
+    blend_probe: bool,
     stats: ConversionStats,
 ) -> None:
     """Convert a single BMD file to GLB."""
@@ -2943,11 +3437,13 @@ def convert_single_bmd(
             fallback_root=output_root,
             legacy_texture_dir=source.parent,
         )
+        blend_probe_records: Optional[List[Dict[str, object]]] = [] if blend_probe else None
         glb_bytes = bmd_to_glb(
             model,
             texture_resolver=texture_resolver,
             source_path=source,
             canonical_player_skeleton=canonical_player_skeleton,
+            blend_probe_records=blend_probe_records,
             force_player_inplace=force_player_inplace,
         )
     except Exception as exc:
@@ -2955,6 +3451,9 @@ def convert_single_bmd(
         stats.failures.append({"source": str(source), "error": str(exc), "type": "convert"})
         logging.error("Conversion error for %s: %s", source, exc)
         return
+
+    if blend_probe and blend_probe_records:
+        stats.blend_probe_entries.extend(blend_probe_records)
 
     if glb_bytes is None:
         # Try skeleton-only export for files like player.bmd (0 meshes, many bones+animations)
@@ -3004,6 +3503,7 @@ def _bmd_convert_worker(
     embed_textures: bool,
     canonical_player_skeleton_path: Optional[Path],
     force_player_inplace: bool,
+    blend_probe: bool,
 ) -> ConversionStats:
     """Worker function for parallel BMD conversion. Returns local stats."""
     stats = ConversionStats()
@@ -3016,6 +3516,7 @@ def _bmd_convert_worker(
             embed_textures,
             canonical_player_skeleton_path,
             force_player_inplace,
+            blend_probe,
             stats,
         )
     except Exception as exc:  # noqa: BLE001
@@ -3232,6 +3733,43 @@ def prune_embedded_texture_pngs(
     return pruned, kept
 
 
+def write_blend_probe_report(entries: List[Dict[str, object]], output_path: Path) -> None:
+    decision_source_counts: Counter[str] = Counter()
+    material_kind_counts: Counter[str] = Counter()
+    alpha_mode_counts: Counter[str] = Counter()
+    inference_mode_counts: Counter[str] = Counter()
+    inference_source_counts: Counter[str] = Counter()
+    legacy_object_counts: Counter[str] = Counter()
+
+    for entry in entries:
+        decision_source_counts[str(entry.get("material_decision_source", "unknown"))] += 1
+        material_kind_counts[str(entry.get("material_kind", "unknown"))] += 1
+        alpha_mode_counts[str(entry.get("material_alpha_mode", "unknown"))] += 1
+        inference_mode_counts[str(entry.get("material_inference_mode", "unknown"))] += 1
+        inference_source_counts[str(entry.get("material_inference_source", "unknown"))] += 1
+
+        object_dir = entry.get("object_dir")
+        object_model = entry.get("object_model")
+        if isinstance(object_dir, int) and isinstance(object_model, int):
+            legacy_object_counts[f"object{object_dir}/object{object_model}"] += 1
+
+    payload = {
+        "entry_count": len(entries),
+        "summary": {
+            "material_decision_source_counts": dict(decision_source_counts),
+            "material_kind_counts": dict(material_kind_counts),
+            "material_alpha_mode_counts": dict(alpha_mode_counts),
+            "material_inference_mode_counts": dict(inference_mode_counts),
+            "material_inference_source_counts": dict(inference_source_counts),
+            "legacy_object_counts": dict(legacy_object_counts),
+        },
+        "entries": entries,
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2))
+
+
 def convert_all(
     bmd_root: Path,
     output_root: Path,
@@ -3245,10 +3783,17 @@ def convert_all(
     prune_embedded_textures: bool,
     canonical_player_skeleton_path: Optional[Path],
     force_player_inplace: bool,
+    blend_probe: bool = False,
     workers: int = 1,
 ) -> ConversionStats:
     """Convert all BMD files found under bmd_root."""
     stats = ConversionStats()
+
+    if blend_probe and workers > 1:
+        logging.info(
+            "Blend probe mode enabled: forcing workers=1 for deterministic probe output"
+        )
+        workers = 1
 
     bmd_files = discover_bmd_files(bmd_root, world_filter=world_filter)
     total = len(bmd_files)
@@ -3281,6 +3826,7 @@ def convert_all(
                 embed_textures,
                 canonical_player_skeleton_path,
                 force_player_inplace,
+                blend_probe,
                 stats,
             )
 
@@ -3307,6 +3853,7 @@ def convert_all(
                 [embed_textures] * total,
                 [canonical_player_skeleton_path] * total,
                 [force_player_inplace] * total,
+                [blend_probe] * total,
                 chunksize=chunksize,
             )
             for worker_stats in futures_iter:
@@ -3363,6 +3910,8 @@ def convert_all(
             "kept_pngs_not_embedded": stats.kept_pngs_not_embedded,
             "failed": stats.failed,
             "failures": stats.failures,
+            "blend_probe_enabled": blend_probe,
+            "blend_probe_entries": len(stats.blend_probe_entries),
         }
         report_path.write_text(json.dumps(report, indent=2))
         logging.info("Report written to %s", report_path)
@@ -3450,6 +3999,23 @@ def main() -> int:
             "By default, player animations are exported in-place (horizontal root motion removed)."
         ),
     )
+    parser.add_argument(
+        "--blend-probe",
+        action="store_true",
+        help=(
+            "Collect per-primitive material blend diagnostics and emit a JSON probe report. "
+            "Useful to validate additive/alpha decisions during conversion."
+        ),
+    )
+    parser.add_argument(
+        "--probe-output",
+        type=Path,
+        default=None,
+        help=(
+            "Path for blend probe JSON output. Enables --blend-probe automatically "
+            "(default: assets/reports/conversion_blend_probe.json)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -3505,6 +4071,12 @@ def main() -> int:
         logging.info("Canonical player skeleton mode: disabled by CLI flag")
 
     workers = max(1, args.workers)
+    blend_probe_enabled = args.blend_probe or args.probe_output is not None
+    blend_probe_output = args.probe_output or Path("assets/reports/conversion_blend_probe.json")
+    if blend_probe_enabled:
+        logging.info("Blend probe mode: enabled (output: %s)", blend_probe_output)
+    else:
+        logging.info("Blend probe mode: disabled")
     force_player_inplace = not args.disable_player_inplace
     if force_player_inplace:
         logging.info("Player animation in-place mode: enabled")
@@ -3524,8 +4096,17 @@ def main() -> int:
         prune_embedded_textures=prune_embedded_textures,
         canonical_player_skeleton_path=canonical_player_skeleton_path,
         force_player_inplace=force_player_inplace,
+        blend_probe=blend_probe_enabled,
         workers=workers,
     )
+
+    if blend_probe_enabled:
+        write_blend_probe_report(stats.blend_probe_entries, blend_probe_output)
+        logging.info(
+            "Blend probe report written to %s (%d entries)",
+            blend_probe_output,
+            len(stats.blend_probe_entries),
+        )
 
     if stats.failed > 0:
         logging.warning("%d files failed conversion", stats.failed)

@@ -611,11 +611,23 @@ python3 bmd_converter.py \
     --format glb --force --verbose \
     --report rust/assets/reports/models_report.json
 
+# Blend decision probe (per primitive/material diagnostics)
+python3 bmd_converter.py \
+    --bmd-root cpp/MuClient5.2/bin/Data \
+    --output-root rust/assets/data \
+    --format glb --force \
+    --blend-probe \
+    --probe-output rust/assets/reports/conversion_blend_probe.json
+
 python3 validate_assets.py \
     --assets-root rust/assets \
     --report rust/assets/reports/validation_report.json \
     --verbose
 ```
+
+The blend probe report includes per-primitive material decisions with alpha
+signals plus RGB-key heuristics (`black_ratio`, `bright_ratio`, `mean_luma`)
+used to infer legacy additive materials when no explicit alpha channel exists.
 
 **Environment variables**:
 - `LEGACY_ROOT` (default: `cpp/MuClient5.2/bin/Data`)
@@ -805,10 +817,12 @@ references, alpha map, and lightmap paths.
    from runtime code is not serialized, and vertices are emitted with single-joint
    weights (`WEIGHTS_0 = [1,0,0,0]`).
 
-2. **Material conversion is simplified**: The converter emits basic glTF PBR
-   materials (`metallicFactor=0`, `roughnessFactor=1`) with texture binding and
-   embedded PNG payloads when available. Legacy engine-specific material flags
-   (blend modes, UV animation, special shaders) are not preserved.
+2. **Material conversion remains approximate**: The converter emits basic glTF
+   PBR materials (`metallicFactor=0`, `roughnessFactor=1`) with texture binding
+   and embedded payloads when available. Legacy additive behavior is inferred
+   from alpha profiles and RGB-key texture signals, with fallback hints for
+   known models. UV animation and special legacy shader programs are not
+   preserved.
 
 3. **Season20 OBJ encryption unsolved**: The 82 `.obj` scene object files in the
    Season20 build use an unknown encryption scheme. All known methods

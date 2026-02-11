@@ -1,3 +1,4 @@
+use crate::legacy_additive::LegacyAdditiveMaterial;
 use crate::scene_runtime::components::{
     SceneObjectAnimationInitialized, SceneObjectAnimationSource,
 };
@@ -41,6 +42,7 @@ fn configure_runtime_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
 
 pub fn register_scene_runtime(app: &mut App) {
     app.add_plugins(MaterialPlugin::<GrassMaterial>::default())
+        .add_plugins(MaterialPlugin::<LegacyAdditiveMaterial>::default())
         .add_systems(Startup, configure_runtime_gizmos)
         .init_resource::<DebugOverlayState>()
         .init_resource::<DebugSceneStats>()

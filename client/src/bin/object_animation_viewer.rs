@@ -2,10 +2,11 @@ use bevy::asset::{AssetId, AssetPlugin};
 #[cfg(feature = "solari")]
 use bevy::camera::CameraMainTextureUsages;
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::gltf::Gltf;
+use bevy::gltf::{Gltf, GltfMaterialExtras};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::light::GlobalAmbientLight;
 use bevy::mesh::VertexAttributeValues;
+use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 #[cfg(feature = "solari")]
 use bevy::render::render_resource::TextureUsages;
@@ -14,9 +15,15 @@ use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
 use bevy::window::WindowResolution;
 use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiClipboard, EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+use serde_json::Value;
 #[path = "../bevy_compat.rs"]
 mod bevy_compat;
+#[path = "../legacy_additive.rs"]
+mod legacy_additive;
 use bevy_compat::*;
+use legacy_additive::{
+    LegacyAdditiveMaterial, legacy_additive_from_standard, legacy_additive_intensity_from_extras,
+};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -129,6 +136,7 @@ fn main() {
                 ..default()
             }),
     )
+    .add_plugins(MaterialPlugin::<LegacyAdditiveMaterial>::default())
     .add_plugins(EguiPlugin::default());
 
     #[cfg(feature = "solari")]
@@ -141,6 +149,7 @@ fn main() {
             (
                 handle_load_request,
                 initialize_animation_graph,
+                apply_legacy_gltf_material_overrides_for_viewer,
                 bind_animation_players,
                 apply_animation_controls,
                 sync_ground_below_loaded_object,
@@ -354,11 +363,13 @@ fn handle_load_request(
     }
     viewer.pending_load = false;
 
+    let mut roots_to_despawn = HashSet::new();
     if let Some(entity) = viewer.scene_entity.take() {
-        commands.entity(entity).despawn();
+        roots_to_despawn.insert(entity);
     }
-    for entity in &existing_roots {
-        commands.entity(entity).despawn();
+    roots_to_despawn.extend(existing_roots.iter());
+    for entity in roots_to_despawn {
+        commands.entity(entity).try_despawn();
     }
 
     viewer.graph_handle = None;
@@ -776,4 +787,58 @@ fn normalize_scene_and_gltf_path(raw_path: &str) -> (String, String) {
         .unwrap_or(&scene_path)
         .to_string();
     (scene_path, gltf_path)
+}
+
+fn apply_legacy_gltf_material_overrides_for_viewer(
+    mut commands: Commands,
+    mut legacy_materials: ResMut<Assets<LegacyAdditiveMaterial>>,
+    materials: Res<Assets<StandardMaterial>>,
+    query: Query<
+        (
+            Entity,
+            &MeshMaterial3d<StandardMaterial>,
+            &GltfMaterialExtras,
+        ),
+        Added<GltfMaterialExtras>,
+    >,
+) {
+    for (entity, material_handle, extras) in &query {
+        let Ok(payload) = serde_json::from_str::<Value>(&extras.value) else {
+            continue;
+        };
+
+        let Some(blend_mode) = payload.get("mu_legacy_blend_mode").and_then(Value::as_str) else {
+            continue;
+        };
+        if blend_mode != "additive" {
+            continue;
+        }
+
+        let Some(material) = materials.get(&material_handle.0) else {
+            continue;
+        };
+
+        let mut legacy_material = legacy_additive_from_standard(material);
+        let intensity = legacy_additive_intensity_from_extras(&payload);
+        legacy_material.params.intensity = intensity;
+        let has_texture = legacy_material.color_texture.is_some();
+        let legacy_material_handle = legacy_materials.add(legacy_material);
+
+        commands
+            .entity(entity)
+            .remove::<MeshMaterial3d<StandardMaterial>>()
+            .insert(MeshMaterial3d(legacy_material_handle));
+
+        debug!(
+            "object_viewer: applied legacy additive override (object={:?}/{:?}) texture={} intensity={:.2} material=LegacyAdditiveMaterial",
+            payload
+                .get("mu_legacy_object_dir")
+                .and_then(|value| value.as_i64()),
+            payload
+                .get("mu_legacy_object_model")
+                .and_then(|value| value.as_i64()),
+            has_texture,
+            intensity,
+        );
+    }
 }

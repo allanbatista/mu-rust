@@ -1,6 +1,7 @@
 mod bevy_compat;
 mod character;
 mod grid_overlay;
+mod legacy_additive;
 mod scene_runtime;
 mod scenes;
 mod settings;
