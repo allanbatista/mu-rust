@@ -823,6 +823,23 @@ mod tests {
 
     #[test]
     fn world4_skips_billboard_like_grass_alpha_overlays() {
+        let required_assets = [
+            "data/world4/terrain_config.json",
+            "data/world4/terrain_height.json",
+            "data/world4/terrain_map.json",
+            "data/world4/terrain_texture_slots.json",
+        ];
+        let missing = required_assets
+            .iter()
+            .find(|relative| !Path::new(CLIENT_ASSETS_ROOT).join(relative).is_file());
+        if let Some(missing_asset) = missing {
+            eprintln!(
+                "Skipping world4 terrain grass test because asset is missing: {}",
+                missing_asset
+            );
+            return;
+        }
+
         let world_name = "world4";
         let config: TerrainConfig = load_json_asset("data/world4/terrain_config.json");
         let heightmap: HeightmapData = load_json_asset("data/world4/terrain_height.json");

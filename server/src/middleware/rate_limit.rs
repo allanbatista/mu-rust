@@ -28,7 +28,7 @@ impl RateLimiter {
         let now = Instant::now();
         let cutoff = now - WINDOW_DURATION;
 
-        let mut entry = self.requests.entry(ip).or_insert_with(Vec::new);
+        let mut entry = self.requests.entry(ip).or_default();
 
         // Remove old entries
         entry.retain(|&timestamp| timestamp > cutoff);

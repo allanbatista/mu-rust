@@ -1,6 +1,8 @@
+use crate::bevy_compat::PbrBundle;
 use crate::scene_runtime::components::*;
 use bevy::gltf::Gltf;
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
+use bevy::math::primitives::Rectangle;
 use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::time::Timer;
@@ -30,8 +32,20 @@ const DEATH_STAB_SPIKE_BASE_DISTANCE: f32 = 100.0;
 const DEATH_STAB_SPIKE_LIFE_FRAMES: f32 = 10.0;
 const DEATH_STAB_CHARGE_LIGHT_INTENSITY: f32 = 4_500.0;
 const DEATH_STAB_IMPACT_LIGHT_INTENSITY: f32 = 8_000.0;
+const DEATH_STAB_LIGHTNING_FLASH_SECS: f32 = 0.06;
+const DEATH_STAB_LIGHTNING_WIDTH_BASE: f32 = 20.0;
+const DEATH_STAB_LIGHTNING_WIDTH_JITTER: f32 = 4.0;
+const DEATH_STAB_LIGHTNING_INTENSITY: f32 = 2.8;
+const DEATH_STAB_ENERGY_HDR_SCALE: f32 = 2.5;
+const DEATH_STAB_SPIKE_HDR_SCALE: f32 = 2.0;
 
 const CLIENT_ASSETS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets");
+
+#[derive(Default)]
+pub struct DeathStabLightningAssets {
+    mesh: Option<Handle<Mesh>>,
+    material: Option<Handle<StandardMaterial>>,
+}
 
 // ============================================================================
 // Helper functions
@@ -89,6 +103,18 @@ fn spear_asset() -> Option<&'static str> {
         Some("data/item/spear_01.glb")
     } else if vfx_asset_exists("data/item/spear_02.glb") {
         Some("data/item/spear_02.glb")
+    } else {
+        None
+    }
+}
+
+fn lightning_texture_asset() -> Option<&'static str> {
+    if vfx_asset_exists("data/effect/joint_thunder_01.png") {
+        Some("data/effect/joint_thunder_01.png")
+    } else if vfx_asset_exists("data/effect/thunder_01.png") {
+        Some("data/effect/thunder_01.png")
+    } else if vfx_asset_exists("data/effect/eff_lighting.png") {
+        Some("data/effect/eff_lighting.png")
     } else {
         None
     }
@@ -370,17 +396,20 @@ pub fn update_death_stab_timeline(
             }
 
             // Phase 1: Energy charge particles (lifeInt 12..18)
-            if (DEATH_STAB_ENERGY_WINDOW_MIN..=DEATH_STAB_ENERGY_WINDOW_MAX)
-                .contains(&current_life)
+            if (DEATH_STAB_ENERGY_WINDOW_MIN..=DEATH_STAB_ENERGY_WINDOW_MAX).contains(&current_life)
                 && rand_fps_check(1, factor, &mut rng)
             {
                 if let Some(charge_path) = charge_glb {
                     for _ in 0..3 {
                         // C#: Random.Next(-300, 300) independently for X and Y (rectangular)
                         let spread = Vec3::new(
-                            rng.gen_range(-DEATH_STAB_ENERGY_RANDOM_RADIUS..DEATH_STAB_ENERGY_RANDOM_RADIUS),
+                            rng.gen_range(
+                                -DEATH_STAB_ENERGY_RANDOM_RADIUS..DEATH_STAB_ENERGY_RANDOM_RADIUS,
+                            ),
                             0.0,
-                            rng.gen_range(-DEATH_STAB_ENERGY_RANDOM_RADIUS..DEATH_STAB_ENERGY_RANDOM_RADIUS),
+                            rng.gen_range(
+                                -DEATH_STAB_ENERGY_RANDOM_RADIUS..DEATH_STAB_ENERGY_RANDOM_RADIUS,
+                            ),
                         );
                         let rear_origin = caster_pos + Vec3::Y * 120.0 + spread
                             - timeline.forward_xz * DEATH_STAB_ENERGY_SPAWN_DISTANCE;
@@ -399,16 +428,14 @@ pub fn update_death_stab_timeline(
             }
 
             // Phase 2: Spike attack (lifeInt 8..14)
-            if (DEATH_STAB_SPIKE_WINDOW_MIN..=DEATH_STAB_SPIKE_WINDOW_MAX)
-                .contains(&current_life)
+            if (DEATH_STAB_SPIKE_WINDOW_MIN..=DEATH_STAB_SPIKE_WINDOW_MAX).contains(&current_life)
                 && rand_fps_check(2, factor, &mut rng)
             {
                 if let Some(spear_path) = spear_glb {
                     let frame_into_spike =
                         (DEATH_STAB_SPIKE_WINDOW_MAX - current_life).max(0) as f32;
                     let distance = DEATH_STAB_SPIKE_BASE_DISTANCE + frame_into_spike * 10.0;
-                    let spike_pos =
-                        caster_pos + timeline.forward_xz * distance + Vec3::Y * 120.0;
+                    let spike_pos = caster_pos + timeline.forward_xz * distance + Vec3::Y * 120.0;
                     for _ in 0..2 {
                         spawn_spike_particle(
                             &mut commands,
@@ -434,6 +461,7 @@ pub fn update_death_stab_timeline(
                         frame_accumulator: 0.0,
                         target_entity: None,
                         fallback_center: center,
+                        next_arc_seq: 0,
                     },
                     Transform::from_translation(center),
                     GlobalTransform::default(),
@@ -485,18 +513,14 @@ pub fn apply_death_stab_vfx_materials(
                 if let Some(original) = materials.get(&mat_handle.0).cloned() {
                     let mut overridden = original;
                     overridden.alpha_mode = AlphaMode::Add;
-                    overridden.unlit = false; // Must be false for emissive to work in Bevy 0.18 PBR pipeline
-                    overridden.base_color = Color::BLACK.into(); // Zero out lit channel so only emissive contributes
+                    overridden.unlit = true;
+                    // base_color modulates the texture; WHITE = full brightness initially,
+                    // per-frame update systems modulate this for fade-in/fade-out.
+                    // With unlit=true, shader output = base_color * base_color_texture.
+                    // Black-background textures work: black pixels add nothing (additive).
+                    overridden.base_color = Color::WHITE.into();
                     overridden.double_sided = true;
                     overridden.cull_mode = None;
-                    overridden.emissive = LinearRgba::WHITE;
-                    overridden.emissive_exposure_weight = 0.0; // Prevent camera exposure from scaling emissive
-                    if overridden.emissive_texture.is_none() {
-                        overridden.emissive_texture = overridden.base_color_texture.clone();
-                    }
-                    overridden.perceptual_roughness = 1.0;
-                    overridden.metallic = 0.0;
-                    overridden.reflectance = 0.0;
 
                     let new_handle = materials.add(overridden);
                     commands
@@ -544,21 +568,18 @@ pub fn update_death_stab_energy_particles(
         // Lerp position: C# Vector3.Lerp(startPos, targetPos, progress)
         transform.translation = particle.start_pos.lerp(particle.target_pos, progress);
 
-        // Emissive fade-in: C# BlendMeshLight = (1 - progress) * 2
-        // Allow HDR overbright (up to 2.0) — no clamping to 1.0
-        let intensity = ((1.0 - progress) * 2.0).max(0.0);
-
-        // C# Alpha = 0.1f — each energy particle is ghostly-dim; many overlap additively
-        // With AlphaMode::Add, alpha doesn't modulate color, so bake it into emissive RGB
-        let alpha = 0.1;
-        let emissive_value = intensity * alpha;
+        // C# BlendMeshLight = (1 - progress) * 2
+        // Allow HDR overbright (up to 2.0) — no clamping to 1.0.
+        // Note: C# Alpha=0.1 does NOT affect D3D additive blending (src+dst ignores alpha),
+        // so we don't apply it here. BlendMeshLight is the sole brightness control.
+        let brightness = ((1.0 - progress) * 2.0 * DEATH_STAB_ENERGY_HDR_SCALE).max(0.0);
 
         // Walk subtree to update all materials
         let mut queue = vec![_entity];
         while let Some(entity) = queue.pop() {
             if let Ok(mat_handle) = material_query.get(entity) {
                 if let Some(mat) = materials.get_mut(&mat_handle.0) {
-                    mat.emissive = LinearRgba::new(emissive_value, emissive_value, emissive_value, 1.0);
+                    mat.base_color = Color::linear_rgba(brightness, brightness, brightness, 1.0);
                 }
             }
             if let Ok(children) = children_query.get(entity) {
@@ -577,10 +598,7 @@ pub fn update_death_stab_energy_particles(
 pub fn update_death_stab_spike_particles(
     time: Res<Time>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut particles: Query<
-        (Entity, &mut DeathStabSpikeParticle),
-        With<DeathStabMaterialsApplied>,
-    >,
+    mut particles: Query<(Entity, &mut DeathStabSpikeParticle), With<DeathStabMaterialsApplied>>,
     children_query: Query<&Children>,
     material_query: Query<&MeshMaterial3d<StandardMaterial>>,
 ) {
@@ -588,18 +606,20 @@ pub fn update_death_stab_spike_particles(
 
     for (root_entity, mut particle) in &mut particles {
         particle.elapsed_secs += dt;
-        let remaining_ratio = 1.0 - (particle.elapsed_secs / particle.max_lifetime_secs).clamp(0.0, 1.0);
+        let remaining_ratio =
+            1.0 - (particle.elapsed_secs / particle.max_lifetime_secs).clamp(0.0, 1.0);
 
-        // Emissive fade-out: C# BlendMeshLight = (lifeFrames / 10) * 1.5
+        // Fade-out: C# BlendMeshLight = (lifeFrames / 10) * 1.5
         // Allow HDR overbright (up to 1.5 at spawn) — no clamping to 1.0
-        let intensity = (remaining_ratio * 1.5).max(0.0);
+        let intensity = (remaining_ratio * 1.5 * DEATH_STAB_SPIKE_HDR_SCALE).max(0.0);
 
-        // Walk subtree to update all materials
+        // Walk subtree to update all materials — modulate base_color directly.
+        // With unlit=true: shader output = base_color * base_color_texture (additive blend).
         let mut queue = vec![root_entity];
         while let Some(entity) = queue.pop() {
             if let Ok(mat_handle) = material_query.get(entity) {
                 if let Some(mat) = materials.get_mut(&mat_handle.0) {
-                    mat.emissive = LinearRgba::new(intensity, intensity, intensity, 1.0);
+                    mat.base_color = Color::linear_rgba(intensity, intensity, intensity, 1.0);
                 }
             }
             if let Ok(children) = children_query.get(entity) {
@@ -623,10 +643,7 @@ pub fn ensure_death_stab_animation_players(
     children_query: Query<&Children>,
     player_presence: Query<(), With<AnimationPlayer>>,
     mut players: Query<&mut AnimationPlayer>,
-    sources: Query<
-        (Entity, &DeathStabAnimationSource),
-        Without<DeathStabAnimationInitialized>,
-    >,
+    sources: Query<(Entity, &DeathStabAnimationSource), Without<DeathStabAnimationInitialized>>,
 ) {
     for (source_entity, source) in &sources {
         let player_entities =
@@ -684,10 +701,55 @@ pub fn ensure_death_stab_animation_players(
 pub fn update_lightning_hurt_effects(
     mut commands: Commands,
     time: Res<Time>,
-    mut gizmos: Gizmos,
+    asset_server: Res<AssetServer>,
     global_transforms: Query<&GlobalTransform>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut cached_assets: Local<DeathStabLightningAssets>,
+    mut warned_missing_texture: Local<bool>,
     mut effects: Query<(Entity, &mut LightningHurtEffect, &mut Transform)>,
+    active_arcs: Query<(Entity, &DeathStabLightningArc), With<DeathStabLightningArcVisual>>,
 ) {
+    let mesh_handle = cached_assets
+        .mesh
+        .get_or_insert_with(|| meshes.add(Mesh::from(Rectangle::new(1.0, 1.0))))
+        .clone();
+    let material_handle = if let Some(material) = cached_assets.material.as_ref().cloned() {
+        Some(material)
+    } else if let Some(texture_path) = lightning_texture_asset() {
+        let texture: Handle<Image> = asset_server.load(texture_path.to_string());
+        let material = materials.add(StandardMaterial {
+            base_color_texture: Some(texture),
+            base_color: Color::linear_rgba(
+                0.75 * DEATH_STAB_LIGHTNING_INTENSITY,
+                0.9 * DEATH_STAB_LIGHTNING_INTENSITY,
+                1.0 * DEATH_STAB_LIGHTNING_INTENSITY,
+                1.0,
+            ),
+            alpha_mode: AlphaMode::Add,
+            unlit: true,
+            double_sided: true,
+            cull_mode: None,
+            perceptual_roughness: 1.0,
+            metallic: 0.0,
+            reflectance: 0.0,
+            ..default()
+        });
+        cached_assets.material = Some(material.clone());
+        Some(material)
+    } else {
+        if !*warned_missing_texture {
+            warn!(
+                "DeathStab lightning texture is missing: expected data/effect/joint_thunder_01.png (or fallback thunder_01/eff_lighting)"
+            );
+            *warned_missing_texture = true;
+        }
+        None
+    };
+    let Some(material_handle) = material_handle else {
+        return;
+    };
+
     let dt = time.delta_secs();
     let factor = fps_animation_factor(dt);
     let mut rng = rand::thread_rng();
@@ -721,7 +783,24 @@ pub fn update_lightning_hurt_effects(
         let life = effect.remaining_frames as f32 / DEATH_STAB_HURT_FRAMES as f32;
         let arc_count = (8.0 + 8.0 * life)
             .round()
-            .clamp(1.0, DEATH_STAB_MAX_ACTIVE_LIGHTNING_ARCS as f32) as usize;
+            .clamp(1.0, DEATH_STAB_MAX_ACTIVE_LIGHTNING_ARCS as f32)
+            as usize;
+        let mut active_for_owner: Vec<(u32, Entity)> = active_arcs
+            .iter()
+            .filter(|(_, arc)| arc.owner_effect == entity)
+            .map(|(arc_entity, arc)| (arc.spawn_seq, arc_entity))
+            .collect();
+        let overflow = active_for_owner
+            .len()
+            .saturating_add(arc_count)
+            .saturating_sub(DEATH_STAB_MAX_ACTIVE_LIGHTNING_ARCS);
+        if overflow > 0 {
+            active_for_owner.sort_by_key(|(seq, _)| *seq);
+            for (_, arc_entity) in active_for_owner.into_iter().take(overflow) {
+                commands.entity(arc_entity).despawn();
+            }
+        }
+
         let pseudo_bones = [
             Vec3::new(0.0, 74.0, 0.0),
             Vec3::new(0.0, 58.0, 12.0),
@@ -757,14 +836,107 @@ pub fn update_lightning_hurt_effects(
                     rng.gen_range(-20.0..=20.0),
                     rng.gen_range(-20.0..=20.0),
                 );
-            let color = Color::srgba(
-                rng.gen_range(0.65..=0.95),
-                rng.gen_range(0.75..=0.95),
-                1.0,
-                (0.25 + life * 0.70).clamp(0.0, 1.0),
-            );
-            gizmos.line(start, end, color);
+            let width = (DEATH_STAB_LIGHTNING_WIDTH_BASE
+                + rng.gen_range(
+                    -DEATH_STAB_LIGHTNING_WIDTH_JITTER..=DEATH_STAB_LIGHTNING_WIDTH_JITTER,
+                ))
+            .max(4.0);
+            let spawn_seq = effect.next_arc_seq;
+            effect.next_arc_seq = effect.next_arc_seq.wrapping_add(1);
+
+            commands.spawn((
+                RuntimeSceneEntity,
+                DeathStabLightningArcVisual,
+                DeathStabLightningArc {
+                    owner_effect: entity,
+                    start,
+                    end,
+                    width,
+                    remaining_secs: DEATH_STAB_LIGHTNING_FLASH_SECS,
+                    spawn_seq,
+                },
+                NotShadowCaster,
+                NotShadowReceiver,
+                PbrBundle {
+                    mesh: Mesh3d(mesh_handle.clone()),
+                    material: MeshMaterial3d(material_handle.clone()),
+                    transform: Transform::from_translation((start + end) * 0.5),
+                    visibility: Visibility::Inherited,
+                    ..default()
+                },
+            ));
         }
+    }
+}
+
+pub fn update_death_stab_lightning_arcs(
+    mut commands: Commands,
+    time: Res<Time>,
+    camera_query: Query<&GlobalTransform, With<Camera3d>>,
+    mut arcs: Query<
+        (
+            Entity,
+            &mut DeathStabLightningArc,
+            &mut Transform,
+            &mut Visibility,
+        ),
+        With<DeathStabLightningArcVisual>,
+    >,
+) {
+    let dt = time.delta_secs();
+    let camera_position = camera_query
+        .single()
+        .ok()
+        .map(|camera| camera.translation());
+
+    for (entity, mut arc, mut transform, mut visibility) in &mut arcs {
+        arc.remaining_secs -= dt;
+        if arc.remaining_secs <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        let direction = arc.end - arc.start;
+        let length = direction.length();
+        if length <= 0.001 {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+
+        let Some(camera_position) = camera_position else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        let forward = direction / length;
+        let center = (arc.start + arc.end) * 0.5;
+        let to_camera = (camera_position - center).normalize_or_zero();
+
+        let mut right = forward.cross(to_camera);
+        if right.length_squared() <= 0.000_001 {
+            let fallback = if forward.y.abs() < 0.99 {
+                Vec3::Y
+            } else {
+                Vec3::X
+            };
+            right = forward.cross(fallback);
+        }
+        if right.length_squared() <= 0.000_001 {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+        right = right.normalize();
+
+        let face = right.cross(forward).normalize_or_zero();
+        if face.length_squared() <= 0.000_001 {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+
+        transform.translation = center;
+        transform.rotation = Quat::from_mat3(&Mat3::from_cols(right, forward, face));
+        transform.scale = Vec3::new(arc.width.max(1.0), length.max(0.001), 1.0);
+        *visibility = Visibility::Inherited;
     }
 }
 

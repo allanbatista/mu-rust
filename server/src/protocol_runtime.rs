@@ -72,14 +72,9 @@ impl ProtocolRuntime {
         let mut out = Vec::new();
         let mut consumed = 0;
 
-        loop {
-            match self.codec.try_decode_stream_frame(&buffer[consumed..])? {
-                Some((frame, used)) => {
-                    out.push(IngressPacket::V2Stream(frame));
-                    consumed += used;
-                }
-                None => break,
-            }
+        while let Some((frame, used)) = self.codec.try_decode_stream_frame(&buffer[consumed..])? {
+            out.push(IngressPacket::V2Stream(frame));
+            consumed += used;
         }
 
         Ok((out, consumed))

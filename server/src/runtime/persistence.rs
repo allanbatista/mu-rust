@@ -34,7 +34,7 @@ pub struct CriticalEvent {
     pub occurred_at_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct PersistenceMetrics {
     pub queue_depth: usize,
     pub pending_non_critical: usize,
@@ -43,20 +43,6 @@ pub struct PersistenceMetrics {
     pub critical_count: u64,
     pub error_count: u64,
     pub last_flush_duration_ms: u64,
-}
-
-impl Default for PersistenceMetrics {
-    fn default() -> Self {
-        Self {
-            queue_depth: 0,
-            pending_non_critical: 0,
-            flush_count: 0,
-            flushed_records: 0,
-            critical_count: 0,
-            error_count: 0,
-            last_flush_duration_ms: 0,
-        }
-    }
 }
 
 #[derive(Debug)]

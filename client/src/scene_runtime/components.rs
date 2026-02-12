@@ -276,7 +276,23 @@ pub struct LightningHurtEffect {
     pub frame_accumulator: f32,
     pub target_entity: Option<Entity>,
     pub fallback_center: Vec3,
+    pub next_arc_seq: u32,
 }
+
+/// Rendered lightning arc segment spawned by `LightningHurtEffect`.
+#[derive(Component)]
+pub struct DeathStabLightningArc {
+    pub owner_effect: Entity,
+    pub start: Vec3,
+    pub end: Vec3,
+    pub width: f32,
+    pub remaining_secs: f32,
+    pub spawn_seq: u32,
+}
+
+/// Marker for DeathStab lightning arc render entities.
+#[derive(Component)]
+pub struct DeathStabLightningArcVisual;
 
 /// Auto-despawn timer for short-lived VFX entities (particles, spikes, etc.).
 #[derive(Component)]

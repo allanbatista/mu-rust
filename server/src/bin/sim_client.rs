@@ -569,10 +569,8 @@ fn parse_args() -> anyhow::Result<SimConfig> {
         bail!("simulador sem acoes: remova --skip-http ou --skip-quic");
     }
 
-    if !cfg.skip_http {
-        if cfg.username.is_none() || cfg.password.is_none() {
-            bail!("--username e --password sao obrigatorios quando HTTP estiver habilitado");
-        }
+    if !cfg.skip_http && (cfg.username.is_none() || cfg.password.is_none()) {
+        bail!("--username e --password sao obrigatorios quando HTTP estiver habilitado");
     }
 
     if !cfg.skip_quic && cfg.quic_ca_cert.is_none() {

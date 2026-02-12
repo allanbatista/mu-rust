@@ -1,4 +1,11 @@
-use bevy::asset::{AssetId, AssetPlugin};
+#![allow(
+    clippy::collapsible_if,
+    clippy::needless_update,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
+use bevy::asset::AssetId;
 #[cfg(feature = "solari")]
 use bevy::camera::CameraMainTextureUsages;
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -7,26 +14,22 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::light::GlobalAmbientLight;
 use bevy::mesh::VertexAttributeValues;
 use bevy::mesh::skinning::SkinnedMesh;
-use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 #[cfg(feature = "solari")]
 use bevy::render::render_resource::TextureUsages;
 #[cfg(feature = "solari")]
 use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
-use bevy::window::WindowResolution;
 use bevy_egui::input::EguiWantsInput;
-use bevy_egui::{EguiClipboard, EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+use bevy_egui::{EguiClipboard, EguiContexts, EguiPrimaryContextPass, egui};
 use serde_json::Value;
-#[path = "../bevy_compat.rs"]
-mod bevy_compat;
-#[path = "../legacy_additive.rs"]
-mod legacy_additive;
-use bevy_compat::*;
-use legacy_additive::{
-    LegacyAdditiveMaterial, legacy_additive_from_standard, legacy_additive_intensity_from_extras,
-};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
+
+use client::bevy_compat::*;
+use client::composition::object_viewer_runtime::configure_object_animation_viewer_app;
+use client::legacy_additive::{
+    LegacyAdditiveMaterial, legacy_additive_from_standard, legacy_additive_intensity_from_extras,
+};
 
 const DEFAULT_OBJECT_PLAYBACK_SPEED: f32 = 0.16;
 const CAMERA_MIN_DISTANCE: f32 = 80.0;
@@ -120,28 +123,8 @@ fn main() {
         affects_lightmapped_meshes: true,
     })
     .insert_resource(MeshBoundsCache::default())
-    .insert_resource(ViewerState::default())
-    .add_plugins(
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "MU Object Animation Viewer".to_string(),
-                    resolution: WindowResolution::new(1440, 900),
-                    resizable: true,
-                    ..default()
-                }),
-                ..default()
-            })
-            .set(AssetPlugin {
-                file_path: asset_root_path().into(),
-                ..default()
-            }),
-    )
-    .add_plugins(MaterialPlugin::<LegacyAdditiveMaterial>::default())
-    .add_plugins(EguiPlugin::default());
-
-    #[cfg(feature = "solari")]
-    app.add_plugins(bevy::solari::SolariPlugins);
+    .insert_resource(ViewerState::default());
+    configure_object_animation_viewer_app(&mut app, asset_root_path());
 
     app.add_systems(Startup, setup_viewer_scene)
         .add_systems(EguiPrimaryContextPass, draw_ui_panel)
@@ -187,7 +170,7 @@ fn setup_viewer_scene(
     };
     apply_orbit_transform(&mut camera_transform, &orbit_camera);
 
-    let mut camera = commands.spawn((
+    let camera = commands.spawn((
         Camera3dBundle {
             transform: camera_transform,
             tonemapping: Tonemapping::ReinhardLuminance,
@@ -197,11 +180,17 @@ fn setup_viewer_scene(
     ));
 
     #[cfg(feature = "solari")]
-    camera.insert((
-        SolariLighting::default(),
-        Msaa::Off,
-        CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
-    ));
+    {
+        let mut camera = camera;
+        camera.insert((
+            SolariLighting::default(),
+            Msaa::Off,
+            CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
+        ));
+    }
+
+    #[cfg(not(feature = "solari"))]
+    let _ = camera;
 
     commands.spawn(DirectionalLightBundle {
         directional_light: DirectionalLight {

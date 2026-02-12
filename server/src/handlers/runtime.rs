@@ -8,7 +8,7 @@ use crate::{
     runtime::MuCoreRuntime,
 };
 
-fn runtime_ref<'a>(runtime: &'a Option<Arc<MuCoreRuntime>>) -> Result<&'a Arc<MuCoreRuntime>> {
+fn runtime_ref(runtime: &Option<Arc<MuCoreRuntime>>) -> Result<&Arc<MuCoreRuntime>> {
     runtime
         .as_ref()
         .ok_or_else(|| ConnectServerError::Internal("Runtime core is disabled".to_string()))

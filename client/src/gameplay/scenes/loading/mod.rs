@@ -1,4 +1,5 @@
-use super::SceneBuilder;
+use crate::gameplay::controllers::scene_controller::{self, SceneController, SceneId};
+use crate::gameplay::controllers::world_controller;
 use crate::world::{WorldId, WorldRequest};
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
@@ -20,7 +21,7 @@ struct LoadingTimer(Timer);
 
 pub struct LoadingScene;
 
-impl SceneBuilder for LoadingScene {
+impl SceneController for LoadingScene {
     fn register(app: &mut App) {
         app.add_systems(
             OnEnter(crate::AppState::Loading),
@@ -36,6 +37,10 @@ impl SceneBuilder for LoadingScene {
         )
         .add_systems(OnExit(crate::AppState::Loading), cleanup_loading_scene);
     }
+
+    fn scene_id() -> SceneId {
+        SceneId::Loading
+    }
 }
 
 fn setup_loading_scene(
@@ -43,7 +48,7 @@ fn setup_loading_scene(
     asset_server: Res<AssetServer>,
     mut world_requests: MessageWriter<WorldRequest>,
 ) {
-    world_requests.write(WorldRequest(WorldId::Loading));
+    world_controller::request_world(&mut world_requests, WorldId::Loading);
 
     let texture = asset_server.load("wallpapers/entry.png");
 
@@ -77,7 +82,7 @@ fn advance_loading_timer(
     mut next_state: ResMut<NextState<crate::AppState>>,
 ) {
     if timer.0.tick(time.delta()).just_finished() {
-        next_state.set(crate::AppState::Login);
+        scene_controller::transition_to(&mut next_state, crate::AppState::Login);
     }
 }
 

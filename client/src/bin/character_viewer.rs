@@ -1,9 +1,16 @@
+#![allow(
+    dead_code,
+    clippy::collapsible_if,
+    clippy::needless_update,
+    clippy::redundant_closure,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
 use bevy::animation::{AnimatedBy, AnimationTargetId};
-use bevy::asset::AssetPlugin;
 use bevy::asset::RenderAssetUsages;
 #[cfg(feature = "solari")]
 use bevy::camera::CameraMainTextureUsages;
-use bevy::post_process::bloom::Bloom;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::gltf::Gltf;
@@ -16,30 +23,26 @@ use bevy::light::{
 };
 use bevy::mesh::Indices;
 use bevy::mesh::PrimitiveTopology;
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 #[cfg(feature = "solari")]
 use bevy::render::render_resource::TextureUsages;
 #[cfg(feature = "solari")]
 use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
-use bevy::window::WindowResolution;
 use bevy_egui::input::EguiWantsInput;
-use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
-#[path = "../bevy_compat.rs"]
-mod bevy_compat;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 #[path = "character_viewer/skills.rs"]
 mod character_viewer_skills;
-#[path = "../grid_overlay.rs"]
-mod grid_overlay;
-use bevy_compat::*;
 use character_viewer_skills::skills_for_class;
-use grid_overlay::{
-    GRID_OVERLAY_COLOR, GridOverlayConfig, build_grid_segments, grid_line_count, segment_transform,
-};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 // Import shared types from the client library crate.
-use client::scene_runtime::components::{DeathStabTimeline, LightningHurtEffect};
+use client::bevy_compat::*;
+use client::composition::character_viewer_runtime::configure_character_viewer_app;
+use client::grid_overlay::{
+    GRID_OVERLAY_COLOR, GridOverlayConfig, build_grid_segments, grid_line_count, segment_transform,
+};
 use client::scene_runtime::systems::{
     apply_death_stab_vfx_materials, ensure_death_stab_animation_players, spawn_death_stab_vfx,
     update_death_stab_energy_particles, update_death_stab_spike_particles,
@@ -1491,27 +1494,8 @@ fn main() {
     .insert_resource(ViewerState::default())
     .insert_resource(SkillVfxPreloadCache::default())
     .insert_resource(heightmap)
-    .insert_resource(DirectionalLightShadowMap { size: 4096 })
-    .add_plugins(
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "MU Character Viewer".to_string(),
-                    resolution: WindowResolution::new(1440, 900),
-                    resizable: true,
-                    ..default()
-                }),
-                ..default()
-            })
-            .set(AssetPlugin {
-                file_path: asset_root.into(),
-                ..default()
-            }),
-    )
-    .add_plugins(EguiPlugin::default());
-
-    #[cfg(feature = "solari")]
-    app.add_plugins(bevy::solari::SolariPlugins);
+    .insert_resource(DirectionalLightShadowMap { size: 4096 });
+    configure_character_viewer_app(&mut app, asset_root);
 
     app.add_systems(Startup, (setup_viewer, configure_gizmos))
         .add_systems(
@@ -4499,8 +4483,13 @@ fn spawn_death_stab_vfx_local(
     _skill_duration: f32,
     _weapon_bones: Option<WeaponBlurBones>,
 ) {
-    let timeline_entity =
-        spawn_death_stab_vfx(commands, caster_entity, caster_pos, caster_rotation, target_pos);
+    let timeline_entity = spawn_death_stab_vfx(
+        commands,
+        caster_entity,
+        caster_pos,
+        caster_rotation,
+        target_pos,
+    );
     // Tag the timeline entity so bulk SkillVfx cleanup in the viewer can find it.
     commands.entity(timeline_entity).insert(SkillVfx);
 }
