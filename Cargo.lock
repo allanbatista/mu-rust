@@ -1205,6 +1205,7 @@ dependencies = [
  "bevy_mesh",
  "bevy_pbr",
  "bevy_platform",
+ "bevy_post_process",
  "bevy_ptr",
  "bevy_reflect",
  "bevy_render",
@@ -1406,6 +1407,36 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-time",
+]
+
+[[package]]
+name = "bevy_post_process"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8e1116cbc35637f267a29c7d2fe376e020f2b4402d6b525d328bae9c10460c7"
+dependencies = [
+ "bevy_app",
+ "bevy_asset",
+ "bevy_camera",
+ "bevy_color",
+ "bevy_core_pipeline",
+ "bevy_derive",
+ "bevy_ecs",
+ "bevy_image",
+ "bevy_math",
+ "bevy_platform",
+ "bevy_reflect",
+ "bevy_render",
+ "bevy_shader",
+ "bevy_transform",
+ "bevy_utils",
+ "bevy_window",
+ "bitflags 2.10.0",
+ "nonmax",
+ "radsort",
+ "smallvec",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

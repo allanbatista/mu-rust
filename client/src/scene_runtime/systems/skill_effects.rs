@@ -25,15 +25,13 @@ pub fn update_skill_impact_bursts(
 
             for _ in 0..burst.burst_count {
                 let cfg = &burst.emitter_config;
-                let lifetime =
-                    rng.gen_range(cfg.lifetime_range.0..=cfg.lifetime_range.1);
+                let lifetime = rng.gen_range(cfg.lifetime_range.0..=cfg.lifetime_range.1);
                 let velocity_offset = Vec3::new(
                     rng.gen_range(-cfg.velocity_variance.x..=cfg.velocity_variance.x),
                     rng.gen_range(-cfg.velocity_variance.y..=cfg.velocity_variance.y),
                     rng.gen_range(-cfg.velocity_variance.z..=cfg.velocity_variance.z),
                 );
-                let base_scale =
-                    rng.gen_range(cfg.scale_range.0..=cfg.scale_range.1);
+                let base_scale = rng.gen_range(cfg.scale_range.0..=cfg.scale_range.1);
                 let scale_jitter = if cfg.scale_variance > 0.0 {
                     rng.gen_range(-cfg.scale_variance..=cfg.scale_variance)
                 } else {

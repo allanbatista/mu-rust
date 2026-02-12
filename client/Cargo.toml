@@ -15,6 +15,7 @@ bevy = { version = "0.18.0", default-features = false, features = [
     "bevy_mesh",
     "bevy_light",
     "bevy_core_pipeline",
+    "bevy_post_process",
     "bevy_render",
     "bevy_pbr",
     "bevy_scene",

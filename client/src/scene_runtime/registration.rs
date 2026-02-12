@@ -22,6 +22,10 @@ use crate::scene_runtime::systems::{
     toggle_offscreen_scene_animations, update_boids, update_camera_tour,
     update_debug_free_camera_hint, update_debug_scene_stats, update_dynamic_lights,
     update_map_vfx_billboard_sprites, update_particle_emitters, update_particle_render_batches,
+    apply_death_stab_vfx_materials, ensure_death_stab_animation_players,
+    update_death_stab_energy_particles, update_death_stab_spike_particles,
+    update_death_stab_timeline, update_lightning_hurt_effects, update_skill_impact_bursts,
+    update_skill_timed_lights, update_skill_vfx_auto_lifetimes, update_weapon_trails,
     update_world_56_meteors,
 };
 use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
@@ -109,6 +113,16 @@ pub fn register_scene_runtime(app: &mut App) {
         .add_systems(
             Update,
             (
+                update_weapon_trails,
+                update_skill_impact_bursts,
+                update_skill_timed_lights,
+                update_death_stab_timeline,
+                apply_death_stab_vfx_materials,
+                ensure_death_stab_animation_players,
+                update_death_stab_energy_particles,
+                update_death_stab_spike_particles,
+                update_lightning_hurt_effects,
+                update_skill_vfx_auto_lifetimes,
                 update_particle_emitters,
                 ensure_particle_render_batches,
                 update_particle_render_batches,

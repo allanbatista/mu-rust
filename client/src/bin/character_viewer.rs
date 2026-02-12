@@ -3,6 +3,7 @@ use bevy::asset::AssetPlugin;
 use bevy::asset::RenderAssetUsages;
 #[cfg(feature = "solari")]
 use bevy::camera::CameraMainTextureUsages;
+use bevy::post_process::bloom::Bloom;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::gltf::Gltf;
@@ -37,12 +38,13 @@ use grid_overlay::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
-// Import character modules from the client crate.
-// Since this is a binary in the same package, we access via `client::`.
-mod character_imports {
-    // Re-export what we need — we inline the types to avoid crate linkage issues
-    // in a bin target within the same package.
-}
+// Import shared types from the client library crate.
+use client::scene_runtime::components::{DeathStabTimeline, LightningHurtEffect};
+use client::scene_runtime::systems::{
+    apply_death_stab_vfx_materials, ensure_death_stab_animation_players, spawn_death_stab_vfx,
+    update_death_stab_energy_particles, update_death_stab_spike_particles,
+    update_death_stab_timeline, update_lightning_hurt_effects, update_skill_vfx_auto_lifetimes,
+};
 
 // ============================================================================
 // Character system types (inlined for bin target)
@@ -1020,6 +1022,35 @@ enum SkillVfxProfile {
     GenericBuff,
     GenericProjectile,
     GenericArea,
+    // Specific skill VFX profiles (replacing generic ones)
+    HellFire,
+    Inferno,
+    Nova,
+    Poison,
+    IceSpell,
+    FireBall,
+    Lightning,
+    EvilSpirit,
+    PowerWave,
+    AquaBeam,
+    EnergyBall,
+    Decay,
+    GiganticStorm,
+    FlameStrike,
+    LightningShock,
+    SoulBarrier,
+    FireScream,
+    PlasmaStorm,
+    Earthshake,
+    ElectricSpike,
+    ForceWave,
+    Stun,
+    KillingBlow,
+    BeastUppercut,
+    ChainDrive,
+    DarkSide,
+    DragonRoar,
+    DragonSlasher,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1281,6 +1312,12 @@ struct SkillVfxFollow {
 }
 
 #[derive(Component)]
+struct SkillVfxFade {
+    duration: f32,
+    elapsed: f32,
+}
+
+#[derive(Component)]
 struct PendingSkillVfxSpawn {
     timer: Timer,
     glb_path: &'static str,
@@ -1288,6 +1325,8 @@ struct PendingSkillVfxSpawn {
     uniform_scale: f32,
     ttl_seconds: f32,
     follow: Option<(Entity, Vec3)>,
+    rotation: Quat,
+    fade_duration: Option<f32>,
 }
 
 #[derive(Resource, Default)]
@@ -1505,6 +1544,34 @@ fn main() {
             ),
         )
         .add_systems(Update, update_weapon_blur_vfx)
+        .add_systems(
+            Update,
+            update_death_stab_timeline.after(trigger_selected_skill),
+        )
+        .add_systems(
+            Update,
+            apply_death_stab_vfx_materials.after(update_death_stab_timeline),
+        )
+        .add_systems(
+            Update,
+            ensure_death_stab_animation_players.after(apply_death_stab_vfx_materials),
+        )
+        .add_systems(
+            Update,
+            update_death_stab_energy_particles.after(apply_death_stab_vfx_materials),
+        )
+        .add_systems(
+            Update,
+            update_death_stab_spike_particles.after(apply_death_stab_vfx_materials),
+        )
+        .add_systems(
+            Update,
+            update_lightning_hurt_effects.after(update_death_stab_timeline),
+        )
+        .add_systems(
+            Update,
+            update_skill_vfx_auto_lifetimes.after(update_death_stab_timeline),
+        )
         .add_systems(Update, update_weapon_trails)
         .add_systems(Update, update_skill_impact_bursts)
         .add_systems(Update, update_skill_burst_particles)
@@ -1520,6 +1587,10 @@ fn main() {
             apply_skill_vfx_materials
                 .after(update_skill_vfx)
                 .after(update_pending_skill_vfx),
+        )
+        .add_systems(
+            Update,
+            update_skill_vfx_fade.after(apply_skill_vfx_materials),
         )
         .add_systems(
             PostUpdate,
@@ -1575,6 +1646,8 @@ fn setup_viewer(
         mu_cam,
         ShadowFilteringMethod::Gaussian,
     ));
+
+    _camera.insert(Bloom::NATURAL);
 
     #[cfg(feature = "solari")]
     _camera.insert((
@@ -2954,7 +3027,7 @@ fn spawn_skill_vfx_for_entry(
             }
         }
         SkillVfxProfile::DeathStab => {
-            spawn_death_stab_vfx(
+            spawn_death_stab_vfx_local(
                 commands,
                 caster_entity,
                 caster_pos,
@@ -2962,15 +3035,6 @@ fn spawn_skill_vfx_for_entry(
                 target_pos,
                 skill_duration,
                 weapon_bones,
-            );
-            spawn_skill_vfx_scene(
-                commands,
-                asset_server,
-                "data/skill/deathsp_eff.glb",
-                target_pos + Vec3::new(0.0, 10.0, 0.0),
-                1.0,
-                1.1,
-                None,
             );
         }
         SkillVfxProfile::Impale => {
@@ -2983,14 +3047,16 @@ fn spawn_skill_vfx_for_entry(
                 skill_duration,
                 weapon_bones,
             );
-            spawn_skill_vfx_scene(
+            let rotation = vfx_look_rotation(caster_pos, target_pos, Vec3::NEG_Z);
+            spawn_skill_vfx_scene_with_rotation(
                 commands,
                 asset_server,
                 "data/skill/piercing.glb",
-                target_pos + Vec3::new(0.0, 8.0, 0.0),
-                1.0,
+                caster_pos + Vec3::new(0.0, 35.0, 0.0),
+                1.8,
+                rotation,
                 1.1,
-                None,
+                Some((caster_entity, Vec3::new(0.0, 35.0, 0.0))),
             );
         }
         SkillVfxProfile::FireBreath => {
@@ -3271,6 +3337,605 @@ fn spawn_skill_vfx_for_entry(
                 1.0,
                 None,
             );
+        }
+        SkillVfxProfile::HellFire => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/circle_01.glb",
+                caster_pos + Vec3::new(0.0, 3.0, 0.0),
+                1.5,
+                skill_duration * 0.8,
+                Some((caster_entity, Vec3::new(0.0, 3.0, 0.0))),
+            );
+            if vfx_asset_exists("data/skill/circle_02.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/circle_02.glb",
+                    caster_pos + Vec3::new(0.0, 5.0, 0.0),
+                    1.5,
+                    skill_duration * 0.8,
+                    Some((caster_entity, Vec3::new(0.0, 5.0, 0.0))),
+                );
+            }
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/fire_01.glb",
+                caster_pos + Vec3::new(0.0, 15.0, 0.0),
+                1.0,
+                skill_duration * 0.6,
+                Some((caster_entity, Vec3::new(0.0, 15.0, 0.0))),
+            );
+        }
+        SkillVfxProfile::Inferno => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/inferno_01.glb",
+                target_pos + Vec3::new(0.0, 5.0, 0.0),
+                1.3,
+                skill_duration,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/fire_01.glb",
+                target_pos + Vec3::new(0.0, 15.0, 0.0),
+                1.0,
+                skill_duration * 0.8,
+                None,
+            );
+        }
+        SkillVfxProfile::Nova => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/magic_circle_01.glb",
+                caster_pos + Vec3::new(0.0, 3.0, 0.0),
+                1.5,
+                skill_duration,
+                Some((caster_entity, Vec3::new(0.0, 3.0, 0.0))),
+            );
+            if vfx_asset_exists("data/skill/aurora.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/aurora.glb",
+                    caster_pos + Vec3::new(0.0, 40.0, 0.0),
+                    1.2,
+                    skill_duration * 0.6,
+                    Some((caster_entity, Vec3::new(0.0, 40.0, 0.0))),
+                );
+            }
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/flashing.glb",
+                caster_pos + Vec3::new(0.0, 20.0, 0.0),
+                1.0,
+                0.4,
+                Some((caster_entity, Vec3::new(0.0, 20.0, 0.0))),
+            );
+        }
+        SkillVfxProfile::Poison => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/poison_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+        }
+        SkillVfxProfile::IceSpell => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/ice_01.glb",
+                target_pos + Vec3::new(0.0, 8.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+            if vfx_asset_exists("data/skill/ice_02.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/ice_02.glb",
+                    target_pos + Vec3::new(0.0, 14.0, 0.0),
+                    0.9,
+                    0.9,
+                    None,
+                );
+            }
+        }
+        SkillVfxProfile::FireBall => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/fire_01.glb",
+                target_pos + Vec3::new(0.0, 12.0, 0.0),
+                1.0,
+                1.0,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/magic_01.glb",
+                target_pos + Vec3::new(0.0, 18.0, 0.0),
+                0.8,
+                0.8,
+                None,
+            );
+        }
+        SkillVfxProfile::Lightning => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/laser_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.0,
+                0.9,
+                None,
+            );
+        }
+        SkillVfxProfile::EvilSpirit => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/magic_02.glb",
+                target_pos + Vec3::new(0.0, 12.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/storm_01.glb",
+                target_pos + Vec3::new(0.0, 18.0, 0.0),
+                0.9,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::PowerWave => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/wave_force.glb",
+                target_pos + Vec3::new(0.0, 5.0, 0.0),
+                1.0,
+                1.0,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/magic_01.glb",
+                target_pos + Vec3::new(0.0, 14.0, 0.0),
+                0.8,
+                0.8,
+                None,
+            );
+        }
+        SkillVfxProfile::AquaBeam => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/ice_01.glb",
+                target_pos + Vec3::new(0.0, 8.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/storm_01.glb",
+                target_pos + Vec3::new(0.0, 14.0, 0.0),
+                0.9,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::EnergyBall => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/air_force.glb",
+                target_pos + Vec3::new(0.0, 12.0, 0.0),
+                1.0,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::Decay => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/skull.glb",
+                target_pos + Vec3::new(0.0, 14.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+            if vfx_asset_exists("data/skill/poison_01.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/poison_01.glb",
+                    target_pos + Vec3::new(0.0, 6.0, 0.0),
+                    0.9,
+                    0.9,
+                    None,
+                );
+            }
+        }
+        SkillVfxProfile::GiganticStorm => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/storm_01.glb",
+                target_pos + Vec3::new(0.0, 12.0, 0.0),
+                1.4,
+                1.3,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/blast_01.glb",
+                target_pos + Vec3::new(0.0, 8.0, 0.0),
+                1.3,
+                1.1,
+                None,
+            );
+        }
+        SkillVfxProfile::FlameStrike => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/darkfirescrem_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.1,
+                1.1,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/fire_01.glb",
+                target_pos + Vec3::new(0.0, 18.0, 0.0),
+                1.0,
+                0.9,
+                None,
+            );
+        }
+        SkillVfxProfile::LightningShock => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/laser_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.1,
+                1.0,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/blast_01.glb",
+                target_pos + Vec3::new(0.0, 6.0, 0.0),
+                1.0,
+                0.8,
+                None,
+            );
+        }
+        SkillVfxProfile::SoulBarrier => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/protect_01.glb",
+                caster_pos + Vec3::new(0.0, 55.0, 0.0),
+                1.0,
+                2.0,
+                Some((caster_entity, Vec3::new(0.0, 55.0, 0.0))),
+            );
+        }
+        SkillVfxProfile::FireScream => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/darkfirescrem_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.0,
+                1.1,
+                None,
+            );
+            if vfx_asset_exists("data/skill/darkfirescrem_02.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/darkfirescrem_02.glb",
+                    target_pos + Vec3::new(0.0, 16.0, 0.0),
+                    1.0,
+                    0.9,
+                    None,
+                );
+            }
+        }
+        SkillVfxProfile::PlasmaStorm => {
+            if vfx_asset_exists("data/skill/fenril_red.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/fenril_red.glb",
+                    target_pos + Vec3::new(0.0, 12.0, 0.0),
+                    1.0,
+                    1.2,
+                    None,
+                );
+            }
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/storm_01.glb",
+                target_pos + Vec3::new(0.0, 18.0, 0.0),
+                1.1,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::Earthshake => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/earth_quake_01.glb",
+                target_pos + Vec3::new(0.0, 4.0, 0.0),
+                1.3,
+                1.0,
+                None,
+            );
+            if vfx_asset_exists("data/skill/earth_quake_02.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/earth_quake_02.glb",
+                    target_pos + Vec3::new(0.0, 6.0, 0.0),
+                    1.2,
+                    0.9,
+                    None,
+                );
+            }
+            if vfx_asset_exists("data/skill/ground_stone.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/ground_stone.glb",
+                    target_pos + Vec3::new(0.0, 3.0, 0.0),
+                    1.0,
+                    0.8,
+                    None,
+                );
+            }
+        }
+        SkillVfxProfile::ElectricSpike => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/laser_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.0,
+                0.9,
+                None,
+            );
+            if vfx_asset_exists("data/skill/ground_stone.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/ground_stone.glb",
+                    target_pos + Vec3::new(0.0, 3.0, 0.0),
+                    1.0,
+                    0.8,
+                    None,
+                );
+            }
+        }
+        SkillVfxProfile::ForceWave => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/wave_force.glb",
+                target_pos + Vec3::new(0.0, 5.0, 0.0),
+                1.1,
+                1.0,
+                None,
+            );
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/dark_lord_skill.glb",
+                target_pos + Vec3::new(0.0, 12.0, 0.0),
+                0.9,
+                0.9,
+                None,
+            );
+        }
+        SkillVfxProfile::Stun => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/earth_quake_01.glb",
+                target_pos + Vec3::new(0.0, 4.0, 0.0),
+                1.2,
+                1.0,
+                None,
+            );
+            if vfx_asset_exists("data/skill/ground_stone.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/ground_stone.glb",
+                    target_pos + Vec3::new(0.0, 3.0, 0.0),
+                    1.0,
+                    0.8,
+                    None,
+                );
+            }
+        }
+        SkillVfxProfile::KillingBlow => {
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/earth_quake_01.glb",
+                target_pos + Vec3::new(0.0, 4.0, 0.0),
+                1.2,
+                1.0,
+                None,
+            );
+            if vfx_asset_exists("data/skill/ground_stone.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/ground_stone.glb",
+                    target_pos + Vec3::new(0.0, 3.0, 0.0),
+                    1.0,
+                    0.8,
+                    None,
+                );
+            }
+        }
+        SkillVfxProfile::BeastUppercut => {
+            if vfx_asset_exists("data/skill/earth_quake_02.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/earth_quake_02.glb",
+                    target_pos + Vec3::new(0.0, 5.0, 0.0),
+                    1.2,
+                    1.0,
+                    None,
+                );
+            }
+            if vfx_asset_exists("data/skill/ground_stone_2.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/ground_stone_2.glb",
+                    target_pos + Vec3::new(0.0, 3.0, 0.0),
+                    1.0,
+                    0.8,
+                    None,
+                );
+            } else if vfx_asset_exists("data/skill/ground_stone.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/ground_stone.glb",
+                    target_pos + Vec3::new(0.0, 3.0, 0.0),
+                    1.0,
+                    0.8,
+                    None,
+                );
+            }
+        }
+        SkillVfxProfile::ChainDrive => {
+            if vfx_asset_exists("data/skill/earth_quake_03.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/earth_quake_03.glb",
+                    target_pos + Vec3::new(0.0, 5.0, 0.0),
+                    1.2,
+                    1.0,
+                    None,
+                );
+            }
+            if vfx_asset_exists("data/skill/ground_stone.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/ground_stone.glb",
+                    target_pos + Vec3::new(0.0, 3.0, 0.0),
+                    1.0,
+                    0.8,
+                    None,
+                );
+            }
+        }
+        SkillVfxProfile::DarkSide => {
+            if vfx_asset_exists("data/skill/earth_quake_04.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/earth_quake_04.glb",
+                    target_pos + Vec3::new(0.0, 5.0, 0.0),
+                    1.2,
+                    1.0,
+                    None,
+                );
+            }
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/storm_01.glb",
+                target_pos + Vec3::new(0.0, 14.0, 0.0),
+                1.0,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::DragonRoar => {
+            if vfx_asset_exists("data/skill/dragonhead.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/dragonhead.glb",
+                    target_pos + Vec3::new(0.0, 14.0, 0.0),
+                    1.1,
+                    1.2,
+                    None,
+                );
+            }
+            spawn_skill_vfx_scene(
+                commands,
+                asset_server,
+                "data/skill/storm_01.glb",
+                target_pos + Vec3::new(0.0, 10.0, 0.0),
+                1.0,
+                1.0,
+                None,
+            );
+        }
+        SkillVfxProfile::DragonSlasher => {
+            if vfx_asset_exists("data/skill/dragonhead.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/dragonhead.glb",
+                    target_pos + Vec3::new(0.0, 14.0, 0.0),
+                    1.2,
+                    1.2,
+                    None,
+                );
+            }
+            if vfx_asset_exists("data/skill/earth_quake_05.glb") {
+                spawn_skill_vfx_scene(
+                    commands,
+                    asset_server,
+                    "data/skill/earth_quake_05.glb",
+                    target_pos + Vec3::new(0.0, 4.0, 0.0),
+                    1.2,
+                    1.0,
+                    None,
+                );
+            }
         }
     }
 }
@@ -3817,132 +4482,27 @@ fn spawn_rageful_blow_vfx(
 }
 
 // ============================================================================
-// DEATH STAB VFX (skill 43) — precise thrust, purple/violet
+// DEATH STAB VFX (skill 43 / AT_SKILL_ONETOONE)
+// C# timing model (muonline-cross):
+// - Total life: 20 frames (counting down)
+// - lifeInt 12..18: rear energy charge (from behind toward weapon tip)
+// - lifeInt 8..14: forward spike thrust (front arc)
+// - lifeInt == 12: sword impact sound cue
+// - lifeInt == 10: apply victim thunder effect (35 frames)
 // ============================================================================
-fn spawn_death_stab_vfx(
+fn spawn_death_stab_vfx_local(
     commands: &mut Commands,
     caster_entity: Entity,
     caster_pos: Vec3,
-    _caster_rotation: Quat,
+    caster_rotation: Quat,
     target_pos: Vec3,
-    skill_duration: f32,
-    weapon_bones: Option<WeaponBlurBones>,
+    _skill_duration: f32,
+    _weapon_bones: Option<WeaponBlurBones>,
 ) {
-    let strike_time = (skill_duration * 0.30).clamp(0.06, 0.45);
-
-    // 1) Weapon Trail — purple-violet
-    if let Some(bones) = weapon_bones {
-        commands.spawn((
-            SkillVfx,
-            WeaponTrail {
-                config: WeaponTrailConfig {
-                    hand_bone: bones.hand,
-                    tip_bone: bones.tip,
-                    max_samples: WEAPON_BLUR_MAX_SAMPLES,
-                    sample_lifetime: 0.14,
-                    min_sample_distance_sq: 36.0,
-                    max_sample_interval: 0.035,
-                    near_offset: 25.0,
-                    far_offset: 130.0,
-                    color_new: [0.85, 0.4, 1.0, 0.95],
-                    color_old: [0.5, 0.1, 0.7, 0.0],
-                    texture_path: "data/effect/sword_blur.png".into(),
-                    additive: true,
-                },
-                samples: VecDeque::new(),
-                time_since_last_sample: 0.0,
-                mesh_entity: None,
-                mesh_handle: None,
-                active_duration: skill_duration,
-                elapsed: 0.0,
-            },
-            Transform::from_translation(caster_pos),
-        ));
-    }
-
-    // 2) Swing light — violet
-    commands.spawn((
-        SkillVfx,
-        SkillTimedLight {
-            elapsed: 0.0,
-            lifetime: skill_duration,
-            peak_time: strike_time,
-            peak_intensity: 8000.0,
-            base_intensity: 1500.0,
-            color: Color::srgb(0.7, 0.3, 1.0),
-            range: 200.0,
-        },
-        PointLight {
-            intensity: 0.0,
-            range: 200.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_translation(caster_pos + Vec3::Y * 60.0),
-        SkillVfxFollow {
-            target: caster_entity,
-            offset: Vec3::Y * 60.0,
-        },
-    ));
-
-    // 3) Impact sparks — purple→dark purple
-    commands.spawn((
-        SkillVfx,
-        SkillImpactBurst {
-            delay: strike_time,
-            elapsed: 0.0,
-            fired: false,
-            burst_count: 14,
-            emitter_config: SkillBurstEmitterConfig {
-                lifetime_range: (0.08, 0.24),
-                initial_velocity: Vec3::new(0.0, 80.0, 0.0),
-                velocity_variance: Vec3::new(55.0, 40.0, 55.0),
-                scale_range: (3.0, 8.0),
-                scale_variance: 2.0,
-                color_start: Vec4::new(0.85, 0.4, 1.0, 1.0),
-                color_end: Vec4::new(0.5, 0.1, 0.7, 0.0),
-                texture_path: "data/effect/spark_01.png".into(),
-                additive: true,
-                rotation_speed: 4.0,
-            },
-            lifetime_after_burst: 0.5,
-        },
-        Transform::from_translation(target_pos + Vec3::Y * 15.0),
-    ));
-
-    // 4) Impact flash — violet
-    commands.spawn((
-        SkillVfx,
-        SkillTimedLight {
-            elapsed: 0.0,
-            lifetime: 0.28,
-            peak_time: strike_time,
-            peak_intensity: 14000.0,
-            base_intensity: 0.0,
-            color: Color::srgb(0.7, 0.3, 1.0),
-            range: 150.0,
-        },
-        PointLight {
-            intensity: 0.0,
-            range: 150.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_translation(target_pos + Vec3::Y * 15.0),
-    ));
-
-    // 5) Delayed flash GLB
-    if vfx_asset_exists("data/skill/flashing.glb") {
-        queue_skill_vfx_scene(
-            commands,
-            "data/skill/flashing.glb",
-            target_pos + Vec3::Y * 15.0,
-            0.38,
-            0.12,
-            strike_time,
-            None,
-        );
-    }
+    let timeline_entity =
+        spawn_death_stab_vfx(commands, caster_entity, caster_pos, caster_rotation, target_pos);
+    // Tag the timeline entity so bulk SkillVfx cleanup in the viewer can find it.
+    commands.entity(timeline_entity).insert(SkillVfx);
 }
 
 // ============================================================================
@@ -3952,11 +4512,12 @@ fn spawn_impale_vfx(
     commands: &mut Commands,
     caster_entity: Entity,
     caster_pos: Vec3,
-    _caster_rotation: Quat,
+    caster_rotation: Quat,
     target_pos: Vec3,
     skill_duration: f32,
     weapon_bones: Option<WeaponBlurBones>,
 ) {
+    let _ = caster_rotation; // available for future use
     let strike_time = (skill_duration * 0.28).clamp(0.06, 0.42);
 
     // 1) Weapon Trail — silver-white, extended far_offset for spear reach
@@ -4482,21 +5043,39 @@ fn spawn_fire_breath_vfx(
     }
 }
 
-fn spawn_skill_vfx_scene(
+/// Compute a horizontal rotation to orient a VFX mesh toward the target.
+/// `mesh_forward` is the axis the mesh geometry extends along (e.g. Vec3::Z or Vec3::NEG_Z).
+fn vfx_look_rotation(caster_pos: Vec3, target_pos: Vec3, mesh_forward: Vec3) -> Quat {
+    let dir = Vec3::new(
+        target_pos.x - caster_pos.x,
+        0.0,
+        target_pos.z - caster_pos.z,
+    );
+    if dir.length_squared() > 1.0 {
+        Quat::from_rotation_arc(mesh_forward.normalize(), dir.normalize())
+    } else {
+        Quat::IDENTITY
+    }
+}
+
+fn spawn_skill_vfx_scene_with_rotation(
     commands: &mut Commands,
     asset_server: &AssetServer,
     glb_path: &str,
     position: Vec3,
     uniform_scale: f32,
+    rotation: Quat,
     ttl_seconds: f32,
     follow: Option<(Entity, Vec3)>,
-) {
+) -> Entity {
     let scene_handle: Handle<Scene> = asset_server.load(format!("{glb_path}#Scene0"));
     let gltf_handle: Handle<Gltf> = asset_server.load(glb_path.to_string());
     let mut entity = commands.spawn((
         SceneBundle {
             scene: SceneRoot(scene_handle),
-            transform: Transform::from_translation(position).with_scale(Vec3::splat(uniform_scale)),
+            transform: Transform::from_translation(position)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(uniform_scale)),
             visibility: Visibility::Hidden,
             ..default()
         },
@@ -4521,6 +5100,28 @@ fn spawn_skill_vfx_scene(
     if let Some((target, offset)) = follow {
         entity.insert(SkillVfxFollow { target, offset });
     }
+    entity.id()
+}
+
+fn spawn_skill_vfx_scene(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    glb_path: &str,
+    position: Vec3,
+    uniform_scale: f32,
+    ttl_seconds: f32,
+    follow: Option<(Entity, Vec3)>,
+) -> Entity {
+    spawn_skill_vfx_scene_with_rotation(
+        commands,
+        asset_server,
+        glb_path,
+        position,
+        uniform_scale,
+        Quat::IDENTITY,
+        ttl_seconds,
+        follow,
+    )
 }
 
 fn queue_skill_vfx_scene(
@@ -4532,6 +5133,30 @@ fn queue_skill_vfx_scene(
     delay_seconds: f32,
     follow: Option<(Entity, Vec3)>,
 ) {
+    queue_skill_vfx_scene_ex(
+        commands,
+        glb_path,
+        position,
+        uniform_scale,
+        Quat::IDENTITY,
+        ttl_seconds,
+        delay_seconds,
+        follow,
+        None,
+    );
+}
+
+fn queue_skill_vfx_scene_ex(
+    commands: &mut Commands,
+    glb_path: &'static str,
+    position: Vec3,
+    uniform_scale: f32,
+    rotation: Quat,
+    ttl_seconds: f32,
+    delay_seconds: f32,
+    follow: Option<(Entity, Vec3)>,
+    fade_duration: Option<f32>,
+) {
     commands.spawn(PendingSkillVfxSpawn {
         timer: Timer::from_seconds(delay_seconds.max(0.0), TimerMode::Once),
         glb_path,
@@ -4539,6 +5164,8 @@ fn queue_skill_vfx_scene(
         uniform_scale,
         ttl_seconds,
         follow,
+        rotation,
+        fade_duration,
     });
 }
 
@@ -4554,15 +5181,22 @@ fn update_pending_skill_vfx(
             continue;
         }
 
-        spawn_skill_vfx_scene(
+        let spawned = spawn_skill_vfx_scene_with_rotation(
             &mut commands,
             &asset_server,
             pending.glb_path,
             pending.position,
             pending.uniform_scale,
+            pending.rotation,
             pending.ttl_seconds,
             pending.follow,
         );
+        if let Some(fade_dur) = pending.fade_duration {
+            commands.entity(spawned).insert(SkillVfxFade {
+                duration: fade_dur,
+                elapsed: 0.0,
+            });
+        }
         commands.entity(entity).despawn();
     }
 }
@@ -4662,7 +5296,6 @@ fn preload_class_skill_vfx_assets(
                 | SkillVfxProfile::SlashTrail
                 | SkillVfxProfile::TwistingSlash
                 | SkillVfxProfile::RagefulBlow
-                | SkillVfxProfile::DeathStab
                 | SkillVfxProfile::Impale
                 | SkillVfxProfile::Combo
         )
@@ -4692,9 +5325,7 @@ fn preload_class_skill_vfx_assets(
         preload_skill_vfx_asset("data/skill/protect_02.glb", asset_server, preload_cache);
     }
 
-    let has_fire = skills
-        .iter()
-        .any(|s| s.vfx == SkillVfxProfile::FireBreath);
+    let has_fire = skills.iter().any(|s| s.vfx == SkillVfxProfile::FireBreath);
 
     if has_fire {
         let _: Handle<Image> = asset_server.load("data/effect/fire_01.png");
@@ -4708,14 +5339,187 @@ fn preload_class_skill_vfx_assets(
     {
         preload_skill_vfx_asset("data/skill/wave_force.glb", asset_server, preload_cache);
     }
-    if skills
-        .iter()
-        .any(|s| s.vfx == SkillVfxProfile::RagefulBlow)
-    {
+    if skills.iter().any(|s| s.vfx == SkillVfxProfile::RagefulBlow) {
         preload_skill_vfx_asset("data/skill/earth_quake_01.glb", asset_server, preload_cache);
     }
     if skills.iter().any(|s| s.vfx == SkillVfxProfile::Combo) {
         preload_skill_vfx_asset("data/skill/sword_force.glb", asset_server, preload_cache);
+    }
+
+    // Preload new specific VFX profile assets
+    for s in skills {
+        match s.vfx {
+            SkillVfxProfile::HellFire => {
+                preload_skill_vfx_asset("data/skill/circle_01.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/circle_02.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/fire_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::Inferno => {
+                preload_skill_vfx_asset("data/skill/inferno_01.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/fire_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::Nova => {
+                preload_skill_vfx_asset(
+                    "data/skill/magic_circle_01.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset("data/skill/aurora.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/flashing.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::Poison => {
+                preload_skill_vfx_asset("data/skill/poison_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::IceSpell => {
+                preload_skill_vfx_asset("data/skill/ice_01.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/ice_02.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::FireBall => {
+                preload_skill_vfx_asset("data/skill/fire_01.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/magic_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::Lightning => {
+                preload_skill_vfx_asset("data/skill/laser_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::EvilSpirit => {
+                preload_skill_vfx_asset("data/skill/magic_02.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/storm_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::PowerWave => {
+                preload_skill_vfx_asset("data/skill/wave_force.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/magic_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::AquaBeam => {
+                preload_skill_vfx_asset("data/skill/ice_01.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/storm_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::EnergyBall => {
+                preload_skill_vfx_asset("data/skill/air_force.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::Decay => {
+                preload_skill_vfx_asset("data/skill/skull.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/poison_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::GiganticStorm => {
+                preload_skill_vfx_asset("data/skill/storm_01.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/blast_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::FlameStrike => {
+                preload_skill_vfx_asset(
+                    "data/skill/darkfirescrem_01.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset("data/skill/fire_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::LightningShock => {
+                preload_skill_vfx_asset("data/skill/laser_01.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/blast_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::SoulBarrier => {
+                preload_skill_vfx_asset("data/skill/protect_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::FireScream => {
+                preload_skill_vfx_asset(
+                    "data/skill/darkfirescrem_01.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset(
+                    "data/skill/darkfirescrem_02.glb",
+                    asset_server,
+                    preload_cache,
+                );
+            }
+            SkillVfxProfile::PlasmaStorm => {
+                preload_skill_vfx_asset("data/skill/fenril_red.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/storm_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::Earthshake => {
+                preload_skill_vfx_asset(
+                    "data/skill/earth_quake_01.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset(
+                    "data/skill/earth_quake_02.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset("data/skill/ground_stone.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::ElectricSpike => {
+                preload_skill_vfx_asset("data/skill/laser_01.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/ground_stone.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::ForceWave => {
+                preload_skill_vfx_asset("data/skill/wave_force.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset(
+                    "data/skill/dark_lord_skill.glb",
+                    asset_server,
+                    preload_cache,
+                );
+            }
+            SkillVfxProfile::Stun | SkillVfxProfile::KillingBlow => {
+                preload_skill_vfx_asset(
+                    "data/skill/earth_quake_01.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset("data/skill/ground_stone.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::BeastUppercut => {
+                preload_skill_vfx_asset(
+                    "data/skill/earth_quake_02.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset(
+                    "data/skill/ground_stone_2.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset("data/skill/ground_stone.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::ChainDrive => {
+                preload_skill_vfx_asset(
+                    "data/skill/earth_quake_03.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset("data/skill/ground_stone.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::DarkSide => {
+                preload_skill_vfx_asset(
+                    "data/skill/earth_quake_04.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset("data/skill/storm_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::DragonRoar => {
+                preload_skill_vfx_asset("data/skill/dragonhead.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/storm_01.glb", asset_server, preload_cache);
+            }
+            SkillVfxProfile::DragonSlasher => {
+                preload_skill_vfx_asset("data/skill/dragonhead.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset(
+                    "data/skill/earth_quake_05.glb",
+                    asset_server,
+                    preload_cache,
+                );
+            }
+            SkillVfxProfile::DeathStab => {
+                preload_skill_vfx_asset(
+                    "data/skill/riding_spear_01.glb",
+                    asset_server,
+                    preload_cache,
+                );
+                preload_skill_vfx_asset("data/skill/m_piercing.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset("data/skill/piercing.glb", asset_server, preload_cache);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -4880,6 +5684,42 @@ fn apply_skill_vfx_materials(
 }
 
 // ============================================================================
+// SKILL VFX FADE SYSTEM
+// ============================================================================
+
+fn update_skill_vfx_fade(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut fades: Query<(Entity, &mut SkillVfxFade), With<SkillVfxMaterialsApplied>>,
+    children_query: Query<&Children>,
+    material_query: Query<(Entity, &MeshMaterial3d<StandardMaterial>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let dt = time.delta_secs();
+    for (root_entity, mut fade) in &mut fades {
+        fade.elapsed += dt;
+        let t = (1.0 - fade.elapsed / fade.duration).clamp(0.0, 1.0);
+
+        // Walk subtree to find mesh entities with materials and adjust emissive
+        let mut queue = vec![root_entity];
+        while let Some(entity) = queue.pop() {
+            if let Ok((_mesh_entity, mat_handle)) = material_query.get(entity) {
+                if let Some(mat) = materials.get_mut(&mat_handle.0) {
+                    mat.emissive = LinearRgba::new(t, t, t, 1.0);
+                }
+            }
+            if let Ok(children) = children_query.get(entity) {
+                queue.extend(children.iter());
+            }
+        }
+
+        if fade.elapsed >= fade.duration {
+            commands.entity(root_entity).remove::<SkillVfxFade>();
+        }
+    }
+}
+
+// ============================================================================
 // WEAPON TRAIL SYSTEM
 // ============================================================================
 
@@ -4957,42 +5797,39 @@ fn update_weapon_trails(
         // Ensure render entity exists
         if trail.mesh_entity.is_none() {
             let cache_key = (trail.config.texture_path.clone(), trail.config.additive);
-            let material_handle =
-                material_cache
-                    .materials
-                    .entry(cache_key.clone())
-                    .or_insert_with(|| {
-                        let texture = asset_server.load_with_settings(
-                            cache_key.0.clone(),
-                            |settings: &mut _| {
-                                *settings = bevy::image::ImageLoaderSettings {
-                                    is_srgb: true,
-                                    sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
-                                        address_mode_u: ImageAddressMode::ClampToEdge,
-                                        address_mode_v: ImageAddressMode::ClampToEdge,
-                                        ..default()
-                                    }),
+            let material_handle = material_cache
+                .materials
+                .entry(cache_key.clone())
+                .or_insert_with(|| {
+                    let texture =
+                        asset_server.load_with_settings(cache_key.0.clone(), |settings: &mut _| {
+                            *settings = bevy::image::ImageLoaderSettings {
+                                is_srgb: true,
+                                sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
+                                    address_mode_u: ImageAddressMode::ClampToEdge,
+                                    address_mode_v: ImageAddressMode::ClampToEdge,
                                     ..default()
-                                };
-                            },
-                        );
-                        materials.add(StandardMaterial {
-                            base_color_texture: Some(texture),
-                            base_color: Color::WHITE,
-                            alpha_mode: if cache_key.1 {
-                                AlphaMode::Add
-                            } else {
-                                AlphaMode::Blend
-                            },
-                            unlit: true,
-                            double_sided: true,
-                            cull_mode: None,
-                            perceptual_roughness: 1.0,
-                            metallic: 0.0,
-                            reflectance: 0.0,
-                            ..default()
-                        })
-                    });
+                                }),
+                                ..default()
+                            };
+                        });
+                    materials.add(StandardMaterial {
+                        base_color_texture: Some(texture),
+                        base_color: Color::WHITE,
+                        alpha_mode: if cache_key.1 {
+                            AlphaMode::Add
+                        } else {
+                            AlphaMode::Blend
+                        },
+                        unlit: true,
+                        double_sided: true,
+                        cull_mode: None,
+                        perceptual_roughness: 1.0,
+                        metallic: 0.0,
+                        reflectance: 0.0,
+                        ..default()
+                    })
+                });
 
             let mesh_handle = meshes.add(empty_trail_mesh());
             trail.mesh_handle = Some(mesh_handle.clone());
@@ -5212,10 +6049,7 @@ fn update_skill_burst_particles(
     }
 }
 
-fn render_skill_burst_particles(
-    particles: Query<&SkillBurstParticle>,
-    mut gizmos: Gizmos,
-) {
+fn render_skill_burst_particles(particles: Query<&SkillBurstParticle>, mut gizmos: Gizmos) {
     for p in &particles {
         let age = (p.lifetime / p.max_lifetime).clamp(0.0, 1.0);
         let color = p.color_start.lerp(p.color_end, age);
@@ -5239,7 +6073,12 @@ fn render_skill_burst_particles(
 fn update_skill_timed_lights(
     mut commands: Commands,
     time: Res<Time>,
-    mut lights: Query<(Entity, &mut SkillTimedLight, &mut PointLight, &mut Visibility)>,
+    mut lights: Query<(
+        Entity,
+        &mut SkillTimedLight,
+        &mut PointLight,
+        &mut Visibility,
+    )>,
 ) {
     let dt = time.delta_secs();
 

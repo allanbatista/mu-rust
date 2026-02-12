@@ -251,3 +251,70 @@ pub struct SkillTimedLight {
     pub color: Color,
     pub range: f32,
 }
+
+/// DeathStab (Skill 43) three-phase effect timeline.
+#[derive(Component)]
+pub struct DeathStabTimeline {
+    pub caster_entity: Entity,
+    pub caster_start_pos: Vec3,
+    pub target_pos: Vec3,
+    pub forward_xz: Vec3,
+    pub spear_rotation: Quat,
+    pub life_frames: f32,
+    pub last_processed_life_int: i32,
+    pub sound_played: bool,
+    pub impact_applied: bool,
+    pub charge_light_entity: Entity,
+    pub impact_light_entity: Entity,
+    pub elapsed_seconds: f32,
+}
+
+/// Lightning arc victim effect (used by DeathStab impact phase).
+#[derive(Component)]
+pub struct LightningHurtEffect {
+    pub remaining_frames: u8,
+    pub frame_accumulator: f32,
+    pub target_entity: Option<Entity>,
+    pub fallback_center: Vec3,
+}
+
+/// Auto-despawn timer for short-lived VFX entities (particles, spikes, etc.).
+#[derive(Component)]
+pub struct SkillVfxAutoLifetime {
+    pub timer: Timer,
+}
+
+/// Marker for DeathStab particles that need additive material overrides.
+#[derive(Component)]
+pub struct DeathStabVfxParticle;
+
+/// Marker: additive material overrides already applied.
+#[derive(Component)]
+pub struct DeathStabMaterialsApplied;
+
+/// Energy particle that lerps from rear to weapon tip (C#: Vector3.Lerp).
+#[derive(Component)]
+pub struct DeathStabEnergyParticle {
+    pub start_pos: Vec3,
+    pub target_pos: Vec3,
+    pub max_lifetime_secs: f32,
+    pub elapsed_secs: f32,
+}
+
+/// Spike particle that fades out via emissive (C#: BlendMeshLight).
+#[derive(Component)]
+pub struct DeathStabSpikeParticle {
+    pub max_lifetime_secs: f32,
+    pub elapsed_secs: f32,
+}
+
+/// Animation source for DeathStab VFX (stores Gltf handle + playback speed).
+#[derive(Component)]
+pub struct DeathStabAnimationSource {
+    pub gltf_handle: Handle<Gltf>,
+    pub playback_speed: f32,
+}
+
+/// Marker: animation already initialized.
+#[derive(Component)]
+pub struct DeathStabAnimationInitialized;

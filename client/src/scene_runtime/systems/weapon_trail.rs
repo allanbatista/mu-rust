@@ -82,42 +82,39 @@ pub fn update_weapon_trails(
         // Ensure render entity exists
         if trail.mesh_entity.is_none() {
             let cache_key = (trail.config.texture_path.clone(), trail.config.additive);
-            let material_handle =
-                material_cache
-                    .materials
-                    .entry(cache_key.clone())
-                    .or_insert_with(|| {
-                        let texture = asset_server.load_with_settings(
-                            cache_key.0.clone(),
-                            |settings: &mut _| {
-                                *settings = ImageLoaderSettings {
-                                    is_srgb: true,
-                                    sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
-                                        address_mode_u: ImageAddressMode::ClampToEdge,
-                                        address_mode_v: ImageAddressMode::ClampToEdge,
-                                        ..default()
-                                    }),
+            let material_handle = material_cache
+                .materials
+                .entry(cache_key.clone())
+                .or_insert_with(|| {
+                    let texture =
+                        asset_server.load_with_settings(cache_key.0.clone(), |settings: &mut _| {
+                            *settings = ImageLoaderSettings {
+                                is_srgb: true,
+                                sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
+                                    address_mode_u: ImageAddressMode::ClampToEdge,
+                                    address_mode_v: ImageAddressMode::ClampToEdge,
                                     ..default()
-                                };
-                            },
-                        );
-                        materials.add(StandardMaterial {
-                            base_color_texture: Some(texture),
-                            base_color: Color::WHITE,
-                            alpha_mode: if cache_key.1 {
-                                AlphaMode::Add
-                            } else {
-                                AlphaMode::Blend
-                            },
-                            unlit: true,
-                            double_sided: true,
-                            cull_mode: None,
-                            perceptual_roughness: 1.0,
-                            metallic: 0.0,
-                            reflectance: 0.0,
-                            ..default()
-                        })
-                    });
+                                }),
+                                ..default()
+                            };
+                        });
+                    materials.add(StandardMaterial {
+                        base_color_texture: Some(texture),
+                        base_color: Color::WHITE,
+                        alpha_mode: if cache_key.1 {
+                            AlphaMode::Add
+                        } else {
+                            AlphaMode::Blend
+                        },
+                        unlit: true,
+                        double_sided: true,
+                        cull_mode: None,
+                        perceptual_roughness: 1.0,
+                        metallic: 0.0,
+                        reflectance: 0.0,
+                        ..default()
+                    })
+                });
 
             let mesh_handle = meshes.add(empty_trail_mesh());
             trail.mesh_handle = Some(mesh_handle.clone());
