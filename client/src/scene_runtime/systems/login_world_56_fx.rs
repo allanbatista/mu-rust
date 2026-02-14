@@ -1,5 +1,6 @@
 use super::{SceneObjectsSpawned, SkyboxSpawned};
 use crate::bevy_compat::*;
+use crate::infra::assets::resolve_asset_path;
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::math::primitives::Cuboid;
@@ -401,7 +402,7 @@ fn spawn_world_56_dark_lord(commands: &mut Commands, asset_server: &AssetServer)
 
     commands.entity(root).with_children(|parent| {
         for scene_path in dark_lord_parts {
-            let scene: Handle<Scene> = asset_server.load(scene_path);
+            let scene: Handle<Scene> = asset_server.load(resolve_asset_path(scene_path));
             parent.spawn(SceneBundle {
                 scene: SceneRoot(scene),
                 ..default()

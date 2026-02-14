@@ -27,6 +27,8 @@ use std::time::Duration;
 
 use client::bevy_compat::*;
 use client::composition::object_viewer_runtime::configure_object_animation_viewer_app;
+use client::infra::assets::{resolve_asset_path, set_use_remaster_assets};
+use client::infra::persistence::settings_store;
 use client::legacy_additive::{
     LegacyAdditiveMaterial, legacy_additive_from_standard, legacy_additive_intensity_from_extras,
 };
@@ -54,6 +56,7 @@ struct ViewerState {
     pending_apply_selection: bool,
     pending_toggle_playback: bool,
     animations_initialized: bool,
+    use_remaster: bool,
     status: String,
     #[cfg(feature = "solari")]
     use_raytracing: bool,
@@ -79,6 +82,7 @@ impl Default for ViewerState {
             pending_apply_selection: false,
             pending_toggle_playback: false,
             animations_initialized: false,
+            use_remaster: true,
             status: "Ready. Enter a .glb path and click Load.".to_string(),
             #[cfg(feature = "solari")]
             use_raytracing: true,
@@ -116,6 +120,12 @@ struct MeshBoundsCache {
 }
 
 fn main() {
+    let startup_settings = settings_store::load();
+    let use_remaster_assets = startup_settings.graphics.use_remaster_assets;
+
+    let mut viewer_state = ViewerState::default();
+    viewer_state.use_remaster = use_remaster_assets;
+
     let mut app = App::new();
     app.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
@@ -123,8 +133,8 @@ fn main() {
         affects_lightmapped_meshes: true,
     })
     .insert_resource(MeshBoundsCache::default())
-    .insert_resource(ViewerState::default());
-    configure_object_animation_viewer_app(&mut app, asset_root_path());
+    .insert_resource(viewer_state);
+    configure_object_animation_viewer_app(&mut app, asset_root_path(), use_remaster_assets);
 
     app.add_systems(Startup, setup_viewer_scene)
         .add_systems(EguiPrimaryContextPass, draw_ui_panel)
@@ -225,6 +235,19 @@ fn draw_ui_panel(
     keys: Res<ButtonInput<KeyCode>>,
     mut clipboard: ResMut<EguiClipboard>,
 ) {
+    if keys.just_pressed(KeyCode::F10) {
+        viewer.use_remaster = !viewer.use_remaster;
+        set_use_remaster_assets(viewer.use_remaster);
+        viewer.status = format!(
+            "Remaster assets {} (F10).",
+            if viewer.use_remaster {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+    }
+
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -288,6 +311,12 @@ fn draw_ui_panel(
                     viewer.pending_toggle_playback = true;
                 }
             });
+
+            let prev_remaster = viewer.use_remaster;
+            ui.checkbox(&mut viewer.use_remaster, "Use Remaster assets");
+            if viewer.use_remaster != prev_remaster {
+                set_use_remaster_assets(viewer.use_remaster);
+            }
 
             let speed_slider =
                 egui::Slider::new(&mut viewer.playback_speed, 0.02..=1.2).text("Playback speed");
@@ -379,8 +408,10 @@ fn handle_load_request(
     }
 
     let (scene_path, gltf_path) = normalize_scene_and_gltf_path(raw_path);
-    let scene_handle: Handle<Scene> = asset_server.load(scene_path.clone());
-    let gltf_handle: Handle<Gltf> = asset_server.load(gltf_path.clone());
+    let resolved_scene_path = resolve_asset_path(&scene_path);
+    let resolved_gltf_path = resolve_asset_path(&gltf_path);
+    let scene_handle: Handle<Scene> = asset_server.load(resolved_scene_path.clone());
+    let gltf_handle: Handle<Gltf> = asset_server.load(resolved_gltf_path.clone());
 
     let scene_entity = commands
         .spawn((
@@ -393,8 +424,8 @@ fn handle_load_request(
         .id();
 
     viewer.scene_entity = Some(scene_entity);
-    viewer.loaded_scene_path = Some(scene_path);
-    viewer.loaded_gltf_path = Some(gltf_path);
+    viewer.loaded_scene_path = Some(resolved_scene_path);
+    viewer.loaded_gltf_path = Some(resolved_gltf_path);
     viewer.gltf_handle = Some(gltf_handle);
     viewer.status = "Loading scene and animations...".to_string();
 }

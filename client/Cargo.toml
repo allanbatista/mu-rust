@@ -9,6 +9,7 @@ common = { workspace = true }
 bevy = { version = "0.18.0", default-features = false, features = [
     "bevy_animation",
     "bevy_asset",
+    "bevy_audio",
     "bevy_log",
     "bevy_camera",
     "bevy_image",
@@ -34,6 +35,10 @@ bevy = { version = "0.18.0", default-features = false, features = [
     "jpeg",
     "tga",
     "default_font",
+    "vorbis",
+    "wav",
+    "mp3",
+    "flac",
     "x11"
 ] }
 serde = { version = "1.0", features = ["derive"] }
@@ -49,3 +54,11 @@ solari = ["bevy/bevy_solari"]
 [[bin]]
 name = "character_viewer"
 path = "src/bin/character_viewer.rs"
+
+[[bin]]
+name = "skill43_viewer"
+path = "src/bin/skill43_viewer.rs"
+
+[[bin]]
+name = "evil_spirit_viewer"
+path = "src/bin/evil_spirit_viewer.rs"

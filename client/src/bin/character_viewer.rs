@@ -31,6 +31,8 @@ use bevy::render::render_resource::TextureUsages;
 use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
 use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+#[path = "character_viewer/dw_magic.rs"]
+mod character_viewer_dw_magic;
 #[path = "character_viewer/skills.rs"]
 mod character_viewer_skills;
 use character_viewer_skills::skills_for_class;
@@ -43,9 +45,13 @@ use client::composition::character_viewer_runtime::configure_character_viewer_ap
 use client::grid_overlay::{
     GRID_OVERLAY_COLOR, GridOverlayConfig, build_grid_segments, grid_line_count, segment_transform,
 };
+use client::infra::assets::{resolve_asset_path, set_use_remaster_assets};
+use client::infra::persistence::settings_store;
 use client::scene_runtime::systems::{
-    apply_death_stab_vfx_materials, ensure_death_stab_animation_players, spawn_death_stab_vfx,
-    update_death_stab_energy_particles, update_death_stab_spike_particles,
+    apply_death_stab_vfx_materials, ensure_death_stab_animation_players,
+    initialize_lightning_hurt_effects, spawn_death_stab_vfx_tracked,
+    spawn_lightning_overlay_camera, update_death_stab_energy_particles,
+    update_death_stab_lightning_arcs, update_death_stab_spike_particles,
     update_death_stab_timeline, update_lightning_hurt_effects, update_skill_vfx_auto_lifetimes,
 };
 
@@ -1026,6 +1032,9 @@ enum SkillVfxProfile {
     GenericProjectile,
     GenericArea,
     // Specific skill VFX profiles (replacing generic ones)
+    Meteorite,
+    Flame,
+    Twister,
     HellFire,
     Inferno,
     Nova,
@@ -1211,7 +1220,7 @@ impl Default for ViewerState {
             status: "Loading player.glb...".to_string(),
             selected_set_index: 0,
             available_sets: EquipmentSet::available_for(body_type),
-            use_remaster: false,
+            use_remaster: true,
             #[cfg(feature = "solari")]
             use_raytracing: true,
             #[cfg(feature = "solari")]
@@ -1470,6 +1479,9 @@ struct GroundTextureState {
 // ============================================================================
 
 fn main() {
+    let startup_settings = settings_store::load();
+    let use_remaster_assets = startup_settings.graphics.use_remaster_assets;
+
     // Load heightmap synchronously at startup (small JSON file).
     let asset_root = asset_root_path();
     let heightmap_path = format!("{}/data/world_1/terrain_height.json", asset_root);
@@ -1486,18 +1498,21 @@ fn main() {
     );
 
     let mut app = App::new();
+    let mut viewer_state = ViewerState::default();
+    viewer_state.use_remaster = use_remaster_assets;
+
     app.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
         brightness: 250.0,
         affects_lightmapped_meshes: true,
     })
-    .insert_resource(ViewerState::default())
+    .insert_resource(viewer_state)
     .insert_resource(SkillVfxPreloadCache::default())
     .insert_resource(heightmap)
     .insert_resource(DirectionalLightShadowMap { size: 4096 });
-    configure_character_viewer_app(&mut app, asset_root);
+    configure_character_viewer_app(&mut app, asset_root, use_remaster_assets);
 
-    app.add_systems(Startup, (setup_viewer, configure_gizmos))
+    app.add_systems(Startup, (setup_viewer, configure_gizmos, spawn_lightning_overlay_camera))
         .add_systems(
             EguiPrimaryContextPass,
             (draw_character_viewer_ui, draw_bottom_info_bar),
@@ -1550,11 +1565,25 @@ fn main() {
         )
         .add_systems(
             Update,
-            update_lightning_hurt_effects.after(update_death_stab_timeline),
+            initialize_lightning_hurt_effects.after(update_death_stab_timeline),
+        )
+        .add_systems(
+            Update,
+            update_lightning_hurt_effects
+                .after(update_death_stab_timeline)
+                .after(initialize_lightning_hurt_effects),
+        )
+        .add_systems(
+            Update,
+            update_death_stab_lightning_arcs.after(update_lightning_hurt_effects),
         )
         .add_systems(
             Update,
             update_skill_vfx_auto_lifetimes.after(update_death_stab_timeline),
+        )
+        .add_systems(
+            Update,
+            character_viewer_dw_magic::update_dw_magic_effects.after(trigger_selected_skill),
         )
         .add_systems(Update, update_weapon_trails)
         .add_systems(Update, update_skill_impact_bursts)
@@ -1589,6 +1618,174 @@ fn main() {
     app.add_systems(Update, toggle_raytracing);
 
     app.run();
+}
+
+pub fn run_skill43_demo() {
+    let startup_settings = settings_store::load();
+    let use_remaster_assets = startup_settings.graphics.use_remaster_assets;
+
+    // Reuse the existing viewer bootstrap logic so animation timing and VFX systems
+    // stay aligned with the full viewer.
+    let asset_root = asset_root_path();
+    let heightmap_path = format!("{}/data/world_1/terrain_height.json", asset_root);
+    let heightmap_json: HeightmapJson = {
+        let bytes = std::fs::read(&heightmap_path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", heightmap_path, e));
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|e| panic!("Failed to parse {}: {}", heightmap_path, e))
+    };
+
+    let heightmap = HeightmapResource::from_json(heightmap_json);
+    info!(
+        "Loaded heightmap: {}x{} from {}",
+        heightmap.width, heightmap.height, heightmap_path
+    );
+
+    let mut app = App::new();
+
+    let mut viewer_state = ViewerState::default();
+    viewer_state.use_remaster = use_remaster_assets;
+    viewer_state.selected_class_index = 0;
+    viewer_state.available_skills = skills_for_class(CharacterClass::DarkKnight).to_vec();
+    viewer_state.selected_skill_index = viewer_state
+        .available_skills
+        .iter()
+        .position(|skill| skill.skill_id == 43)
+        .unwrap_or(0);
+
+    app.insert_resource(GlobalAmbientLight {
+        color: Color::WHITE,
+        brightness: 250.0,
+        affects_lightmapped_meshes: true,
+    })
+    .insert_resource(viewer_state)
+    .insert_resource(SkillVfxPreloadCache::default())
+    .insert_resource(heightmap)
+    .insert_resource(DirectionalLightShadowMap { size: 4096 })
+    .insert_resource(Skill43AutoCastTimer::default());
+
+    configure_character_viewer_app(&mut app, asset_root, use_remaster_assets);
+
+    app.add_systems(
+        Startup,
+        (setup_viewer, configure_gizmos, spawn_lightning_overlay_camera),
+    )
+    .add_systems(
+        Update,
+        (
+            configure_ground_texture,
+            handle_class_change,
+            init_player_animation_lib,
+            bind_anim_players,
+            capture_rest_local_transforms,
+            capture_body_part_rest_local_transforms,
+            pause_unbound_body_part_anim_players,
+            auto_cast_skill43,
+            trigger_selected_skill,
+            update_active_skill_cast,
+            apply_animation_changes,
+            update_skill_vfx,
+            update_mu_camera,
+        ),
+    )
+    .add_systems(Update, update_weapon_trails)
+    .add_systems(Update, update_death_stab_timeline.after(trigger_selected_skill))
+    .add_systems(Update, apply_death_stab_vfx_materials.after(update_death_stab_timeline))
+    .add_systems(Update, ensure_death_stab_animation_players.after(apply_death_stab_vfx_materials))
+    .add_systems(Update, update_death_stab_energy_particles.after(apply_death_stab_vfx_materials))
+    .add_systems(Update, update_death_stab_spike_particles.after(apply_death_stab_vfx_materials))
+    .add_systems(
+        Update,
+        initialize_lightning_hurt_effects.after(update_death_stab_timeline),
+    )
+    .add_systems(
+        Update,
+        update_lightning_hurt_effects
+            .after(update_death_stab_timeline)
+            .after(initialize_lightning_hurt_effects),
+    )
+    .add_systems(
+        Update,
+        update_death_stab_lightning_arcs.after(update_lightning_hurt_effects),
+    )
+    .add_systems(
+        Update,
+        update_skill_vfx_auto_lifetimes.after(update_death_stab_timeline),
+    )
+    .add_systems(
+        Update,
+        (update_skill_vfx_fade.after(apply_skill_vfx_materials),
+            character_viewer_dw_magic::update_dw_magic_effects.after(trigger_selected_skill)),
+    )
+    .add_systems(Update, update_weapon_blur_vfx)
+    .add_systems(Update, update_skill_impact_bursts)
+    .add_systems(Update, update_skill_burst_particles)
+    .add_systems(Update, render_skill_burst_particles)
+    .add_systems(Update, update_skill_timed_lights)
+    .add_systems(Update, update_pending_skill_vfx)
+    .add_systems(
+        Update,
+        ensure_skill_vfx_animation_players.after(update_pending_skill_vfx),
+    )
+    .add_systems(
+        Update,
+        apply_skill_vfx_materials
+            .after(update_skill_vfx)
+            .after(update_pending_skill_vfx),
+    )
+    .add_systems(
+        PostUpdate,
+        (
+            restore_unanimated_targets.after(bevy::app::AnimationSystems),
+        sync_bone_transforms.before(bevy::transform::TransformSystems::Propagate),
+        )
+        .chain(),
+    )
+    .run();
+}
+
+#[derive(Resource)]
+struct Skill43AutoCastTimer {
+    timer: Timer,
+}
+
+impl Default for Skill43AutoCastTimer {
+    fn default() -> Self {
+        Self {
+            timer: Timer::from_seconds(2.0, TimerMode::Repeating),
+        }
+    }
+}
+
+fn auto_cast_skill43(
+    time: Res<Time>,
+    mut timer: ResMut<Skill43AutoCastTimer>,
+    library: Res<PlayerAnimLib>,
+    mut viewer: ResMut<ViewerState>,
+) {
+    if viewer.pending_class_change || !library.initialized {
+        return;
+    }
+    if viewer.active_skill.is_some() || viewer.pending_skill_cast {
+        return;
+    }
+    if viewer.character_entity.is_none() {
+        return;
+    }
+    if viewer
+        .available_skills
+        .get(viewer.selected_skill_index)
+        .map(|skill| skill.vfx != SkillVfxProfile::DeathStab)
+        .unwrap_or(true)
+    {
+        return;
+    }
+
+    timer.timer.tick(time.delta());
+    if timer.timer.is_finished() {
+        viewer.pending_skill_cast = true;
+        timer.timer.reset();
+    }
 }
 
 fn asset_root_path() -> String {
@@ -1665,7 +1862,7 @@ fn setup_viewer(
     // Use the primary map texture slot when available. `tile_ground_01.png` can be a tiny
     // placeholder in some converted asset sets.
     let ground_texture_path = resolve_world_ground_texture_path();
-    let ground_texture: Handle<Image> = asset_server.load(ground_texture_path.clone());
+    let ground_texture: Handle<Image> = asset_server.load(resolve_asset_path(&ground_texture_path));
     info!("Ground texture: {}", ground_texture_path);
 
     // Build 256x256 heightmap terrain mesh
@@ -1689,7 +1886,7 @@ fn setup_viewer(
     });
 
     // Load player.glb for animations
-    let gltf_handle: Handle<Gltf> = asset_server.load("data/player/player.glb");
+    let gltf_handle: Handle<Gltf> = asset_server.load(resolve_asset_path("data/player/player.glb"));
     commands.insert_resource(PlayerAnimLib {
         gltf_handle,
         graph_handle: None,
@@ -2008,8 +2205,15 @@ fn update_mu_camera(
 fn draw_character_viewer_ui(
     mut contexts: EguiContexts,
     mut viewer: ResMut<ViewerState>,
+    keys: Res<ButtonInput<KeyCode>>,
     library: Option<Res<PlayerAnimLib>>,
 ) {
+    if keys.just_pressed(KeyCode::F10) {
+        viewer.use_remaster = !viewer.use_remaster;
+        set_use_remaster_assets(viewer.use_remaster);
+        viewer.pending_class_change = true;
+    }
+
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -2065,6 +2269,7 @@ fn draw_character_viewer_ui(
             let prev_remaster = viewer.use_remaster;
             ui.checkbox(&mut viewer.use_remaster, "Use Remaster models");
             if viewer.use_remaster != prev_remaster {
+                set_use_remaster_assets(viewer.use_remaster);
                 viewer.pending_class_change = true; // Respawn with new paths
             }
 
@@ -2202,24 +2407,12 @@ fn draw_bottom_info_bar(
 
 /// Given a standard asset path like `data/player/foo.glb`, return the remaster
 /// version `remaster/data/player/foo.glb` if it exists on disk, otherwise the original.
-fn resolve_asset_path(path: &str, use_remaster: bool) -> String {
-    if !use_remaster {
-        return path.to_string();
-    }
-    let remaster_path = format!("remaster/{}", path);
-    let asset_root = asset_root_path();
-    let full = format!("{}/{}", asset_root, remaster_path);
-    if std::path::Path::new(&full).exists() {
-        remaster_path
-    } else {
-        path.to_string()
-    }
+fn resolve_asset_path_for_mode(path: &str, use_remaster: bool) -> String {
+    client::infra::assets::resolve_asset_path_with_mode(path, use_remaster)
 }
 
 fn remaster_asset_exists(path: &str) -> bool {
-    let asset_root = asset_root_path();
-    let full = format!("{}/remaster/{}", asset_root, path);
-    std::path::Path::new(&full).exists()
+    client::infra::assets::remaster_variant_exists(path)
 }
 
 // ============================================================================
@@ -2303,7 +2496,7 @@ fn handle_class_change(
 
     for &slot in slots {
         let base_path = equipment_set.glb_path(slot, body_type, class);
-        let glb_path = resolve_asset_path(&base_path, use_remaster_assets);
+        let glb_path = resolve_asset_path_for_mode(&base_path, use_remaster_assets);
         let scene_path = format!("{glb_path}#Scene0");
         let scene_handle: Handle<Scene> = asset_server.load(scene_path);
 
@@ -2321,7 +2514,7 @@ fn handle_class_change(
     }
 
     // Spawn the animated skeleton (player.glb has animations, 0 meshes).
-    let skeleton_glb = resolve_asset_path("data/player/player.glb", use_remaster_assets);
+    let skeleton_glb = resolve_asset_path_for_mode("data/player/player.glb", use_remaster_assets);
     let skeleton_scene: Handle<Scene> = asset_server.load(format!("{}#Scene0", skeleton_glb));
     let skeleton = commands
         .spawn((
@@ -2896,6 +3089,18 @@ fn spawn_skill_vfx_for_entry(
     skill: SkillEntry,
     weapon_bones: Option<WeaponBlurBones>,
 ) {
+    if character_viewer_dw_magic::spawn_dw_magic_skill_vfx(
+        commands,
+        asset_server,
+        caster_entity,
+        caster_pos,
+        target_pos,
+        skill_duration,
+        skill.vfx,
+    ) {
+        return;
+    }
+
     match skill.vfx {
         SkillVfxProfile::DefensiveAura => {
             spawn_defense_vfx(commands, caster_entity, caster_pos, skill_duration);
@@ -3322,6 +3527,8 @@ fn spawn_skill_vfx_for_entry(
                 None,
             );
         }
+        // Guard arms for DW magic profiles now handled by character_viewer_dw_magic.
+        SkillVfxProfile::Meteorite | SkillVfxProfile::Flame | SkillVfxProfile::Twister => {}
         SkillVfxProfile::HellFire => {
             spawn_skill_vfx_scene(
                 commands,
@@ -3472,7 +3679,7 @@ fn spawn_skill_vfx_for_entry(
             spawn_skill_vfx_scene(
                 commands,
                 asset_server,
-                "data/skill/magic_02.glb",
+                "data/skill/evil_spirit_2.glb",
                 target_pos + Vec3::new(0.0, 12.0, 0.0),
                 1.0,
                 1.1,
@@ -4481,11 +4688,14 @@ fn spawn_death_stab_vfx_local(
     caster_rotation: Quat,
     target_pos: Vec3,
     _skill_duration: f32,
-    _weapon_bones: Option<WeaponBlurBones>,
+    weapon_bones: Option<WeaponBlurBones>,
 ) {
-    let timeline_entity = spawn_death_stab_vfx(
+    let timeline_entity = spawn_death_stab_vfx_tracked(
         commands,
         caster_entity,
+        None,
+        weapon_bones.map(|bones| bones.hand),
+        weapon_bones.map(|bones| bones.tip),
         caster_pos,
         caster_rotation,
         target_pos,
@@ -5057,8 +5267,9 @@ fn spawn_skill_vfx_scene_with_rotation(
     ttl_seconds: f32,
     follow: Option<(Entity, Vec3)>,
 ) -> Entity {
-    let scene_handle: Handle<Scene> = asset_server.load(format!("{glb_path}#Scene0"));
-    let gltf_handle: Handle<Gltf> = asset_server.load(glb_path.to_string());
+    let resolved_glb_path = client::infra::assets::resolve_asset_path(glb_path);
+    let scene_handle: Handle<Scene> = asset_server.load(format!("{resolved_glb_path}#Scene0"));
+    let gltf_handle: Handle<Gltf> = asset_server.load(resolved_glb_path.clone());
     let mut entity = commands.spawn((
         SceneBundle {
             scene: SceneRoot(scene_handle),
@@ -5278,6 +5489,12 @@ fn preload_class_skill_vfx_assets(
     asset_server: &AssetServer,
     preload_cache: &mut SkillVfxPreloadCache,
 ) {
+    character_viewer_dw_magic::preload_dw_magic_skill_vfx_assets(
+        skills,
+        asset_server,
+        preload_cache,
+    );
+
     let has_melee_trail = skills.iter().any(|s| {
         matches!(
             s.vfx,
@@ -5292,11 +5509,11 @@ fn preload_class_skill_vfx_assets(
 
     if has_melee_trail {
         // Shared trail texture
-        let _: Handle<Image> = asset_server.load("data/effect/sword_blur.png");
+        let _: Handle<Image> = asset_server.load(resolve_asset_path("data/effect/sword_blur.png"));
         // Spark textures used across melee VFX
-        let _: Handle<Image> = asset_server.load("data/effect/spark_01.png");
-        let _: Handle<Image> = asset_server.load("data/effect/spark_02.png");
-        let _: Handle<Image> = asset_server.load("data/effect/spark_03.png");
+        let _: Handle<Image> = asset_server.load(resolve_asset_path("data/effect/spark_01.png"));
+        let _: Handle<Image> = asset_server.load(resolve_asset_path("data/effect/spark_02.png"));
+        let _: Handle<Image> = asset_server.load(resolve_asset_path("data/effect/spark_03.png"));
         // Shared delayed flash
         preload_skill_vfx_asset("data/skill/flashing.glb", asset_server, preload_cache);
     }
@@ -5309,16 +5526,16 @@ fn preload_class_skill_vfx_assets(
     });
 
     if has_buff {
-        let _: Handle<Image> = asset_server.load("data/effect/shiny_01.png");
-        let _: Handle<Image> = asset_server.load("data/effect/shiny_02.png");
+        let _: Handle<Image> = asset_server.load(resolve_asset_path("data/effect/shiny_01.png"));
+        let _: Handle<Image> = asset_server.load(resolve_asset_path("data/effect/shiny_02.png"));
         preload_skill_vfx_asset("data/skill/protect_02.glb", asset_server, preload_cache);
     }
 
     let has_fire = skills.iter().any(|s| s.vfx == SkillVfxProfile::FireBreath);
 
     if has_fire {
-        let _: Handle<Image> = asset_server.load("data/effect/fire_01.png");
-        let _: Handle<Image> = asset_server.load("data/effect/smoke_01.png");
+        let _: Handle<Image> = asset_server.load(resolve_asset_path("data/effect/fire_01.png"));
+        let _: Handle<Image> = asset_server.load(resolve_asset_path("data/effect/smoke_01.png"));
     }
 
     // Preload additional GLB scenes used by upgraded VFX
@@ -5371,7 +5588,11 @@ fn preload_class_skill_vfx_assets(
                 preload_skill_vfx_asset("data/skill/laser_01.glb", asset_server, preload_cache);
             }
             SkillVfxProfile::EvilSpirit => {
-                preload_skill_vfx_asset("data/skill/magic_02.glb", asset_server, preload_cache);
+                preload_skill_vfx_asset(
+                    "data/skill/evil_spirit_2.glb",
+                    asset_server,
+                    preload_cache,
+                );
                 preload_skill_vfx_asset("data/skill/storm_01.glb", asset_server, preload_cache);
             }
             SkillVfxProfile::PowerWave => {
@@ -5526,10 +5747,10 @@ fn preload_skill_vfx_asset(
 
     preload_cache
         .gltf_handles
-        .push(asset_server.load(glb_path.to_string()));
+        .push(asset_server.load(resolve_asset_path(glb_path)));
     preload_cache
         .scene_handles
-        .push(asset_server.load(format!("{glb_path}#Scene0")));
+        .push(asset_server.load(resolve_asset_path(&format!("{glb_path}#Scene0"))));
 }
 
 fn resolve_world_ground_texture_path() -> String {
@@ -5546,8 +5767,7 @@ fn resolve_world_ground_texture_path() -> String {
 }
 
 fn asset_path_exists(path: &str) -> bool {
-    let full = format!("{}/{}", asset_root_path(), path);
-    std::path::Path::new(&full).exists()
+    client::infra::assets::asset_path_exists(path)
 }
 
 fn update_skill_vfx(
@@ -5790,8 +6010,9 @@ fn update_weapon_trails(
                 .materials
                 .entry(cache_key.clone())
                 .or_insert_with(|| {
+                    let texture_path = resolve_asset_path(&cache_key.0);
                     let texture =
-                        asset_server.load_with_settings(cache_key.0.clone(), |settings: &mut _| {
+                        asset_server.load_with_settings(texture_path, |settings: &mut _| {
                             *settings = bevy::image::ImageLoaderSettings {
                                 is_srgb: true,
                                 sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {

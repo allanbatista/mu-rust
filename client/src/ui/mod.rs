@@ -386,6 +386,10 @@ fn draw_graphics_settings_tab(ui: &mut egui::Ui, draft: &mut GameSettings) {
 
     ui.checkbox(&mut draft.graphics.vsync, "VSync");
     ui.checkbox(&mut draft.graphics.show_grass, "Mostrar grama");
+    ui.checkbox(
+        &mut draft.graphics.use_remaster_assets,
+        "Usar assets remaster (F10)",
+    );
 }
 
 fn draw_audio_settings_tab(ui: &mut egui::Ui, draft: &mut GameSettings) {

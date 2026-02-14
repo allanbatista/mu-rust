@@ -1,9 +1,9 @@
+use crate::infra::assets::{asset_path_exists, resolve_asset_path};
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 use thiserror::Error;
 
 const TERRAIN_CONFIG_FILE: &str = "terrain_config.json";
@@ -15,7 +15,6 @@ const CAMERA_TOUR_FILE: &str = "camera_tour.json";
 const MAP_VFX_FILE: &str = "map_vfx.json";
 const SCENE_OBJECTS_FILE_OVERRIDE_ENV: &str = "MU_SCENE_OBJECTS_FILE";
 const DISABLE_MAP_VFX_ENV: &str = "MU_DISABLE_MAP_VFX";
-const CLIENT_ASSETS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets");
 
 #[derive(Asset, TypePath, Serialize, Deserialize, Clone, Debug)]
 pub struct TerrainConfig {
@@ -643,21 +642,35 @@ impl SceneLoader {
 
         let world = LoadedSceneWorld {
             world_name: world_name.to_string(),
-            terrain_config: asset_server.load(world_asset_path(world_name, TERRAIN_CONFIG_FILE)),
-            heightmap: asset_server.load(world_asset_path(world_name, TERRAIN_HEIGHT_FILE)),
-            terrain_map: asset_server.load(world_asset_path(world_name, TERRAIN_MAP_FILE)),
+            terrain_config: asset_server.load(resolve_asset_path(&world_asset_path(
+                world_name,
+                TERRAIN_CONFIG_FILE,
+            ))),
+            heightmap: asset_server.load(resolve_asset_path(&world_asset_path(
+                world_name,
+                TERRAIN_HEIGHT_FILE,
+            ))),
+            terrain_map: asset_server.load(resolve_asset_path(&world_asset_path(
+                world_name,
+                TERRAIN_MAP_FILE,
+            ))),
             legacy_terrain_map: world_number.map(|number| {
-                asset_server.load(world_asset_path(
+                asset_server.load(resolve_asset_path(&world_asset_path(
                     world_name,
                     &format!("enc_terrain_{number}.map.json"),
-                ))
+                )))
             }),
-            terrain_texture_slots: Some(
-                asset_server.load(world_asset_path(world_name, TERRAIN_TEXTURE_SLOTS_FILE)),
-            ),
-            scene_objects: asset_server.load(scene_objects_path),
-            camera_tour: asset_server.load(world_asset_path(world_name, CAMERA_TOUR_FILE)),
-            map_vfx: map_vfx_asset_path(world_name).map(|path| asset_server.load(path)),
+            terrain_texture_slots: Some(asset_server.load(resolve_asset_path(&world_asset_path(
+                world_name,
+                TERRAIN_TEXTURE_SLOTS_FILE,
+            )))),
+            scene_objects: asset_server.load(resolve_asset_path(&scene_objects_path)),
+            camera_tour: asset_server.load(resolve_asset_path(&world_asset_path(
+                world_name,
+                CAMERA_TOUR_FILE,
+            ))),
+            map_vfx: map_vfx_asset_path(world_name)
+                .map(|path| asset_server.load(resolve_asset_path(&path))),
         };
 
         self.worlds.insert(
@@ -694,8 +707,7 @@ fn world_asset_path(world_name: &str, file_name: &str) -> String {
 
 fn optional_world_asset_path_if_exists(world_name: &str, file_name: &str) -> Option<String> {
     let relative = world_asset_path(world_name, file_name);
-    let full_path = Path::new(CLIENT_ASSETS_ROOT).join(&relative);
-    if full_path.is_file() {
+    if asset_path_exists(&relative) {
         Some(relative)
     } else {
         None

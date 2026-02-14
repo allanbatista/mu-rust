@@ -142,7 +142,7 @@ const DW_SKILLS: &[SkillEntry] = &[
         PlayerAction::SkillHand1,
         0.29,
         SkillType::Target,
-        SkillVfxProfile::MagicArea,
+        SkillVfxProfile::Meteorite,
     ),
     skill(
         3,
@@ -166,7 +166,7 @@ const DW_SKILLS: &[SkillEntry] = &[
         PlayerAction::SkillHand1,
         0.29,
         SkillType::Area,
-        SkillVfxProfile::MagicArea,
+        SkillVfxProfile::Flame,
     ),
     skill(
         6,
@@ -190,7 +190,7 @@ const DW_SKILLS: &[SkillEntry] = &[
         PlayerAction::SkillHand1,
         0.29,
         SkillType::Area,
-        SkillVfxProfile::MagicArea,
+        SkillVfxProfile::Twister,
     ),
     skill(
         9,
@@ -484,7 +484,7 @@ const MG_SKILLS: &[SkillEntry] = &[
         PlayerAction::SkillHand1,
         0.29,
         SkillType::Target,
-        SkillVfxProfile::MagicArea,
+        SkillVfxProfile::Meteorite,
     ),
     skill(
         3,
@@ -508,7 +508,7 @@ const MG_SKILLS: &[SkillEntry] = &[
         PlayerAction::SkillHand1,
         0.29,
         SkillType::Area,
-        SkillVfxProfile::MagicArea,
+        SkillVfxProfile::Flame,
     ),
     skill(
         8,
@@ -516,7 +516,7 @@ const MG_SKILLS: &[SkillEntry] = &[
         PlayerAction::SkillHand1,
         0.29,
         SkillType::Area,
-        SkillVfxProfile::MagicArea,
+        SkillVfxProfile::Twister,
     ),
     skill(
         9,

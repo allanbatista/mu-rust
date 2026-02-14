@@ -1,5 +1,6 @@
 use super::terrain::TerrainSpawned;
 use crate::bevy_compat::*;
+use crate::infra::assets::{asset_path_exists, resolve_asset_path};
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::world_coordinates::{mirror_map_xz_with_axis, world_mirror_axis};
@@ -316,8 +317,9 @@ pub fn spawn_terrain_grass_when_ready(
         return;
     }
 
+    let resolved_grass_texture_path = resolve_asset_path(&grass_texture_path);
     let diffuse =
-        asset_server.load_with_settings(grass_texture_path.clone(), |settings: &mut _| {
+        asset_server.load_with_settings(resolved_grass_texture_path, |settings: &mut _| {
             *settings = ImageLoaderSettings {
                 is_srgb: true,
                 sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -548,8 +550,7 @@ pub(super) fn find_grass_slots(
         for candidate_slot in [0u8, 1, 30, 31, 32] {
             let candidates = default_grass_candidates(world_name, candidate_slot);
             for candidate in candidates {
-                let full = Path::new(CLIENT_ASSETS_ROOT).join(&candidate);
-                if full.is_file() {
+                if asset_path_exists(&candidate) {
                     grass_slots.insert(candidate_slot);
                     break;
                 }
@@ -574,9 +575,8 @@ fn find_grass_texture_path(
             if let Some(path) = slots.path_for_slot(*slot_id) {
                 let normalized = path.trim().replace('\\', "/");
                 let normalized = normalized.trim_start_matches('/');
-                let full = Path::new(CLIENT_ASSETS_ROOT).join(normalized);
-                if full.is_file() {
-                    return Some(normalized.to_string());
+                if asset_path_exists(normalized) {
+                    return Some(resolve_asset_path(normalized));
                 }
                 // Try case-insensitive
                 if let Some(resolved) = resolve_case_insensitive(normalized) {
@@ -589,9 +589,8 @@ fn find_grass_texture_path(
     // Fallback: look for tile_grass files directly
     for name in ["tile_grass01", "tile_grass03", "tile_grass02"] {
         let path = format!("data/{world_name}/{name}.png");
-        let full = Path::new(CLIENT_ASSETS_ROOT).join(&path);
-        if full.is_file() {
-            return Some(path);
+        if asset_path_exists(&path) {
+            return Some(resolve_asset_path(&path));
         }
         // Try other casing
         for cased in [
@@ -599,9 +598,8 @@ fn find_grass_texture_path(
             format!("data/{world_name}/TileGrass03.png"),
             format!("data/{world_name}/TileGrass02.png"),
         ] {
-            let full = Path::new(CLIENT_ASSETS_ROOT).join(&cased);
-            if full.is_file() {
-                return Some(cased);
+            if asset_path_exists(&cased) {
+                return Some(resolve_asset_path(&cased));
             }
         }
     }

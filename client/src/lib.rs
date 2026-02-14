@@ -22,6 +22,7 @@ pub mod gameplay;
 pub mod grid_overlay;
 pub mod infra;
 pub mod legacy_additive;
+pub mod lightning_sprite_2d;
 pub mod presentation;
 pub mod scene_runtime;
 pub mod settings;

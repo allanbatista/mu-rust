@@ -1,6 +1,7 @@
 use super::controller::{CharacterAnimState, CharacterController, CharacterState};
 use super::types::{BodyPartMarker, BodySlot, CharacterClass, CharacterRoot};
 use crate::bevy_compat::*;
+use crate::infra::assets::resolve_asset_path;
 use bevy::prelude::*;
 
 pub struct CharacterFactory;
@@ -38,7 +39,7 @@ impl CharacterFactory {
         for &slot in slots {
             let glb_path = slot.default_glb_path(body_type);
             let scene_path = format!("{glb_path}#Scene0");
-            let scene_handle: Handle<Scene> = asset_server.load(scene_path);
+            let scene_handle: Handle<Scene> = asset_server.load(resolve_asset_path(&scene_path));
 
             let part = commands
                 .spawn((

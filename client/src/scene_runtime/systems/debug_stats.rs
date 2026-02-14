@@ -2,7 +2,9 @@ use super::frame_limiter::DebugFrameLimiter;
 use super::objects::SceneObjectDistanceCullingConfig;
 use super::shadow_quality::DebugShadowQuality;
 use crate::bevy_compat::*;
+use crate::infra::assets::set_use_remaster_assets;
 use crate::scene_runtime::components::*;
+use crate::settings::SettingsResource;
 use bevy::asset::AssetId;
 use bevy::camera::visibility::VisibleEntities;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
@@ -90,6 +92,30 @@ pub fn toggle_debug_overlay_shortcut(
             }
         );
     }
+}
+
+pub fn toggle_remaster_assets_shortcut(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut settings: ResMut<SettingsResource>,
+) {
+    if !keys.just_pressed(KeyCode::F10) {
+        return;
+    }
+
+    settings.current.graphics.use_remaster_assets = !settings.current.graphics.use_remaster_assets;
+    set_use_remaster_assets(settings.current.graphics.use_remaster_assets);
+    if let Err(error) = settings.save_to_disk() {
+        warn!("Failed to persist remaster asset toggle: {error}");
+    }
+
+    info!(
+        "Remaster assets {}",
+        if settings.current.graphics.use_remaster_assets {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 }
 
 pub fn apply_debug_overlay_visibility(

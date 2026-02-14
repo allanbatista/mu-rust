@@ -1,4 +1,5 @@
 use crate::bevy_compat::*;
+use crate::infra::assets::resolve_asset_path;
 use crate::scene_runtime::components::*;
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
@@ -86,8 +87,9 @@ pub fn update_weapon_trails(
                 .materials
                 .entry(cache_key.clone())
                 .or_insert_with(|| {
+                    let texture_path = resolve_asset_path(&cache_key.0);
                     let texture =
-                        asset_server.load_with_settings(cache_key.0.clone(), |settings: &mut _| {
+                        asset_server.load_with_settings(texture_path, |settings: &mut _| {
                             *settings = ImageLoaderSettings {
                                 is_srgb: true,
                                 sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {

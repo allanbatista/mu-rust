@@ -1,5 +1,6 @@
 use super::particles::particle_emitter_from_definition;
 use crate::bevy_compat::*;
+use crate::infra::assets::resolve_asset_path;
 use crate::legacy_additive::{
     LegacyAdditiveMaterial, legacy_additive_from_standard, legacy_additive_intensity_from_extras,
 };
@@ -433,9 +434,10 @@ fn spawn_scene_object(
         let animation_speed =
             scene_object_animation_speed(&object_def.model, object_def.properties.animation_speed);
         let animation_source = glb_asset_path_from_scene_path(&scene_path).map(|glb_asset_path| {
-            let gltf_handle: Handle<Gltf> = asset_server.load(glb_asset_path.clone());
+            let resolved_glb_asset_path = resolve_asset_path(&glb_asset_path);
+            let gltf_handle: Handle<Gltf> = asset_server.load(resolved_glb_asset_path.clone());
             SceneObjectAnimationSource {
-                glb_asset_path,
+                glb_asset_path: resolved_glb_asset_path,
                 gltf_handle,
                 playback_speed: animation_speed,
             }
@@ -443,7 +445,7 @@ fn spawn_scene_object(
         if let Some(source) = animation_source.clone() {
             entity_cmd.insert(source);
         }
-        let scene: Handle<Scene> = asset_server.load(scene_path);
+        let scene: Handle<Scene> = asset_server.load(resolve_asset_path(&scene_path));
         entity_cmd.with_children(|parent| {
             parent.spawn(SceneBundle {
                 scene: SceneRoot(scene),

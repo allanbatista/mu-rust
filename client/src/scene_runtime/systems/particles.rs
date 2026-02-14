@@ -1,4 +1,5 @@
 use crate::bevy_compat::*;
+use crate::infra::assets::resolve_asset_path;
 use crate::scene_runtime::components::*;
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
@@ -138,18 +139,18 @@ pub fn ensure_particle_render_batches(
             continue;
         }
 
-        let texture =
-            asset_server.load_with_settings(batch.texture_path.clone(), |settings: &mut _| {
-                *settings = ImageLoaderSettings {
-                    is_srgb: true,
-                    sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
-                        address_mode_u: ImageAddressMode::ClampToEdge,
-                        address_mode_v: ImageAddressMode::ClampToEdge,
-                        ..default()
-                    }),
+        let texture_path = resolve_asset_path(&batch.texture_path);
+        let texture = asset_server.load_with_settings(texture_path, |settings: &mut _| {
+            *settings = ImageLoaderSettings {
+                is_srgb: true,
+                sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
+                    address_mode_u: ImageAddressMode::ClampToEdge,
+                    address_mode_v: ImageAddressMode::ClampToEdge,
                     ..default()
-                };
-            });
+                }),
+                ..default()
+            };
+        });
 
         let material_handle = materials.add(StandardMaterial {
             base_color_texture: Some(texture),

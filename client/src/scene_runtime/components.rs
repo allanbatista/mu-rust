@@ -134,6 +134,10 @@ pub struct FlickerParams {
     pub speed: f32,
 }
 
+/// Marker for the 2D overlay camera used by lightning screen-space sprites.
+#[derive(Component)]
+pub struct LightningOverlayCamera;
+
 // ============================================================================
 // CAMERA COMPONENTS
 // ============================================================================
@@ -256,6 +260,9 @@ pub struct SkillTimedLight {
 #[derive(Component)]
 pub struct DeathStabTimeline {
     pub caster_entity: Entity,
+    pub target_entity: Option<Entity>,
+    pub weapon_hand_entity: Option<Entity>,
+    pub weapon_tip_entity: Option<Entity>,
     pub caster_start_pos: Vec3,
     pub target_pos: Vec3,
     pub forward_xz: Vec3,
@@ -277,15 +284,23 @@ pub struct LightningHurtEffect {
     pub target_entity: Option<Entity>,
     pub fallback_center: Vec3,
     pub next_arc_seq: u32,
+    /// Cache of ALL bone entities (like C# GetBoneTransforms), collected once.
+    pub cached_bones: Vec<Entity>,
+    /// Whether bone cache has been initialized.
+    pub initialized: bool,
 }
 
+/// Marker: bone cache has been initialized for this lightning effect.
+#[derive(Component)]
+pub struct LightningHurtEffectInitialized;
+
 /// Rendered lightning arc segment spawned by `LightningHurtEffect`.
+/// Uses bone world-space positions for 3D→2D screen-space projection (C# SpriteObject).
 #[derive(Component)]
 pub struct DeathStabLightningArc {
     pub owner_effect: Entity,
-    pub start: Vec3,
-    pub end: Vec3,
-    pub width: f32,
+    pub bone1_pos: Vec3,
+    pub bone2_pos: Vec3,
     pub remaining_secs: f32,
     pub spawn_seq: u32,
 }
@@ -313,6 +328,7 @@ pub struct DeathStabMaterialsApplied;
 pub struct DeathStabEnergyParticle {
     pub start_pos: Vec3,
     pub target_pos: Vec3,
+    pub target_entity: Option<Entity>,
     pub max_lifetime_secs: f32,
     pub elapsed_secs: f32,
 }

@@ -1,4 +1,5 @@
 use crate::bevy_compat::*;
+use crate::infra::assets::{asset_path_exists, resolve_asset_path};
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
@@ -42,7 +43,8 @@ pub fn spawn_skybox_when_ready(
     let sky_texture_path = resolve_skybox_texture_path(world_name);
 
     let material_handle = if let Some(texture_path) = sky_texture_path.clone() {
-        let texture = asset_server.load_with_settings(texture_path.clone(), |settings: &mut _| {
+        let resolved_texture_path = resolve_asset_path(&texture_path);
+        let texture = asset_server.load_with_settings(resolved_texture_path, |settings: &mut _| {
             *settings = ImageLoaderSettings {
                 is_srgb: true,
                 sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -137,6 +139,10 @@ fn resolve_existing_asset_path(raw_path: &str) -> Option<String> {
     let normalized = normalize_asset_path(raw_path);
     if normalized.is_empty() {
         return None;
+    }
+
+    if asset_path_exists(&normalized) {
+        return Some(resolve_asset_path(&normalized));
     }
 
     let root = Path::new(CLIENT_ASSETS_ROOT);

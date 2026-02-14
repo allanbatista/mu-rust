@@ -1,6 +1,8 @@
 use crate::gameplay::runtime::pipeline::GameplayPipelineSet;
 use crate::gameplay::systems::{camera, lighting, objects, particles, skills, terrain};
 use crate::legacy_additive::LegacyAdditiveMaterial;
+use crate::lightning_sprite_2d::LightningSprite2dMaterial;
+use bevy::sprite_render::Material2dPlugin;
 use crate::scene_runtime::components::{
     SceneObjectAnimationInitialized, SceneObjectAnimationSource,
 };
@@ -30,6 +32,7 @@ fn configure_runtime_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
 pub fn register_gameplay_runtime(app: &mut App) {
     app.add_plugins(MaterialPlugin::<GrassMaterial>::default())
         .add_plugins(MaterialPlugin::<LegacyAdditiveMaterial>::default())
+        .add_plugins(Material2dPlugin::<LightningSprite2dMaterial>::default())
         .add_systems(Startup, configure_runtime_gizmos)
         .init_resource::<camera::DebugOverlayState>()
         .init_resource::<camera::DebugSceneStats>()
@@ -106,7 +109,9 @@ pub fn register_gameplay_runtime(app: &mut App) {
                 skills::ensure_death_stab_animation_players,
                 skills::update_death_stab_energy_particles,
                 skills::update_death_stab_spike_particles,
+                skills::initialize_lightning_hurt_effects,
                 skills::update_lightning_hurt_effects,
+                skills::update_death_stab_lightning_arcs,
                 skills::update_skill_vfx_auto_lifetimes,
                 particles::update_particle_emitters,
                 particles::ensure_particle_render_batches,
@@ -132,6 +137,7 @@ pub fn register_gameplay_runtime(app: &mut App) {
                 camera::reset_debug_overlay_state,
                 camera::reset_debug_scene_stats,
                 camera::spawn_debug_scene_stats_hud,
+                skills::spawn_lightning_overlay_camera,
             ),
         )
         .add_systems(
@@ -151,6 +157,7 @@ pub fn register_gameplay_runtime(app: &mut App) {
         .add_systems(
             Update,
             (
+                camera::toggle_remaster_assets_shortcut,
                 camera::toggle_debug_overlay_shortcut,
                 camera::apply_debug_overlay_visibility,
             )

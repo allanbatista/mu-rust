@@ -1,5 +1,6 @@
 use super::grass::find_grass_slots;
 use crate::bevy_compat::*;
+use crate::infra::assets::{asset_path_exists, resolve_asset_path};
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use crate::scene_runtime::world_coordinates::{
@@ -157,19 +158,19 @@ pub fn spawn_terrain_when_ready(
         let material_handle = if let Some(existing) = material_cache.get(&material_key) {
             existing.clone()
         } else {
-            let diffuse =
-                asset_server.load_with_settings(batch.texture_path.clone(), |settings: &mut _| {
-                    *settings = ImageLoaderSettings {
-                        // Terrain diffuse/albedo textures are authored in sRGB color space.
-                        is_srgb: true,
-                        sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
-                            address_mode_u: ImageAddressMode::Repeat,
-                            address_mode_v: ImageAddressMode::Repeat,
-                            ..default()
-                        }),
+            let texture_path = resolve_asset_path(&batch.texture_path);
+            let diffuse = asset_server.load_with_settings(texture_path, |settings: &mut _| {
+                *settings = ImageLoaderSettings {
+                    // Terrain diffuse/albedo textures are authored in sRGB color space.
+                    is_srgb: true,
+                    sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
+                        address_mode_u: ImageAddressMode::Repeat,
+                        address_mode_v: ImageAddressMode::Repeat,
                         ..default()
-                    };
-                });
+                    }),
+                    ..default()
+                };
+            });
 
             let handle = materials.add(StandardMaterial {
                 base_color_texture: Some(diffuse),
@@ -750,6 +751,10 @@ fn resolve_existing_asset_path(raw_path: &str) -> Option<String> {
     let normalized = normalize_asset_path(raw_path);
     if normalized.is_empty() {
         return None;
+    }
+
+    if asset_path_exists(&normalized) {
+        return Some(resolve_asset_path(&normalized));
     }
 
     let root = Path::new(CLIENT_ASSETS_ROOT);

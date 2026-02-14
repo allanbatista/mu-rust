@@ -9,11 +9,17 @@ use crate::gameplay::controllers::scene_controller::SceneControllerPlugin;
 use crate::gameplay::runtime::registration::register_gameplay_runtime;
 use crate::gameplay::scenes::gameplay::GameplayScene;
 use crate::gameplay::scenes::login::LoginScene;
+use crate::infra::assets::{configure_asset_resolver, default_asset_root_path};
 use crate::presentation::ui::hud::HudPresentationPlugin;
 use crate::scene_runtime::scene_loader::SceneLoaderPlugin;
 use crate::world::WorldPlugin;
 
 pub fn configure_client_app(app: &mut App, startup_settings: &GameSettings) {
+    configure_asset_resolver(
+        default_asset_root_path(),
+        startup_settings.graphics.use_remaster_assets,
+    );
+
     app.insert_resource(SettingsResource::new(startup_settings.clone()))
         .add_plugins(build_bevy_plugins(startup_settings))
         .insert_resource(create_winit_settings(startup_settings))

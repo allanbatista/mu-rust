@@ -1,3 +1,4 @@
+use crate::infra::assets::set_use_remaster_assets;
 use crate::scene_runtime::systems::{RuntimeSunLight, SceneObjectDistanceCullingConfig};
 use bevy::light::{
     CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap,
@@ -239,6 +240,7 @@ pub struct GraphicsSettings {
     pub fps_limit: FpsLimitSetting,
     pub render_distance: RenderDistanceSetting,
     pub show_grass: bool,
+    pub use_remaster_assets: bool,
 }
 
 impl Default for GraphicsSettings {
@@ -251,6 +253,7 @@ impl Default for GraphicsSettings {
             fps_limit: FpsLimitSetting::Default60,
             render_distance: RenderDistanceSetting::Medium,
             show_grass: true,
+            use_remaster_assets: true,
         }
     }
 }
@@ -442,6 +445,8 @@ fn apply_runtime_settings(
         &camera_query,
         &mut commands,
     );
+
+    set_use_remaster_assets(settings.current.graphics.use_remaster_assets);
 
     audio_categories.ambient_enabled = settings.current.audio.ambient_enabled;
     audio_categories.effects_enabled = settings.current.audio.effects_enabled;

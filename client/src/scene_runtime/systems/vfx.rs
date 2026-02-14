@@ -1,5 +1,6 @@
 use super::particles::particle_emitter_from_definition;
 use crate::bevy_compat::*;
+use crate::infra::assets::{asset_path_exists, resolve_asset_path};
 use crate::scene_runtime::components::*;
 use crate::scene_runtime::state::RuntimeSceneAssets;
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
@@ -8,7 +9,6 @@ use bevy::math::primitives::Rectangle;
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
-use std::path::Path;
 
 const DEFAULT_LIGHT_INTENSITY: f32 = 300.0;
 const DEFAULT_LIGHT_RANGE: f32 = 320.0;
@@ -200,8 +200,9 @@ pub fn apply_map_vfx_profile_to_scene_objects(
                 let material_handle = if let Some(existing) = sprite_assets.materials.get(&key) {
                     existing.clone()
                 } else {
+                    let resolved_texture_path = resolve_asset_path(&texture_path);
                     let texture = asset_server.load_with_settings(
-                        texture_path.clone(),
+                        resolved_texture_path,
                         |settings: &mut _| {
                             *settings = ImageLoaderSettings {
                                 is_srgb: true,
@@ -369,8 +370,6 @@ fn phase_from_entity(entity: Entity, salt: u32) -> f32 {
 }
 
 fn normalize_existing_asset_path(raw_path: &str) -> Option<String> {
-    const CLIENT_ASSETS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets");
-
     let normalized = raw_path
         .trim()
         .replace('\\', "/")
@@ -379,9 +378,8 @@ fn normalize_existing_asset_path(raw_path: &str) -> Option<String> {
     if normalized.is_empty() {
         return None;
     }
-    let full = Path::new(CLIENT_ASSETS_ROOT).join(&normalized);
-    if full.is_file() {
-        return Some(normalized);
+    if asset_path_exists(&normalized) {
+        return Some(resolve_asset_path(&normalized));
     }
     None
 }
@@ -391,6 +389,7 @@ mod tests {
     use super::*;
     use serde::de::DeserializeOwned;
     use std::fs;
+    use std::path::Path;
 
     const CLIENT_ASSETS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets");
 
