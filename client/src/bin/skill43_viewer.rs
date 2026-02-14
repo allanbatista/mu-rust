@@ -17,6 +17,8 @@ const REQUIRED_ASSET_REAR_TEX: &str = "data/effect/n_skill.png";
 const REQUIRED_ASSET_FORWARD_TEX: &str = "data/effect/joint_sword_red.png";
 const REQUIRED_ASSET_THUNDER_TEX: &str = "data/effect/joint_thunder_01.png";
 const REQUIRED_ASSET_COMBO_TEX: &str = "data/effect/flashing.png";
+const MU_TICK_RATE: f32 = 25.0;
+const MU_TICK_SECONDS: f32 = 1.0 / MU_TICK_RATE;
 
 #[derive(Resource, Default)]
 struct MouseTarget {
@@ -27,12 +29,9 @@ struct MouseTarget {
 #[derive(Resource, Default)]
 struct Skill43State {
     active_cast: Option<ActiveCast>,
-    attack_tick_accumulator: f32,
-    impact_tick_accumulator: f32,
     impact_ticks_remaining: i32,
     impact_center: Vec3,
-    scene_frame_accumulator: f32,
-    pending_scene_steps: u32,
+    frame_ticks: u32,
     move_scene_frame: i32,
     next_seed: i32,
     current_sword_tip: Vec3,
@@ -65,6 +64,12 @@ struct FpsOverlay {
     accumulator: f32,
     frames: u32,
     value: f32,
+}
+
+#[derive(Resource, Default)]
+struct Skill43Clock {
+    accumulator_seconds: f32,
+    pending_ticks: u32,
 }
 
 #[derive(Component)]
@@ -121,8 +126,6 @@ struct ComboSprite {
 struct Skill43Tuning {
     animation_speed: f32,
     cast_plane_y: f32,
-    attack_tick_seconds: f32,
-    impact_tick_seconds: f32,
     max_ticks_per_update: u32,
     limit_attack_time: i32,
     rear_phase_start: i32,
@@ -182,8 +185,6 @@ impl Default for Skill43Tuning {
         Self {
             animation_speed: 1.0,
             cast_plane_y: 0.0,
-            attack_tick_seconds: 1.0 / 60.0,
-            impact_tick_seconds: 1.0 / 60.0,
             max_ticks_per_update: 8,
             limit_attack_time: 15,
             rear_phase_start: 2,
@@ -243,8 +244,6 @@ impl Default for Skill43Tuning {
 impl Skill43Tuning {
     fn sanitize(&mut self) {
         self.animation_speed = self.animation_speed.max(0.0);
-        self.attack_tick_seconds = self.attack_tick_seconds.max(0.001);
-        self.impact_tick_seconds = self.impact_tick_seconds.max(0.001);
         self.max_ticks_per_update = self.max_ticks_per_update.max(1);
         self.limit_attack_time = self.limit_attack_time.max(1);
         self.rear_spawns_per_tick = self.rear_spawns_per_tick.min(64);
@@ -292,6 +291,7 @@ fn main() {
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(MouseTarget::default())
         .insert_resource(Skill43State::default())
+        .insert_resource(Skill43Clock::default())
         .insert_resource(FpsOverlay::default())
         .insert_resource(tuning)
         .insert_resource(CameraRig {
@@ -333,7 +333,8 @@ fn main() {
                 update_combo_sprites,
                 update_camera_zoom,
                 apply_camera_rig,
-            ),
+            )
+                .chain(),
         )
         .run();
 }
@@ -432,14 +433,23 @@ fn update_mouse_target(
 fn update_scene_frame(
     time: Res<Time>,
     tuning: Res<Skill43Tuning>,
+    mut clock: ResMut<Skill43Clock>,
     mut state: ResMut<Skill43State>,
 ) {
-    state.scene_frame_accumulator += simulation_delta_seconds(&time, &tuning) * 60.0;
-    while state.scene_frame_accumulator >= 1.0 {
-        state.scene_frame_accumulator -= 1.0;
-        state.move_scene_frame = state.move_scene_frame.wrapping_add(1);
-        state.pending_scene_steps = state.pending_scene_steps.saturating_add(1);
+    let dt = simulation_delta_seconds(&time, &tuning);
+    if dt > 0.0 {
+        clock.accumulator_seconds += dt;
     }
+
+    while clock.accumulator_seconds >= MU_TICK_SECONDS {
+        clock.accumulator_seconds -= MU_TICK_SECONDS;
+        clock.pending_ticks = clock.pending_ticks.saturating_add(1);
+    }
+
+    let ticks_to_process = clock.pending_ticks.min(tuning.max_ticks_per_update);
+    clock.pending_ticks -= ticks_to_process;
+    state.frame_ticks = ticks_to_process;
+    state.move_scene_frame = state.move_scene_frame.wrapping_add(ticks_to_process as i32);
 }
 
 fn handle_right_click_cast(
@@ -478,15 +488,12 @@ fn handle_right_click_cast(
         ),
         impact_started: false,
     });
-    state.attack_tick_accumulator = 0.0;
-    state.impact_tick_accumulator = 0.0;
     state.impact_ticks_remaining = 0;
     state.current_sword_tip = sword_tip_anchor(caster, forward, &tuning);
 }
 
 fn advance_skill43_timeline(
     mut commands: Commands,
-    time: Res<Time>,
     tuning: Res<Skill43Tuning>,
     mut state: ResMut<Skill43State>,
     assets: Res<FxAssets>,
@@ -496,16 +503,12 @@ fn advance_skill43_timeline(
     let Some(mut cast) = state.active_cast else {
         return;
     };
+    let ticks = state.frame_ticks;
+    if ticks == 0 {
+        return;
+    }
 
-    state.attack_tick_accumulator += simulation_delta_seconds(&time, &tuning);
-
-    let mut processed_ticks = 0usize;
-    while state.attack_tick_accumulator >= tuning.attack_tick_seconds
-        && processed_ticks < tuning.max_ticks_per_update as usize
-    {
-        state.attack_tick_accumulator -= tuning.attack_tick_seconds;
-        processed_ticks += 1;
-
+    for _ in 0..ticks {
         let attack_time = cast.attack_time;
         if attack_time <= 8 {
             let caster = Vec3::new(0.0, tuning.cast_plane_y, 0.0);
@@ -546,7 +549,6 @@ fn advance_skill43_timeline(
             state.impact_center =
                 cast.target_pos + Vec3::new(0.0, tuning.impact_center_height, 0.0);
             state.impact_ticks_remaining = tuning.impact_total_ticks;
-            state.impact_tick_accumulator = 0.0;
             spawn_combo_burst(
                 &mut commands,
                 &assets,
@@ -564,7 +566,6 @@ fn advance_skill43_timeline(
 
         if cast.attack_time >= tuning.limit_attack_time {
             state.active_cast = None;
-            state.attack_tick_accumulator = 0.0;
             return;
         }
     }
@@ -574,7 +575,6 @@ fn advance_skill43_timeline(
 
 fn advance_impact_thunder_timeline(
     mut commands: Commands,
-    time: Res<Time>,
     tuning: Res<Skill43Tuning>,
     mut state: ResMut<Skill43State>,
     assets: Res<FxAssets>,
@@ -584,15 +584,15 @@ fn advance_impact_thunder_timeline(
     if state.impact_ticks_remaining <= 0 {
         return;
     }
+    let ticks = state.frame_ticks;
+    if ticks == 0 {
+        return;
+    }
 
-    state.impact_tick_accumulator += simulation_delta_seconds(&time, &tuning);
-
-    let mut processed_ticks = 0usize;
-    while state.impact_tick_accumulator >= tuning.impact_tick_seconds
-        && processed_ticks < tuning.max_ticks_per_update as usize
-    {
-        state.impact_tick_accumulator -= tuning.impact_tick_seconds;
-        processed_ticks += 1;
+    for _ in 0..ticks {
+        if state.impact_ticks_remaining <= 0 {
+            break;
+        }
 
         for _ in 0..tuning.impact_arcs_per_tick {
             let seed = next_seed(&mut state);
@@ -608,9 +608,6 @@ fn advance_impact_thunder_timeline(
         }
 
         state.impact_ticks_remaining -= 1;
-        if state.impact_ticks_remaining <= 0 {
-            break;
-        }
     }
 }
 
@@ -859,17 +856,14 @@ fn spawn_joint_entity(
 
 fn update_skill43_joints(
     tuning: Res<Skill43Tuning>,
-    mut state: ResMut<Skill43State>,
+    state: Res<Skill43State>,
     mut joints: Query<&mut Skill43Joint>,
 ) {
-    if state.pending_scene_steps == 0 {
+    if state.frame_ticks == 0 {
         return;
     }
 
-    let steps = state.pending_scene_steps.min(32);
-    state.pending_scene_steps -= steps;
-
-    for _ in 0..steps {
+    for _ in 0..state.frame_ticks {
         for mut joint in &mut joints {
             match joint.kind {
                 JointKind::RearSubType2 => update_rear_subtype2_joint(
@@ -1299,6 +1293,7 @@ fn draw_settings_window(
     mut tuning: ResMut<Skill43Tuning>,
     mut rig: ResMut<CameraRig>,
     state: Res<Skill43State>,
+    clock: Res<Skill43Clock>,
     mouse_target: Res<MouseTarget>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -1333,6 +1328,8 @@ fn draw_settings_window(
                 state.impact_ticks_remaining
             ));
             ui.label(format!("move_scene_frame: {}", state.move_scene_frame));
+            ui.label(format!("mu_ticks_this_frame: {}", state.frame_ticks));
+            ui.label(format!("mu_pending_ticks: {}", clock.pending_ticks));
             ui.label(format!(
                 "mouse_target: {} ({:.1}, {:.1}, {:.1})",
                 if mouse_target.valid {
@@ -1347,19 +1344,15 @@ fn draw_settings_window(
 
             ui.separator();
             ui.label("Global Timing");
+            ui.label(format!(
+                "MU tick base: {:.2} TPS ({:.3} s/tick)",
+                MU_TICK_RATE, MU_TICK_SECONDS
+            ));
             ui.add(
                 egui::Slider::new(&mut tuning.animation_speed, 0.0..=3.0).text("animation_speed"),
             );
             ui.add(
                 egui::Slider::new(&mut tuning.cast_plane_y, -300.0..=300.0).text("cast_plane_y"),
-            );
-            ui.add(
-                egui::Slider::new(&mut tuning.attack_tick_seconds, 0.001..=0.08)
-                    .text("attack_tick_seconds"),
-            );
-            ui.add(
-                egui::Slider::new(&mut tuning.impact_tick_seconds, 0.001..=0.08)
-                    .text("impact_tick_seconds"),
             );
             {
                 let mut ticks = tuning.max_ticks_per_update as i32;
