@@ -1,10 +1,12 @@
 use bevy::asset::AssetPlugin;
+use bevy::camera::ClearColorConfig;
 use bevy::color::LinearRgba;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::MouseWheel;
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
+use bevy::sprite::Anchor;
 use bevy::window::{PrimaryWindow, WindowResolution};
 use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
@@ -17,6 +19,7 @@ const REQUIRED_ASSET_REAR_TEX: &str = "data/effect/n_skill.png";
 const REQUIRED_ASSET_FORWARD_TEX: &str = "data/effect/joint_sword_red.png";
 const REQUIRED_ASSET_THUNDER_TEX: &str = "data/effect/joint_thunder_01.png";
 const REQUIRED_ASSET_COMBO_TEX: &str = "data/effect/flashing.png";
+const REQUIRED_ASSET_BACKGROUND_TEX: &str = "prototype/noria-placeholder.png";
 const MU_TICK_RATE: f32 = 25.0;
 const MU_TICK_SECONDS: f32 = 1.0 / MU_TICK_RATE;
 
@@ -74,6 +77,14 @@ struct Skill43Clock {
 
 #[derive(Component)]
 struct MainCamera;
+
+#[derive(Component)]
+struct SceneBackdrop;
+
+#[derive(Component)]
+struct SceneBackdropImage {
+    handle: Handle<Image>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JointKind {
@@ -333,6 +344,7 @@ fn main() {
                 update_combo_sprites,
                 update_camera_zoom,
                 apply_camera_rig,
+                fit_scene_backdrop,
             )
                 .chain(),
         )
@@ -345,6 +357,7 @@ fn validate_required_assets(asset_root: &str) {
         REQUIRED_ASSET_FORWARD_TEX,
         REQUIRED_ASSET_THUNDER_TEX,
         REQUIRED_ASSET_COMBO_TEX,
+        REQUIRED_ASSET_BACKGROUND_TEX,
     ];
 
     let missing: Vec<&str> = required
@@ -366,8 +379,11 @@ fn setup_scene(
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
+    let quad_mesh = meshes.add(Mesh::from(Rectangle::new(1.0, 1.0)));
+    let background_texture = asset_server.load(REQUIRED_ASSET_BACKGROUND_TEX);
+
     commands.insert_resource(FxAssets {
-        quad_mesh: meshes.add(Mesh::from(Rectangle::new(1.0, 1.0))),
+        quad_mesh: quad_mesh.clone(),
         rear_texture: asset_server.load(REQUIRED_ASSET_REAR_TEX),
         forward_texture: asset_server.load(REQUIRED_ASSET_FORWARD_TEX),
         thunder_texture: asset_server.load(REQUIRED_ASSET_THUNDER_TEX),
@@ -375,7 +391,34 @@ fn setup_scene(
     });
 
     commands.spawn((
+        Camera2d,
+        Camera {
+            order: 0,
+            ..default()
+        },
+    ));
+
+    commands.spawn((
+        SceneBackdrop,
+        SceneBackdropImage {
+            handle: background_texture.clone(),
+        },
+        Sprite {
+            image: background_texture,
+            custom_size: None,
+            ..default()
+        },
+        Anchor::CENTER,
+        Transform::default(),
+    ));
+
+    commands.spawn((
         MainCamera,
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
         Camera3d::default(),
         Tonemapping::ReinhardLuminance,
     ));
@@ -1286,6 +1329,31 @@ fn apply_camera_rig(
     let offset = Vec3::new(horizontal * yaw.sin(), vertical, horizontal * yaw.cos());
     let eye = look_at + offset;
     *transform = Transform::from_translation(eye).looking_at(look_at, Vec3::Y);
+}
+
+fn fit_scene_backdrop(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    images: Res<Assets<Image>>,
+    mut backdrops: Query<(&SceneBackdropImage, &mut Sprite, &mut Transform), With<SceneBackdrop>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+
+    for (image_ref, mut sprite, mut transform) in &mut backdrops {
+        let Some(image) = images.get(&image_ref.handle) else {
+            continue;
+        };
+        let size = image.size_f32();
+        if size.x <= f32::EPSILON || size.y <= f32::EPSILON {
+            continue;
+        }
+
+        let cover_scale = (window.width() / size.x).max(window.height() / size.y);
+        sprite.custom_size = Some(Vec2::new(size.x, size.y));
+        transform.scale = Vec3::new(cover_scale, cover_scale, 1.0);
+        transform.translation = Vec3::new(0.0, 0.0, 0.0);
+    }
 }
 
 fn draw_settings_window(
