@@ -15,13 +15,46 @@ use std::collections::VecDeque;
 use std::f32::consts::PI;
 use std::path::Path;
 
+/*
+Skill 43 (Fury Strike / "Death Stab") - Notas de implementacao
+================================================================
+
+Objetivo deste binario:
+- Replicar visualmente o comportamento do skill 43 do cliente legado em C++.
+- Manter uma base temporal estavel e independente de FPS de render.
+
+Referencias C++ usadas como fonte de verdade:
+- Efeito principal e subefeitos:
+  - cpp/MuClient5.2/source/ZzzEffect.cpp:
+    - case MODEL_SKILL_FURY_STRIKE: linhas ~10016..10240
+    - transicao para burst final (+7/+8): linhas ~10123..10172
+    - comportamento por subtipo (+1..+8): linhas ~10242..10390
+- Base temporal por tick fixo:
+  - cpp/MuClient5.2/source/ZzzScene.cpp: linhas ~2268..2317 e ~2453..2458
+    (loop com passo de 40 ms -> 25 ticks/s)
+  - cpp/MuClient5.2/source/ZzzEffect.cpp: linha ~18125 (o->LifeTime--)
+
+Decisoes de port para este viewer:
+- Sem dependencias de spawn de personagem/owner; foco apenas no VFX.
+- Sem colisao de terreno/wall do mapa (viewer isolado), mantendo ancora/plano fixo.
+- Background em camada 2D apenas para contexto visual, fora da logica do skill.
+*/
+
+// Textura da trilha de carga traseira (familia de efeitos que no C++ acompanha o spear/charge).
 const REQUIRED_ASSET_REAR_TEX: &str = "data/effect/n_skill.png";
+// Textura do thrust frontal (lanca principal da fase de ataque).
 const REQUIRED_ASSET_FORWARD_TEX: &str = "data/effect/joint_sword_red.png";
+// Textura de thunder usada no encadeamento de impacto.
 const REQUIRED_ASSET_THUNDER_TEX: &str = "data/effect/joint_thunder_01.png";
+// Textura do flash/burst de impacto.
 const REQUIRED_ASSET_COMBO_TEX: &str = "data/effect/flashing.png";
+// Fundo de referencia visual (nao faz parte da logica do skill).
 const REQUIRED_ASSET_BACKGROUND_TEX: &str = "prototype/noria-placeholder.png";
+// MU legado avanca efeitos em passo fixo de 40ms (25 ticks/s).
 const MU_TICK_RATE: f32 = 25.0;
 const MU_TICK_SECONDS: f32 = 1.0 / MU_TICK_RATE;
+// Padrao visual dos VFX deste viewer: additive blend.
+const SKILL_VFX_ALPHA_MODE: AlphaMode = AlphaMode::Add;
 
 #[derive(Resource, Default)]
 struct MouseTarget {
@@ -29,6 +62,9 @@ struct MouseTarget {
     valid: bool,
 }
 
+// Estado runtime da simulacao do skill.
+// "attack_time" e "impact_ticks_remaining" seguem a mesma ideia de contadores
+// por tick do legado (equivalente ao uso de LifeTime/etapas no C++).
 #[derive(Resource, Default)]
 struct Skill43State {
     active_cast: Option<ActiveCast>,
@@ -86,6 +122,11 @@ struct SceneBackdropImage {
     handle: Handle<Image>,
 }
 
+// Tipos de trilha/joint usados para representar as fases do skill no viewer.
+// Mapeamento de alto nivel:
+// - RearSubType2: fase de carga/retorno
+// - ForwardSpear: fase de avancar/estocada
+// - ThunderArc: cadeia de impacto/thunder
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JointKind {
     RearSubType2,
@@ -133,6 +174,13 @@ struct ComboSprite {
     color: Vec3,
 }
 
+// Parametros editaveis para aproximar o comportamento do C++.
+// Cada grupo abaixo corresponde a uma fase logica do effect:
+// - rear_*: bloco de carga traseira
+// - forward_*: bloco de estocada frontal
+// - impact_/thunder_*: burst/chain de impacto
+// - combo_*: flash central no ponto de impacto
+// - camera_/zoom_*: apenas viewer (nao parte da logica original do skill)
 #[derive(Resource, Clone)]
 struct Skill43Tuning {
     animation_speed: f32,
@@ -194,10 +242,13 @@ struct Skill43Tuning {
 impl Default for Skill43Tuning {
     fn default() -> Self {
         Self {
+            // Tempo global de simulacao (1.0 = tempo MU).
             animation_speed: 1.0,
             cast_plane_y: 0.0,
+            // Catch-up maximo por frame de render para evitar saltos extremos.
             max_ticks_per_update: 8,
             limit_attack_time: 15,
+            // Fase traseira.
             rear_phase_start: 2,
             rear_phase_end: 8,
             rear_spawns_per_tick: 3,
@@ -212,6 +263,7 @@ impl Default for Skill43Tuning {
             rear_magic_speed_rate: 1.4,
             rear_width_scale: 1.0,
             rear_emissive: 10.0,
+            // Fase frontal.
             forward_phase_start: 6,
             forward_phase_end: 12,
             forward_distance_base: 100.0,
@@ -222,6 +274,7 @@ impl Default for Skill43Tuning {
             forward_speed_per_tick: 14.0,
             forward_width: 22.0,
             forward_emissive: 12.0,
+            // Impacto + thunder chain.
             impact_start_attack_time: 10,
             impact_total_ticks: 35,
             impact_arcs_per_tick: 4,
@@ -237,10 +290,12 @@ impl Default for Skill43Tuning {
             thunder_width_max: 16.0,
             thunder_emissive: 12.0,
             thunder_uv_scroll_speed: 2.2,
+            // Flash central (combo burst).
             combo_lifetime_seconds: 0.28,
             combo_scale_start: 90.0,
             combo_scale_end: 220.0,
             combo_emissive: 8.0,
+            // Camera do viewer (nao equivalente direto no C++).
             camera_pitch_deg: 48.5,
             camera_yaw_deg: -45.0,
             camera_look_height: 80.0,
@@ -254,6 +309,8 @@ impl Default for Skill43Tuning {
 
 impl Skill43Tuning {
     fn sanitize(&mut self) {
+        // Clamps defensivos: evitam valores degenerados no editor runtime.
+        // No legado C++, muitos desses limites eram implicitos pelas formulas e assets.
         self.animation_speed = self.animation_speed.max(0.0);
         self.max_ticks_per_update = self.max_ticks_per_update.max(1);
         self.limit_attack_time = self.limit_attack_time.max(1);
@@ -351,6 +408,9 @@ fn main() {
         .run();
 }
 
+// Valida que os assets essenciais existem antes de inicializar o app.
+// Motivacao: no viewer queremos falhar cedo quando o conjunto de texturas
+// nao bate com o esperado para reproduzir o skill.
 fn validate_required_assets(asset_root: &str) {
     let required = [
         REQUIRED_ASSET_REAR_TEX,
@@ -374,6 +434,10 @@ fn validate_required_assets(asset_root: &str) {
     }
 }
 
+// Setup de cena do viewer:
+// - camada 2D de background para contexto visual
+// - camera 3D para os VFX
+// - luz direcional minima para manter leitura do volume
 fn setup_scene(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -433,6 +497,8 @@ fn setup_scene(
     ));
 }
 
+// Raycast do cursor no plano de cast.
+// Motivacao: reproduzir o "ponto de alvo no chao" sem depender de personagem.
 fn update_mouse_target(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
@@ -473,6 +539,8 @@ fn update_mouse_target(
     mouse_target.valid = true;
 }
 
+// Converte delta real em ticks MU fixos (25 TPS).
+// Referencia: loop fixo de 40ms no legado (ZzzScene.cpp).
 fn update_scene_frame(
     time: Res<Time>,
     tuning: Res<Skill43Tuning>,
@@ -495,6 +563,8 @@ fn update_scene_frame(
     state.move_scene_frame = state.move_scene_frame.wrapping_add(ticks_to_process as i32);
 }
 
+// Inicia um novo cast ao clicar RMB, inicializando estado de ataque.
+// attack_time comeca em 1 para espelhar a progressao por fase usada no C++.
 fn handle_right_click_cast(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     egui_wants_input: Res<EguiWantsInput>,
@@ -535,6 +605,8 @@ fn handle_right_click_cast(
     state.current_sword_tip = sword_tip_anchor(caster, forward, &tuning);
 }
 
+// Timeline principal do skill (fase de charge + thrust + gatilho de impacto).
+// Inspirado no fluxo de MODEL_SKILL_FURY_STRIKE no C++ (~10016..10240).
 fn advance_skill43_timeline(
     mut commands: Commands,
     tuning: Res<Skill43Tuning>,
@@ -616,6 +688,8 @@ fn advance_skill43_timeline(
     state.active_cast = Some(cast);
 }
 
+// Timeline de impacto/thunder apos o gatilho principal.
+// No viewer atual, gera arcos por tick enquanto impact_ticks_remaining > 0.
 fn advance_impact_thunder_timeline(
     mut commands: Commands,
     tuning: Res<Skill43Tuning>,
@@ -654,6 +728,8 @@ fn advance_impact_thunder_timeline(
     }
 }
 
+// Spawn da fase traseira (charge), com distribuicao radial e offset para tras.
+// Motivacao: aproximar leitura de "energia puxada para tras" antes do thrust.
 fn spawn_rear_subtype2_joint(
     commands: &mut Commands,
     assets: &FxAssets,
@@ -695,11 +771,13 @@ fn spawn_rear_subtype2_joint(
             emissive: tuning.rear_emissive,
             uv_scroll_speed: 0.0,
             seed,
-            alpha_mode: AlphaMode::Blend,
+            alpha_mode: SKILL_VFX_ALPHA_MODE,
         },
     );
 }
 
+// Spawn da fase frontal (thrust), baseado em attack_time.
+// Motivacao: acompanhar progressao temporal da estocada.
 fn spawn_forward_spear_joint(
     commands: &mut Commands,
     assets: &FxAssets,
@@ -735,11 +813,13 @@ fn spawn_forward_spear_joint(
             emissive: tuning.forward_emissive,
             uv_scroll_speed: 0.0,
             seed,
-            alpha_mode: AlphaMode::Blend,
+            alpha_mode: SKILL_VFX_ALPHA_MODE,
         },
     );
 }
 
+// Spawn de thunder arc no centro de impacto.
+// Referencia conceitual: subefeitos de impacto/thunder do bloco fury strike.
 fn spawn_thunder_arc_joint(
     commands: &mut Commands,
     assets: &FxAssets,
@@ -783,11 +863,13 @@ fn spawn_thunder_arc_joint(
             emissive: tuning.thunder_emissive,
             uv_scroll_speed: tuning.thunder_uv_scroll_speed,
             seed,
-            alpha_mode: AlphaMode::Blend,
+            alpha_mode: SKILL_VFX_ALPHA_MODE,
         },
     );
 }
 
+// Flash central de impacto (billboard).
+// Motivacao: representar o pico visual do hit final.
 fn spawn_combo_burst(
     commands: &mut Commands,
     assets: &FxAssets,
@@ -802,7 +884,7 @@ fn spawn_combo_burst(
         color,
         tuning.combo_emissive,
         1.0,
-        AlphaMode::Add,
+        SKILL_VFX_ALPHA_MODE,
     );
 
     commands.spawn((
@@ -850,6 +932,7 @@ fn spawn_joint_entity(
     materials: &mut Assets<StandardMaterial>,
     desc: SpawnJointDesc,
 ) {
+    // Material additive por padrao para VFX luminosos.
     let mesh = meshes.add(empty_joint_mesh());
     let material = make_effect_material(
         materials,
@@ -897,6 +980,8 @@ fn spawn_joint_entity(
     ));
 }
 
+// Atualizacao por tick de todas as entidades de joint.
+// lifetime_ticks decrementa 1 por tick, como no padrao de LifeTime do legado.
 fn update_skill43_joints(
     tuning: Res<Skill43Tuning>,
     state: Res<Skill43State>,
@@ -926,6 +1011,8 @@ fn update_skill43_joints(
     }
 }
 
+// Reconstroi mesh/material a cada frame de render com base no estado do joint.
+// Mantem separacao entre simulacao (ticks) e render (fps livre).
 fn update_joint_meshes_and_materials(
     mut commands: Commands,
     state: Res<Skill43State>,
@@ -964,6 +1051,8 @@ fn update_joint_meshes_and_materials(
     }
 }
 
+// Atualizacao do flash central em segundos de simulacao.
+// Viewer decision: este elemento permanece em escala temporal continua para suavidade visual.
 fn update_combo_sprites(
     mut commands: Commands,
     time: Res<Time>,
@@ -1009,6 +1098,9 @@ fn update_combo_sprites(
     }
 }
 
+// Comportamento da fase traseira:
+// interpola entre ponta da espada e trajetoria "screw" pseudo-helicoidal.
+// Motivacao: reproduzir a sensacao de orbita/torcao da energia antes do hit.
 fn update_rear_subtype2_joint(
     joint: &mut Skill43Joint,
     tuning: &Skill43Tuning,
@@ -1032,6 +1124,8 @@ fn update_rear_subtype2_joint(
     push_tail_sample(joint, joint.position, width);
 }
 
+// Comportamento da fase frontal:
+// avancar na direcao do ataque com largura decaindo conforme vida do joint.
 fn update_forward_spear_joint(joint: &mut Skill43Joint, tuning: &Skill43Tuning, frame_delta: f32) {
     joint.position += joint.direction * tuning.forward_speed_per_tick * frame_delta;
 
@@ -1040,6 +1134,8 @@ fn update_forward_spear_joint(joint: &mut Skill43Joint, tuning: &Skill43Tuning, 
     push_tail_sample(joint, joint.position, width.max(1.0));
 }
 
+// Comportamento do thunder arc:
+// interpolacao start->target com oscilacao lateral para "zig-zag" eletrico.
 fn update_thunder_arc_joint(joint: &mut Skill43Joint, move_scene_frame: i32) {
     let progress = 1.0 - (joint.lifetime_ticks / joint.max_lifetime_ticks).clamp(0.0, 1.0);
     let mut center = joint.start_position.lerp(joint.target_position, progress);
@@ -1069,6 +1165,7 @@ fn update_thunder_arc_joint(joint: &mut Skill43Joint, move_scene_frame: i32) {
     push_tail_sample(joint, center, width);
 }
 
+// Adiciona um novo sample da trilha, mantendo limite de historico.
 fn push_tail_sample(joint: &mut Skill43Joint, center: Vec3, width: f32) {
     if let Some(last) = joint.tails.front() {
         let last_center =
@@ -1090,6 +1187,8 @@ fn push_tail_sample(joint: &mut Skill43Joint, center: Vec3, width: f32) {
     ));
 }
 
+// Gera geometria de ribbon a partir dos samples da trilha.
+// Para thunder, aplica scroll de UV para reforcar leitura de energia em movimento.
 fn build_joint_mesh(joint: &Skill43Joint, move_scene_frame: f32) -> Mesh {
     if joint.tails.len() < 2 {
         return empty_joint_mesh();
@@ -1257,6 +1356,7 @@ fn make_effect_material(
     alpha: f32,
     alpha_mode: AlphaMode,
 ) -> Handle<StandardMaterial> {
+    // Material unlit + alpha_mode configuravel para manter look de VFX (nao PBR realista).
     materials.add(StandardMaterial {
         base_color_texture: Some(texture.clone()),
         base_color: Color::srgba(color.x, color.y, color.z, alpha.clamp(0.0, 1.0)),
@@ -1310,6 +1410,8 @@ fn update_fps_overlay(time: Res<Time>, mut fps: ResMut<FpsOverlay>) {
     }
 }
 
+// Camera orbital fixa do viewer.
+// Motivacao: manter enquadramento estavel para comparacao visual com o legado.
 fn apply_camera_rig(
     tuning: Res<Skill43Tuning>,
     mut rig: ResMut<CameraRig>,
@@ -1331,6 +1433,8 @@ fn apply_camera_rig(
     *transform = Transform::from_translation(eye).looking_at(look_at, Vec3::Y);
 }
 
+// Ajusta o background 2D no modo "cover", preservando proporcao.
+// Nao faz parte da logica do skill; apenas apoio visual para avaliacao.
 fn fit_scene_backdrop(
     windows: Query<&Window, With<PrimaryWindow>>,
     images: Res<Assets<Image>>,
@@ -1356,6 +1460,7 @@ fn fit_scene_backdrop(
     }
 }
 
+// Painel de tuning runtime usado para iteracao rapida de fidelidade.
 fn draw_settings_window(
     mut contexts: EguiContexts,
     mut tuning: ResMut<Skill43Tuning>,
@@ -1652,10 +1757,14 @@ fn draw_fps_overlay(mut contexts: EguiContexts, fps: Res<FpsOverlay>) {
         });
 }
 
+// Ancora da ponta da espada no viewer.
+// Motivacao: aproximar o ponto emissor dos efeitos em relacao ao ataque.
 fn sword_tip_anchor(caster: Vec3, forward: Vec3, tuning: &Skill43Tuning) -> Vec3 {
     caster + Vec3::new(0.0, tuning.sword_tip_height, 0.0) + forward * tuning.sword_tip_forward
 }
 
+// Offset aleatorio em torno do centro de impacto.
+// Equivale ao papel dos offsets randomicos no bloco de impacto do C++.
 fn random_impact_offset(rng: &mut rand::rngs::ThreadRng, tuning: &Skill43Tuning) -> Vec3 {
     let (y_min, y_max) = ordered_pair(tuning.impact_offset_y_min, tuning.impact_offset_y_max, 0.01);
     Vec3::new(
@@ -1665,6 +1774,8 @@ fn random_impact_offset(rng: &mut rand::rngs::ThreadRng, tuning: &Skill43Tuning)
     )
 }
 
+// Funcao pseudo-aleatoria "screw" herdada da abordagem classica do cliente legado.
+// Usada para gerar o movimento orbital da fase traseira.
 fn get_magic_screw(i_param: i32, move_scene_frame: i32, speed_rate: f32) -> Vec3 {
     let i_param = i_param.wrapping_add(move_scene_frame);
 
@@ -1686,12 +1797,14 @@ fn get_magic_screw(i_param: i32, move_scene_frame: i32, speed_rate: f32) -> Vec3
     Vec3::new(cxx_x, cxx_z, cxx_y)
 }
 
+// Sequencia deterministica local para variacoes de spawn.
 fn next_seed(state: &mut Skill43State) -> i32 {
     let seed = state.next_seed;
     state.next_seed = state.next_seed.wrapping_add(1);
     seed
 }
 
+// Garante intervalo valido [min, max] para sorteios de parametro.
 fn ordered_pair(a: f32, b: f32, epsilon: f32) -> (f32, f32) {
     let min = a.min(b);
     let max = a.max(b);
@@ -1702,6 +1815,7 @@ fn ordered_pair(a: f32, b: f32, epsilon: f32) -> (f32, f32) {
     }
 }
 
+// Delta de simulacao global (delta real * speed scalar).
 fn simulation_delta_seconds(time: &Time, tuning: &Skill43Tuning) -> f32 {
     time.delta_secs() * tuning.animation_speed
 }
